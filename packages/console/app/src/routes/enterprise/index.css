@@ -185,7 +185,27 @@
             padding: 20px 0;
 
             li {
-              a {
+  [data-component="trust-signals"] {
+    margin-top: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+
+    [data-component="trust-item"] {
+      display: flex;
+      align-items: center;
+      gap: 0.625rem;
+      color: var(--color-text);
+      font-size: 0.9rem;
+
+      svg {
+        flex-shrink: 0;
+        color: var(--color-success);
+      }
+    }
+  }
+
+  a {
                 text-decoration: none;
                 padding: 20px;
                 display: block;
