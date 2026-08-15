@@ -1,17 +1,17 @@
-import { Binary } from "@opencode-ai/core/util/binary"
-import { retry } from "@opencode-ai/core/util/retry"
-import type { OpenCodeEvent, SessionApi, SessionMessageInfo } from "@opencode-ai/client/promise"
+import { Binary } from "@sente-ai/core/util/binary"
+import { retry } from "@sente-ai/core/util/retry"
+import type { SenteEvent, SessionApi, SessionMessageInfo } from "@sente-ai/client/promise"
 import type {
   Message,
-  OpencodeClient,
+  SenteClient,
   Part,
   PermissionRequest,
   QuestionRequest,
   Session,
   SessionStatus,
   Todo,
-} from "@opencode-ai/sdk/v2/client"
-import type { FileDiffInfo } from "@opencode-ai/client/promise"
+} from "@sente-ai/sdk/v2/client"
+import type { FileDiffInfo } from "@sente-ai/client/promise"
 import { batch } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { message as cleanMessage } from "@/utils/diffs"
@@ -186,7 +186,7 @@ function reconcileFetched<T extends { id: string }>(
 type ServerSessionOptions = { retry?: typeof retry; protocol?: Promise<"v1" | "v2"> }
 
 export function createServerSession(
-  client: OpencodeClient,
+  client: SenteClient,
   sessionApiOrOptions?: SessionApi | ServerSessionOptions,
   messageApi?: MessageApi,
   currentOptions?: ServerSessionOptions,
@@ -934,7 +934,7 @@ export function createServerSession(
       .catch(() => {})
   }
 
-  const applyV2 = (event: OpenCodeEvent) => {
+  const applyV2 = (event: SenteEvent) => {
     if (!("data" in event) || !("sessionID" in event.data) || typeof event.data.sessionID !== "string") return
     const sessionID = event.data.sessionID
     const reduction = v2.reduce(data.session_message[sessionID] ?? [], event)

@@ -1,35 +1,35 @@
 import { expect, test } from "bun:test"
 import { Schema } from "effect"
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { Agent } from "@opencode-ai/schema/agent"
-import { Location } from "@opencode-ai/schema/location"
-import { Model } from "@opencode-ai/schema/model"
-import { AgentAttachment, FileAttachment, Prompt, Source } from "@opencode-ai/schema/prompt"
-import { Provider } from "@opencode-ai/schema/provider"
-import { Project } from "@opencode-ai/schema/project"
-import { ProjectDirectories } from "@opencode-ai/schema/project-directories"
-import { PermissionV1 } from "@opencode-ai/schema/permission-v1"
-import { Session } from "@opencode-ai/schema/session"
-import { SessionInput } from "@opencode-ai/schema/session-input"
-import { SessionMessage } from "@opencode-ai/schema/session-message"
-import { Workspace } from "@opencode-ai/schema/workspace"
-import { Command } from "@opencode-ai/schema/command"
-import { Connection } from "@opencode-ai/schema/connection"
-import { Credential } from "@opencode-ai/schema/credential"
-import { FileSystem } from "@opencode-ai/schema/filesystem"
-import { Integration } from "@opencode-ai/schema/integration"
-import { LLM } from "@opencode-ai/schema/llm"
-import { Permission } from "@opencode-ai/schema/permission"
-import { Plugin } from "@opencode-ai/schema/plugin"
-import { Pty } from "@opencode-ai/schema/pty"
-import { Reference } from "@opencode-ai/schema/reference"
-import { SessionTodo } from "@opencode-ai/schema/session-todo"
-import { Skill } from "@opencode-ai/schema/skill"
-import { AbsolutePath, DateTimeUtcFromMillis, optional, statics } from "@opencode-ai/schema/schema"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { PluginV2 } from "@opencode-ai/core/plugin"
+import { AgentV2 } from "@sente-ai/core/agent"
+import { ModelV2 } from "@sente-ai/core/model"
+import { SessionV2 } from "@sente-ai/core/session"
+import { Agent } from "@sente-ai/schema/agent"
+import { Location } from "@sente-ai/schema/location"
+import { Model } from "@sente-ai/schema/model"
+import { AgentAttachment, FileAttachment, Prompt, Source } from "@sente-ai/schema/prompt"
+import { Provider } from "@sente-ai/schema/provider"
+import { Project } from "@sente-ai/schema/project"
+import { ProjectDirectories } from "@sente-ai/schema/project-directories"
+import { PermissionV1 } from "@sente-ai/schema/permission-v1"
+import { Session } from "@sente-ai/schema/session"
+import { SessionInput } from "@sente-ai/schema/session-input"
+import { SessionMessage } from "@sente-ai/schema/session-message"
+import { Workspace } from "@sente-ai/schema/workspace"
+import { Command } from "@sente-ai/schema/command"
+import { Connection } from "@sente-ai/schema/connection"
+import { Credential } from "@sente-ai/schema/credential"
+import { FileSystem } from "@sente-ai/schema/filesystem"
+import { Integration } from "@sente-ai/schema/integration"
+import { LLM } from "@sente-ai/schema/llm"
+import { Permission } from "@sente-ai/schema/permission"
+import { Plugin } from "@sente-ai/schema/plugin"
+import { Pty } from "@sente-ai/schema/pty"
+import { Reference } from "@sente-ai/schema/reference"
+import { SessionTodo } from "@sente-ai/schema/session-todo"
+import { Skill } from "@sente-ai/schema/skill"
+import { AbsolutePath, DateTimeUtcFromMillis, optional, statics } from "@sente-ai/schema/schema"
+import { ProviderV2 } from "@sente-ai/core/provider"
+import { PluginV2 } from "@sente-ai/core/plugin"
 
 test("Core reuses the canonical shared schemas", async () => {
   const [
@@ -55,27 +55,27 @@ test("Core reuses the canonical shared schemas", async () => {
     coreSchema,
     coreWorkspace,
   ] = await Promise.all([
-    import("@opencode-ai/core/command"),
-    import("@opencode-ai/core/integration/connection"),
-    import("@opencode-ai/core/credential"),
-    import("@opencode-ai/core/filesystem"),
-    import("@opencode-ai/core/integration"),
-    import("@opencode-ai/core/location"),
-    import("@opencode-ai/llm"),
-    import("@opencode-ai/core/permission"),
-    import("@opencode-ai/core/v1/permission"),
-    import("@opencode-ai/core/project/copy"),
-    import("@opencode-ai/core/pty"),
-    import("@opencode-ai/core/project/schema"),
-    import("@opencode-ai/core/reference"),
-    import("@opencode-ai/core/session/input"),
-    import("@opencode-ai/core/session/message"),
-    import("@opencode-ai/core/session/todo"),
-    import("@opencode-ai/core/session/prompt"),
-    import("@opencode-ai/core/skill"),
-    import("@opencode-ai/core/v2-schema"),
-    import("@opencode-ai/core/schema"),
-    import("@opencode-ai/core/workspace"),
+    import("@sente-ai/core/command"),
+    import("@sente-ai/core/integration/connection"),
+    import("@sente-ai/core/credential"),
+    import("@sente-ai/core/filesystem"),
+    import("@sente-ai/core/integration"),
+    import("@sente-ai/core/location"),
+    import("@sente-ai/llm"),
+    import("@sente-ai/core/permission"),
+    import("@sente-ai/core/v1/permission"),
+    import("@sente-ai/core/project/copy"),
+    import("@sente-ai/core/pty"),
+    import("@sente-ai/core/project/schema"),
+    import("@sente-ai/core/reference"),
+    import("@sente-ai/core/session/input"),
+    import("@sente-ai/core/session/message"),
+    import("@sente-ai/core/session/todo"),
+    import("@sente-ai/core/session/prompt"),
+    import("@sente-ai/core/skill"),
+    import("@sente-ai/core/v2-schema"),
+    import("@sente-ai/core/schema"),
+    import("@sente-ai/core/workspace"),
   ])
 
   const schemas = [

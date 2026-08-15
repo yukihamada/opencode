@@ -1,5 +1,5 @@
-import type { SessionApi, SessionInfo, SessionListInput } from "@opencode-ai/client/promise"
-import type { Session } from "@opencode-ai/sdk/v2/client"
+import type { SessionApi, SessionInfo, SessionListInput } from "@sente-ai/client/promise"
+import type { Session } from "@sente-ai/sdk/v2/client"
 
 export function normalizeSessionInfo(input: SessionInfo | Session): Session {
   if (!("location" in input)) return input

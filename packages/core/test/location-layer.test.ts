@@ -2,21 +2,21 @@ import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Equal, Hash, Schema } from "effect"
-import { Tool } from "@opencode-ai/core/tool/tool"
-import { define } from "@opencode-ai/plugin/v2/effect"
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { Catalog } from "@opencode-ai/core/catalog"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { LocationServiceMap } from "@opencode-ai/core/location-services"
-import { Location } from "@opencode-ai/core/location"
-import { PluginV2 } from "@opencode-ai/core/plugin"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
+import { Tool } from "@sente-ai/core/tool/tool"
+import { define } from "@sente-ai/plugin/v2/effect"
+import { AgentV2 } from "@sente-ai/core/agent"
+import { Catalog } from "@sente-ai/core/catalog"
+import { AppNodeBuilder } from "@sente-ai/core/effect/app-node-builder"
+import { LayerNode } from "@sente-ai/core/effect/layer-node"
+import { LocationServiceMap } from "@sente-ai/core/location-services"
+import { Location } from "@sente-ai/core/location"
+import { PluginV2 } from "@sente-ai/core/plugin"
+import { ModelV2 } from "@sente-ai/core/model"
+import { ProjectV2 } from "@sente-ai/core/project"
+import { ProviderV2 } from "@sente-ai/core/provider"
+import { AbsolutePath } from "@sente-ai/core/schema"
+import { SessionV2 } from "@sente-ai/core/session"
+import { SessionRunnerModel } from "@sente-ai/core/session/runner/model"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 import { toolDefinitions } from "./lib/tool"
@@ -78,7 +78,7 @@ describe("LocationServiceMap", () => {
           })
           yield* Effect.promise(() =>
             fs.writeFile(
-              path.join(blocked.path, "opencode.json"),
+              path.join(blocked.path, "sente.json"),
               JSON.stringify({
                 experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "test" }] },
               }),
@@ -150,7 +150,7 @@ describe("LocationServiceMap", () => {
           const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
           yield* Effect.promise(() =>
             fs.writeFile(
-              path.join(dir.path, "opencode.json"),
+              path.join(dir.path, "sente.json"),
               JSON.stringify({
                 providers: {
                   unavailable: {

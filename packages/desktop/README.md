@@ -1,6 +1,6 @@
-# OpenCode Desktop
+# Sente Desktop
 
-The OpenCode Desktop app, built with Electron.
+The Sente Desktop app, built with Electron.
 
 ## Development
 

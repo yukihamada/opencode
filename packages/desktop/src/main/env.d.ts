@@ -1,19 +1,19 @@
 interface ImportMetaEnv {
-  readonly OPENCODE_CHANNEL: string
+  readonly SENTE_CHANNEL: string
 }
 
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
 
-declare module "virtual:opencode-server" {
+declare module "virtual:sente-server" {
   export namespace Server {
-    export const listen: typeof import("../../../opencode/dist/types/src/node").Server.listen
-    export type Listener = import("../../../opencode/dist/types/src/node").Server.Listener
+    export const listen: typeof import("../../../sente/dist/types/src/node").Server.listen
+    export type Listener = import("../../../sente/dist/types/src/node").Server.Listener
   }
   export namespace Config {
-    export const get: typeof import("../../../opencode/dist/types/src/node").Config.get
-    export type Info = import("../../../opencode/dist/types/src/node").Config.Info
+    export const get: typeof import("../../../sente/dist/types/src/node").Config.get
+    export type Info = import("../../../sente/dist/types/src/node").Config.Info
   }
-  export const bootstrap: typeof import("../../../opencode/dist/types/src/node").bootstrap
+  export const bootstrap: typeof import("../../../sente/dist/types/src/node").bootstrap
 }

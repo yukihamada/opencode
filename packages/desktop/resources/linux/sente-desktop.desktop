@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Sente
+Exec=/opt/Sente/ai.sente.desktop %U
+Terminal=false
+Type=Application
+Icon=ai.sente.desktop
+StartupWMClass=ai.sente.desktop
+NoDisplay=true
+Comment=Open source AI coding agent
+Categories=Development;

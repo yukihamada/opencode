@@ -1,6 +1,6 @@
 // @ts-nocheck
-import { Button } from "@opencode-ai/ui/button"
-import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { Button } from "@sente-ai/ui/button"
+import { useDialog } from "@sente-ai/ui/context/dialog"
 import { createSignal, onMount } from "solid-js"
 import { DialogSelectModelUnpaidV2 } from "./dialog-select-model-unpaid-v2"
 
@@ -18,7 +18,7 @@ function SelectModelWithoutProviders() {
   const models = names.map((name, index) => ({
     id: name.toLowerCase().replaceAll(" ", "-"),
     name,
-    provider: { id: "opencode", name: "OpenCode" },
+    provider: { id: "sente", name: "Sente" },
     cost: { input: 0, output: 0 },
     limit: { context: 128_000 },
     capabilities: {

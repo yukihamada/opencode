@@ -1,6 +1,6 @@
 import type {
   Config,
-  OpencodeClient,
+  SenteClient,
   Path,
   PermissionRequest,
   Project,
@@ -8,7 +8,7 @@ import type {
   QuestionRequest,
   ReferenceInfo,
   Session,
-} from "@opencode-ai/sdk/v2/client"
+} from "@sente-ai/sdk/v2/client"
 import type {
   AgentListInput,
   AgentListOutput,
@@ -22,10 +22,10 @@ import type {
   ReferenceListInput,
   ReferenceListOutput,
   SessionApi,
-} from "@opencode-ai/client/promise"
+} from "@sente-ai/client/promise"
 import { showToast } from "@/utils/toast"
-import { getFilename } from "@opencode-ai/core/util/path"
-import { retry } from "@opencode-ai/core/util/retry"
+import { getFilename } from "@sente-ai/core/util/path"
+import { retry } from "@sente-ai/core/util/retry"
 import { batch } from "solid-js"
 import { produce, reconcile, type SetStoreFunction, type Store } from "solid-js/store"
 import type { State, VcsCache } from "./types"
@@ -40,7 +40,7 @@ import {
 import { formatServerError } from "@/utils/server-errors"
 import { QueryClient, queryOptions } from "@tanstack/solid-query"
 import { loadMcpQuery, loadMcpResourcesQuery } from "../server-sync"
-import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
+import { NormalizedProviderListResponse } from "@sente-ai/session-ui/context"
 import { ScopedKey, type ServerScope } from "@/utils/server-scope"
 import { normalizeSessionInfo } from "@/utils/session"
 import type { ServerProtocol } from "@/utils/server-protocol"
@@ -105,7 +105,7 @@ function showErrors(input: {
   })
 }
 
-export const loadGlobalConfigQuery = (scope: ServerScope, sdk: OpencodeClient) =>
+export const loadGlobalConfigQuery = (scope: ServerScope, sdk: SenteClient) =>
   queryOptions({
     queryKey: [scope, "config"],
     queryFn: () => retry(() => sdk.global.config.get().then((x) => x.data!)),
@@ -129,7 +129,7 @@ export const loadProjectsQuery = (scope: ServerScope, api: ProjectApi) =>
         api.list().then((projects) => {
           return projects
             .filter((p) => !!p?.id)
-            .filter((p) => !!p.worktree && !p.worktree.includes("opencode-test"))
+            .filter((p) => !!p.worktree && !p.worktree.includes("sente-test"))
             .map(normalizeProjectInfo)
             .slice()
             .sort((a, b) => cmp(a.id, b.id))
@@ -138,7 +138,7 @@ export const loadProjectsQuery = (scope: ServerScope, api: ProjectApi) =>
   })
 
 export async function bootstrapGlobal(input: {
-  serverSDK: OpencodeClient
+  serverSDK: SenteClient
   serverAPI: CatalogApi & { readonly project: ProjectApi }
   protocol?: Promise<ServerProtocol>
   scope: ServerScope
@@ -219,7 +219,7 @@ export const loadProvidersQuery = (
   scope: ServerScope,
   directory: string | null,
   sdk: CatalogApi,
-  legacy?: OpencodeClient,
+  legacy?: SenteClient,
   protocol?: Promise<ServerProtocol>,
 ) =>
   queryOptions({
@@ -256,7 +256,7 @@ export const loadAgentsQuery = (
   scope: ServerScope,
   directory: string,
   sdk: AgentListApi,
-  legacy?: OpencodeClient,
+  legacy?: SenteClient,
   protocol?: Promise<ServerProtocol>,
 ) =>
   queryOptions({
@@ -271,7 +271,7 @@ export const loadAgentsQuery = (
 export const loadCommands = (
   directory: string,
   api: CommandListApi,
-  legacy?: OpencodeClient,
+  legacy?: SenteClient,
   protocol?: Promise<ServerProtocol>,
 ): Promise<CommandInfo[]> =>
   retry(async () => {
@@ -295,7 +295,7 @@ export const loadCommands = (
 export const loadPathQuery = (
   scope: ServerScope,
   directory: string | null,
-  sdk: OpencodeClient,
+  sdk: SenteClient,
   protocol?: Promise<ServerProtocol>,
 ) =>
   queryOptions<Path>({
@@ -311,7 +311,7 @@ export const loadReferencesQuery = (
   scope: ServerScope,
   directory: string,
   api: ReferenceListApi,
-  legacy?: OpencodeClient,
+  legacy?: SenteClient,
   protocol?: Promise<ServerProtocol>,
 ) =>
   queryOptions<ReferenceInfo[]>({
@@ -328,7 +328,7 @@ export async function bootstrapDirectory(input: {
   directory: string
   scope: ServerScope
   mcp: boolean
-  sdk: OpencodeClient
+  sdk: SenteClient
   api: CatalogApi & {
     readonly agent: AgentListApi
     readonly command: CommandListApi

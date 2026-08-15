@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { createStore } from "solid-js/store"
 import { QueryClient } from "@tanstack/solid-query"
-import type { Config, OpencodeClient, Project } from "@opencode-ai/sdk/v2/client"
-import type { AgentApi, CatalogApi, CommandApi, ReferenceApi } from "@opencode-ai/client/promise"
-import type { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
+import type { Config, SenteClient, Project } from "@sente-ai/sdk/v2/client"
+import type { AgentApi, CatalogApi, CommandApi, ReferenceApi } from "@sente-ai/client/promise"
+import type { NormalizedProviderListResponse } from "@sente-ai/session-ui/context"
 import {
   bootstrapDirectory,
   loadAgentsQuery,
@@ -118,7 +118,7 @@ describe("bootstrapDirectory", () => {
           },
         },
         provider: { list: async () => ({ data: { all: [], connected: [], default: {} } }) },
-      } as unknown as OpencodeClient,
+      } as unknown as SenteClient,
       api,
       store,
       setStore,

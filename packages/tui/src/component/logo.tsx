@@ -48,6 +48,10 @@ export function Logo() {
 
   return (
     <box>
+      {/* ここに「先手」という漢字を追加 */}
+      <box flexDirection="row" marginBottom={1}>
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>先手</text>
+      </box>
       <For each={logo.left}>
         {(line, index) => (
           <box flexDirection="row" gap={1}>

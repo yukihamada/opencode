@@ -7,7 +7,7 @@ import { cleanupStoreFiles, deleteStoreFileIfEmpty } from "./store-cleanup"
 const roots: string[] = []
 
 async function tempRoot() {
-  const root = await mkdtemp(join(tmpdir(), "opencode-store-cleanup-"))
+  const root = await mkdtemp(join(tmpdir(), "sente-store-cleanup-"))
   roots.push(root)
   return root
 }
@@ -25,37 +25,37 @@ describe("store cleanup", () => {
   test("removes empty scoped stores and leaves global stores alone", async () => {
     const root = await tempRoot()
     const now = new Date("2026-07-01T00:00:00.000Z")
-    await writeStore(root, "opencode.draft.empty.dat", "{}", now)
-    await writeStore(root, "opencode.workspace.empty.dat", "{\n}", now)
-    await writeStore(root, "opencode.global.dat", "{}", now)
-    await writeStore(root, "opencode.workspace.empty.dat.json", "{}", now)
+    await writeStore(root, "sente.draft.empty.dat", "{}", now)
+    await writeStore(root, "sente.workspace.empty.dat", "{\n}", now)
+    await writeStore(root, "sente.global.dat", "{}", now)
+    await writeStore(root, "sente.workspace.empty.dat.json", "{}", now)
 
     const result = await cleanupStoreFiles(root, now.getTime())
 
-    expect(result.deleted.sort()).toEqual(["opencode.draft.empty.dat", "opencode.workspace.empty.dat"])
-    expect((await readdir(root)).sort()).toEqual(["opencode.global.dat", "opencode.workspace.empty.dat.json"])
+    expect(result.deleted.sort()).toEqual(["sente.draft.empty.dat", "sente.workspace.empty.dat"])
+    expect((await readdir(root)).sort()).toEqual(["sente.global.dat", "sente.workspace.empty.dat.json"])
   })
 
   test("removes stale drafts by age without removing non-empty workspace stores", async () => {
     const root = await tempRoot()
     const now = new Date("2026-07-01T00:00:00.000Z")
-    await writeStore(root, "opencode.draft.old.dat", '{"draft:prompt":"hello"}', new Date("2026-05-01T00:00:00.000Z"))
-    await writeStore(root, "opencode.draft.recent.dat", '{"draft:prompt":"hello"}', now)
+    await writeStore(root, "sente.draft.old.dat", '{"draft:prompt":"hello"}', new Date("2026-05-01T00:00:00.000Z"))
+    await writeStore(root, "sente.draft.recent.dat", '{"draft:prompt":"hello"}', now)
     await writeStore(
       root,
-      "opencode.workspace.old.dat",
+      "sente.workspace.old.dat",
       '{"workspace:layout":"wide"}',
       new Date("2025-01-01T00:00:00.000Z"),
     )
-    await writeStore(root, "opencode.workspace.recent.dat", '{"workspace:layout":"wide"}', now)
+    await writeStore(root, "sente.workspace.recent.dat", '{"workspace:layout":"wide"}', now)
 
     const result = await cleanupStoreFiles(root, now.getTime())
 
-    expect(result.deleted).toEqual(["opencode.draft.old.dat"])
+    expect(result.deleted).toEqual(["sente.draft.old.dat"])
     expect((await readdir(root)).sort()).toEqual([
-      "opencode.draft.recent.dat",
-      "opencode.workspace.old.dat",
-      "opencode.workspace.recent.dat",
+      "sente.draft.recent.dat",
+      "sente.workspace.old.dat",
+      "sente.workspace.recent.dat",
     ])
   })
 
@@ -66,7 +66,7 @@ describe("store cleanup", () => {
       Array.from({ length: 102 }, (_, index) =>
         writeStore(
           root,
-          `opencode.draft.${index}.dat`,
+          `sente.draft.${index}.dat`,
           '{"draft:prompt":"hello"}',
           new Date(now.getTime() - index * 1000),
         ),
@@ -77,17 +77,17 @@ describe("store cleanup", () => {
 
     const remaining = await readdir(root)
 
-    expect(result.deleted.sort()).toEqual(["opencode.draft.100.dat", "opencode.draft.101.dat"])
+    expect(result.deleted.sort()).toEqual(["sente.draft.100.dat", "sente.draft.101.dat"])
     expect(remaining).toHaveLength(100)
   })
 
   test("removes a scoped store immediately when it becomes empty", async () => {
     const root = await tempRoot()
-    await writeStore(root, "opencode.draft.empty.dat", "{}", new Date("2026-07-01T00:00:00.000Z"))
-    await writeStore(root, "opencode.global.dat", "{}", new Date("2026-07-01T00:00:00.000Z"))
+    await writeStore(root, "sente.draft.empty.dat", "{}", new Date("2026-07-01T00:00:00.000Z"))
+    await writeStore(root, "sente.global.dat", "{}", new Date("2026-07-01T00:00:00.000Z"))
 
-    expect(await deleteStoreFileIfEmpty(root, "opencode.draft.empty.dat")).toBe(true)
-    expect(await deleteStoreFileIfEmpty(root, "opencode.global.dat")).toBe(false)
-    expect(await readdir(root)).toEqual(["opencode.global.dat"])
+    expect(await deleteStoreFileIfEmpty(root, "sente.draft.empty.dat")).toBe(true)
+    expect(await deleteStoreFileIfEmpty(root, "sente.global.dat")).toBe(false)
+    expect(await readdir(root)).toEqual(["sente.global.dat"])
   })
 })

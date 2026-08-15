@@ -1,8 +1,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
-import { Athena } from "@opencode-ai/stats-core/athena"
-import { ModelStatRepo } from "@opencode-ai/stats-core/domain/model"
-import { layer as statsLayer } from "@opencode-ai/stats-core/runtime"
-import { syncStats } from "@opencode-ai/stats-core/stat-sync"
+import { Athena } from "@sente-ai/stats-core/athena"
+import { ModelStatRepo } from "@sente-ai/stats-core/domain/model"
+import { layer as statsLayer } from "@sente-ai/stats-core/runtime"
+import { syncStats } from "@sente-ai/stats-core/stat-sync"
 import { Cause, Duration, Effect, Layer, Schedule } from "effect"
 
 const SYNC_INTERVAL = "1 hour"

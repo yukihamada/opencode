@@ -28,13 +28,13 @@ describe("inference stat normalization", () => {
     expect(modelAuthor("alpha-gpt-next")).toBeUndefined()
   })
 
-  test("uses provider.model to resolve opencode route providers", () => {
+  test("uses provider.model to resolve sente route providers", () => {
     expect(statModel("big-pickle", "claude-sonnet-4-5")).toBe("claude-sonnet-4-5")
     expect(statModel("big-pickle", "gpt-5-free")).toBe("gpt-5")
     expect(statModel("big-pickle", "")).toBe("unknown")
-    expect(statProvider("big-pickle", "claude-sonnet-4-5", "opencode")).toBe("anthropic")
-    expect(statProvider("big-pickle", "gpt-5", "opencode")).toBe("openai")
-    expect(statProvider("big-pickle", "", "opencode")).toBe("unknown")
+    expect(statProvider("big-pickle", "claude-sonnet-4-5", "sente")).toBe("anthropic")
+    expect(statProvider("big-pickle", "gpt-5", "sente")).toBe("openai")
+    expect(statProvider("big-pickle", "", "sente")).toBe("unknown")
     expect(statProvider("unknown", "", "custom-provider")).toBe("custom-provider")
   })
 
@@ -50,7 +50,7 @@ describe("inference stat normalization", () => {
     ])
 
     expect(
-      toModelAggregate({ ...aggregate("big-pickle", "opencode"), provider_model: "claude-sonnet-4-5" }),
+      toModelAggregate({ ...aggregate("big-pickle", "sente"), provider_model: "claude-sonnet-4-5" }),
     ).toMatchObject([
       {
         provider: "anthropic",
@@ -60,15 +60,15 @@ describe("inference stat normalization", () => {
     ])
   })
 
-  test("provider aggregates never keep opencode as the provider", () => {
-    expect(toProviderAggregate({ ...aggregate("big-pickle", "opencode"), provider_model: "gpt-5" })).toMatchObject([
+  test("provider aggregates never keep sente as the provider", () => {
+    expect(toProviderAggregate({ ...aggregate("big-pickle", "sente"), provider_model: "gpt-5" })).toMatchObject([
       { provider: "openai" },
     ])
-    expect(toProviderAggregate(aggregate("big-pickle", "opencode"))).toMatchObject([{ provider: "unknown" }])
+    expect(toProviderAggregate(aggregate("big-pickle", "sente"))).toMatchObject([{ provider: "unknown" }])
   })
 
-  test("geo aggregates never keep opencode or big-pickle dimensions", () => {
-    expect(toGeoAggregate({ ...aggregate("big-pickle", "opencode"), country: "US" })).toMatchObject([
+  test("geo aggregates never keep sente or big-pickle dimensions", () => {
+    expect(toGeoAggregate({ ...aggregate("big-pickle", "sente"), country: "US" })).toMatchObject([
       { provider: "unknown", model: "unknown", country: "US" },
     ])
   })
