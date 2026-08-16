@@ -1089,6 +1089,57 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
+    "streamSinceCompaction reads only messages after the latest compaction",
+    () => {
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const test = yield* TestInstance
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const older = yield* createUserMessage(session.id, "older message")
+        const recent = yield* createUserMessage(session.id, "recent turn")
+        const large = yield* createAssistantMessage(session.id, recent.id, test.directory)
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: large.id,
+          sessionID: session.id,
+          type: "text",
+          text: "z".repeat(2_000),
+        })
+        const keep = yield* createAssistantMessage(session.id, recent.id, test.directory)
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: keep.id,
+          sessionID: session.id,
+          type: "text",
+          text: "keep tail",
+        })
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        expect(parent).toBeTruthy()
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        // streamSinceCompaction は compaction 以降のメッセージだけを読む
+        const since = yield* MessageV2.streamSinceCompaction(session.id)
+        const sinceIds = since.map((msg) => msg.info.id)
+        // compaction より古いメッセージ(older)は含まれない
+        expect(sinceIds).not.toContain(older.id)
+        // compaction 以降のメッセージ(keep)は含まれる
+        expect(sinceIds).toContain(keep.id)
+        // filterCompacted と同じ結果になることを確認
+        const filtered = MessageV2.filterCompacted(since)
+        const filteredIds = filtered.map((msg) => msg.info.id)
+        expect(filteredIds).toContain(keep.id)
+        expect(filteredIds).not.toContain(older.id)
+      }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
     "allows plugins to disable synthetic continue prompt",
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service

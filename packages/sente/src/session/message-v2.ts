@@ -24,6 +24,7 @@ import { NotFoundError } from "@/storage/storage"
 import { and } from "drizzle-orm"
 import { desc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
+import { gt } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
@@ -94,6 +95,9 @@ const part = (row: typeof PartTable.$inferSelect) =>
 
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
+
+const newer = (row: Cursor) =>
+  or(gt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), gt(MessageTable.id, row.id)))
 
 function hydrate(db: Database.Interface["db"], rows: (typeof MessageTable.$inferSelect)[]) {
   const ids = rows.map((row) => row.id)
@@ -489,6 +493,72 @@ export function stream(sessionID: SessionID) {
   })
 }
 
+// 🚀 DB 差分取得(2026-08-16): 毎ループで全メッセージを再読込する代わりに、
+// compaction の tail_start_id 以降のメッセージだけを読む。filterCompacted は
+// compaction 以降の tail だけをモデルに渡すため、それより古い履歴は読む必要がない。
+// compaction が無い場合は全件読む(初回・compaction 前のセッション)。
+export function streamSinceCompaction(sessionID: SessionID) {
+  const size = 50
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    // 最新の compaction を探す(最新50件から)
+    const recent = yield* page({ sessionID, limit: size }).pipe(
+      Effect.catchIf(NotFoundError.isInstance, () =>
+        Effect.succeed({ items: [] as WithParts[], more: false, cursor: undefined }),
+      ),
+    )
+    let compactionCursor: Cursor | undefined
+    let tailStartId: MessageID | undefined
+    for (const msg of recent.items) {
+      if (msg.info.role === "user") {
+        const part = msg.parts.find(
+          (item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined,
+        )
+        if (part) {
+          compactionCursor = { id: msg.info.id, time: msg.info.time.created }
+          tailStartId = part.tail_start_id
+          break
+        }
+      }
+    }
+    // compaction が無ければ全件読む
+    if (!compactionCursor || !tailStartId) return yield* stream(sessionID)
+    // tail_start_id 以降のメッセージだけ読む(filterCompacted が必要とする範囲)
+    const tailStartMsg = yield* db
+      .select()
+      .from(MessageTable)
+      .where(eq(MessageTable.id, tailStartId))
+      .get()
+      .pipe(Effect.orDie)
+    if (!tailStartMsg) return yield* stream(sessionID)
+    const tailStartCursor: Cursor = { id: tailStartMsg.id, time: tailStartMsg.time_created }
+    const rows = yield* db
+      .select()
+      .from(MessageTable)
+      .where(and(eq(MessageTable.session_id, sessionID), newer(tailStartCursor)))
+      .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
+      .all()
+      .pipe(Effect.orDie)
+    const items = yield* hydrate(db, rows)
+    items.reverse()
+    // tail_start_id のメッセージ自体も含める
+    const tailStartItem = yield* hydrate(db, [tailStartMsg])
+    items.unshift(...tailStartItem)
+    // compaction メッセージ自体も含める(filterCompacted が必要とする)
+    const compactionMsg = yield* db
+      .select()
+      .from(MessageTable)
+      .where(eq(MessageTable.id, compactionCursor.id))
+      .get()
+      .pipe(Effect.orDie)
+    if (compactionMsg) {
+      const compactionItem = yield* hydrate(db, [compactionMsg])
+      items.unshift(...compactionItem)
+    }
+    return items
+  })
+}
+
 export function parts(messageID: MessageID) {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
@@ -572,7 +642,7 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
 }
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
-  return filterCompacted(yield* stream(sessionID))
+  return filterCompacted(yield* streamSinceCompaction(sessionID))
 })
 
 // filterCompacted reorders messages for model consumption
