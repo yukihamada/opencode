@@ -1,6 +1,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime"
 import { Athena } from "@sente-ai/stats-core/athena"
 import { ModelStatRepo } from "@sente-ai/stats-core/domain/model"
+import { R2Sql } from "@sente-ai/stats-core/r2-sql"
 import { layer as statsLayer } from "@sente-ai/stats-core/runtime"
 import { syncStats } from "@sente-ai/stats-core/stat-sync"
 import { Cause, Duration, Effect, Layer, Schedule } from "effect"
@@ -8,7 +9,7 @@ import { Cause, Duration, Effect, Layer, Schedule } from "effect"
 const SYNC_INTERVAL = "1 hour"
 const SYNC_INTERVAL_MS = 3_600_000
 
-const runtimeLayer = Layer.mergeAll(statsLayer, Athena.layer)
+const runtimeLayer = Layer.mergeAll(statsLayer, Athena.layer, R2Sql.layer)
 
 const daemon = Effect.gen(function* () {
   yield* Effect.logInfo("stats sync daemon started")
