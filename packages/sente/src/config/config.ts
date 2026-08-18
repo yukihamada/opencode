@@ -11,7 +11,7 @@ import { Flag } from "@sente-ai/core/flag/flag"
 import { Auth } from "../auth"
 import { Env } from "../env"
 import { applyEdits, modify } from "jsonc-parser"
-import { InstallationLocal, InstallationVersion } from "@sente-ai/core/installation/version"
+import { InstallationPublished, InstallationVersion } from "@sente-ai/core/installation/version"
 import { existsSync } from "fs"
 import { Account } from "@/account/account"
 import { isRecord } from "@/util/record"
@@ -437,12 +437,14 @@ const layer = Layer.effect(
 
           const dep = yield* npmSvc
             .install(dir, {
-              add: [
-                {
-                  name: "@sente-ai/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
-                },
-              ],
+              add: InstallationPublished
+                ? [
+                    {
+                      name: "@sente-ai/plugin",
+                      version: InstallationVersion,
+                    },
+                  ]
+                : [],
             })
             .pipe(
               Effect.exit,

@@ -16,7 +16,7 @@ import { FSUtil } from "@sente-ai/core/fs-util"
 import { CurrentWorkingDirectory } from "./tui-cwd"
 import { ConfigPlugin } from "@/config/plugin"
 import { TuiKeybind } from "@sente-ai/tui/config/keybind"
-import { InstallationLocal, InstallationVersion } from "@sente-ai/core/installation/version"
+import { InstallationPublished, InstallationVersion } from "@sente-ai/core/installation/version"
 import { makeRuntime } from "@sente-ai/core/effect/runtime"
 import { Filesystem } from "@/util/filesystem"
 import { ConfigVariable } from "@/config/variable"
@@ -236,12 +236,14 @@ const layer = Layer.effect(
       (dir) =>
         npm
           .install(dir, {
-            add: [
-              {
-                name: "@sente-ai/plugin",
-                version: InstallationLocal ? undefined : InstallationVersion,
-              },
-            ],
+            add: InstallationPublished
+              ? [
+                  {
+                    name: "@sente-ai/plugin",
+                    version: InstallationVersion,
+                  },
+                ]
+              : [],
           })
           .pipe(Effect.forkScoped),
       {
