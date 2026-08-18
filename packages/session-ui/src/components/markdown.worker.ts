@@ -2,7 +2,7 @@
 
 import { ShikiStreamTokenizer } from "@shikijs/stream"
 import { createMarkdownParser } from "@opencode-ai/ui/context/marked-parser"
-import { OpenCodeTheme } from "@opencode-ai/ui/context/marked-theme"
+import { SenteTheme } from "@sente-ai/ui/context/marked-theme"
 import {
   bundledLanguages,
   createHighlighter,
@@ -39,7 +39,7 @@ const parser = createMarkdownParser(async (code, language) => {
   const name = language in bundledLanguages ? language : "text"
   if (!instance.getLoadedLanguages().includes(name))
     await instance.loadLanguage(bundledLanguages[name as BundledLanguage])
-  return instance.codeToHtml(code, { lang: name as BundledLanguage, theme: "OpenCode", tabindex: false })
+  return instance.codeToHtml(code, { lang: name as BundledLanguage, theme: "Sente", tabindex: false })
 })
 
 self.onmessage = (event: MessageEvent<MarkdownWorkerRequest>) => {
@@ -141,7 +141,7 @@ async function highlight(request: Extract<MarkdownWorkerRequest, { type: "highli
 }
 
 function getHighlighter() {
-  return (highlighter ??= createHighlighter({ themes: [OpenCodeTheme], langs: [] }))
+  return (highlighter ??= createHighlighter({ themes: [SenteTheme], langs: [] }))
 }
 
 function post(response: MarkdownWorkerResponse) {

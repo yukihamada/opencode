@@ -4,7 +4,7 @@ import { Font } from "@sente-ai/ui/font"
 import { MetaProvider } from "@solidjs/meta"
 import { MarkedProvider } from "@sente-ai/ui/context/marked"
 import { DialogProvider } from "@sente-ai/ui/context/dialog"
-import { I18nProvider, type UiI18nParams } from "@sente-ai/ui/context"
+import { I18nProvider, pluralCategory, pluralKey, type UiI18nParams, type UiI18nPluralKey } from "@sente-ai/ui/context"
 import { dict as uiEn } from "@sente-ai/ui/i18n/en"
 import { dict as uiZh } from "@sente-ai/ui/i18n/zh"
 import { createEffect, createMemo, Suspense, type ParentProps } from "solid-js"
@@ -68,7 +68,10 @@ function UiI18nBridge(props: ParentProps) {
     document.documentElement.lang = locale()
   })
 
-  return <I18nProvider value={{ locale, t }}>{props.children}</I18nProvider>
+  const plural = (key: UiI18nPluralKey, count: number, params?: UiI18nParams) =>
+    t(pluralKey(key, pluralCategory(locale(), count)) as keyof typeof uiEn, { ...params, count })
+
+  return <I18nProvider value={{ locale, t, plural }}>{props.children}</I18nProvider>
 }
 
 export default function App() {
