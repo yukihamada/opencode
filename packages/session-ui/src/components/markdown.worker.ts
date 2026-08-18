@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import { ShikiStreamTokenizer } from "@shikijs/stream"
-import { createMarkdownParser } from "@opencode-ai/ui/context/marked-parser"
+import { createMarkdownParser } from "@sente-ai/ui/context/marked-parser"
 import { SenteTheme } from "@sente-ai/ui/context/marked-theme"
 import {
   bundledLanguages,
