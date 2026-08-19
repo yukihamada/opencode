@@ -396,13 +396,14 @@ export const RunCommand = effectCmd({
           })()
           const detected = FSUtil.mimeType(resolvedPath)
           const text = content?.toString("utf8")
-          const mime = !args.attach
-            ? isDirectory
-              ? "application/x-directory"
-              : "text/plain"
+          const isImage = detected.startsWith("image/")
+          const mime = isDirectory
+            ? "application/x-directory"
             : content && text !== undefined && Buffer.from(text, "utf8").equals(content)
               ? "text/plain"
-              : detected
+              : isImage || args.attach
+                ? detected
+                : "text/plain"
 
           files.push({
             type: "file",
