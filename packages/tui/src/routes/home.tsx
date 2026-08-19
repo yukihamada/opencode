@@ -19,6 +19,20 @@ const placeholder = {
   shell: ["ls -la", "git status", "pwd"],
 }
 
+function useDynamicPlaceholder() {
+  const sync = useSync()
+  return createMemo(() => {
+    const sessions = sync.data.session
+    if (sessions.length === 0) return placeholder
+    const latest = sessions.toSorted((a, b) => b.time.updated - a.time.updated)[0]
+    if (!latest?.title) return placeholder
+    return {
+      normal: [latest.title, ...placeholder.normal],
+      shell: placeholder.shell,
+    }
+  })
+}
+
 export function Home() {
   const pluginRuntime = usePluginRuntime()
   const sync = useSync()
@@ -30,6 +44,7 @@ export function Home() {
   const editor = useEditorContext()
   const dimensions = useTerminalDimensions()
   const tuiConfig = useTuiConfig()
+  const dynamicPlaceholder = useDynamicPlaceholder()
   const promptMaxWidth = createMemo(() => {
     const configured = tuiConfig.prompt?.max_width
     if (configured === "auto") return Math.max(75, Math.floor(dimensions().width * 0.7))
@@ -80,7 +95,7 @@ export function Home() {
         <box height={1} minHeight={0} flexShrink={1} />
         <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
           <pluginRuntime.Slot name="home_prompt" mode="replace" ref={bind}>
-            <Prompt ref={bind} right={<pluginRuntime.Slot name="home_prompt_right" />} placeholders={placeholder} />
+            <Prompt ref={bind} right={<pluginRuntime.Slot name="home_prompt_right" />} placeholders={dynamicPlaceholder()} />
           </pluginRuntime.Slot>
         </box>
         <pluginRuntime.Slot name="home_bottom" />

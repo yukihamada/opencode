@@ -1,5 +1,5 @@
 import type { TuiPluginApi } from "@sente-ai/plugin/tui"
-import { createMemo, For, type Accessor } from "solid-js"
+import { createMemo, createSignal, For, onCleanup, type Accessor } from "solid-js"
 import { DEFAULT_THEMES, useTheme } from "../../context/theme"
 import { useCommandShortcut } from "../../keymap"
 
@@ -96,7 +96,7 @@ function configShortcut(api: TuiPluginApi, command: string): TipShortcut {
 
 export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
   const theme = useTheme().theme
-  const tipOffset = Math.random()
+  const [tipIndex, setTipIndex] = createSignal(Math.floor(Math.random() * 100))
   const shortcuts: Shortcuts = {
     agentCycle: useCommandShortcut("agent.cycle"),
     childFirst: configShortcut(props.api, "session.child.first"),
@@ -138,8 +138,13 @@ export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
       const value = typeof item === "string" ? item : item(shortcuts)
       return value ? [value] : []
     })
-    return tips[Math.floor(tipOffset * tips.length)] ?? NO_MODELS_TIP
+    return tips[tipIndex() % tips.length] ?? NO_MODELS_TIP
   }, NO_MODELS_TIP)
+
+  const timer = setInterval(() => {
+    setTipIndex((i) => i + 1)
+  }, 8000)
+  onCleanup(() => clearInterval(timer))
   // Solid can expose a memo's initial value while a pure computation is pending.
   const parts = createMemo(() => {
     const value = tip()
