@@ -105,7 +105,12 @@ export function createPathHelpers(scope: () => string) {
   const normalize = (input: string) => {
     const root = scope()
 
-    let path = unquoteGitPath(decodeFilePath(stripQueryAndHash(stripFileProtocol(input))))
+    // Only `file://` URLs use `?`/`#` as query-string / line-anchor delimiters.
+    // Raw filesystem paths may legitimately contain `?` or `#` as literal path
+    // characters (e.g. `src/foo?bar.ts`), so leave those intact.
+    let path = unquoteGitPath(
+      decodeFilePath(input.startsWith("file://") ? stripQueryAndHash(stripFileProtocol(input)) : input),
+    )
 
     // Separator-agnostic prefix stripping for Cygwin/native Windows compatibility
     // Only case-insensitive on Windows (drive letter or UNC paths)

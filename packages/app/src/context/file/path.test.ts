@@ -50,6 +50,20 @@ describe("file path helpers", () => {
     expect(stripQueryAndHash("a/b.ts")).toBe("a/b.ts")
   })
 
+  test("preserves literal ? and # in raw filesystem paths", () => {
+    const path = createPathHelpers(() => "/repo")
+    expect(path.normalize("src/file?name.txt")).toBe("src/file?name.txt")
+    expect(path.normalize("src/file#name.txt")).toBe("src/file#name.txt")
+    expect(path.normalize("/repo/src/file?name.txt")).toBe("src/file?name.txt")
+    expect(path.normalize("./src/file#name.txt")).toBe("src/file#name.txt")
+  })
+
+  test("still strips query/hash from file:// URLs", () => {
+    const path = createPathHelpers(() => "/repo")
+    expect(path.normalize("file:///repo/src/app.ts?start=10&end=20")).toBe("src/app.ts")
+    expect(path.normalize("file:///repo/src/app.ts#L12")).toBe("src/app.ts")
+  })
+
   test("unquotes git escaped octal path strings", () => {
     expect(unquoteGitPath('"a/\\303\\251.txt"')).toBe("a/\u00e9.txt")
     expect(unquoteGitPath('"plain\\nname"')).toBe("plain\nname")
