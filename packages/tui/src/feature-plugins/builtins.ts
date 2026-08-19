@@ -1,5 +1,6 @@
 import type { TuiPlugin, TuiPluginModule } from "@sente-ai/plugin/tui"
 import HomeFooter from "./home/footer"
+import HomeHero from "./home/hero"
 import HomeTips from "./home/tips"
 import SidebarContext from "./sidebar/context"
 import SidebarFiles from "./sidebar/files"
@@ -20,6 +21,7 @@ export type BuiltinTuiPlugin = Omit<TuiPluginModule, "id"> & {
 
 export function createBuiltinPlugins(options: { experimentalEventSystem: boolean }): BuiltinTuiPlugin[] {
   return [
+    HomeHero,
     HomeFooter,
     HomeTips,
     SidebarContext,

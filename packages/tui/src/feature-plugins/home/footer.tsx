@@ -51,6 +51,33 @@ function Mcp(props: { api: TuiPluginApi }) {
   )
 }
 
+function ModelAgent(props: { api: TuiPluginApi }) {
+  const theme = () => props.api.theme.current
+  const config = () => props.api.state.config
+  const model = createMemo(() => config().model ?? "No model")
+  const agent = createMemo(() => config().default_agent ?? "build")
+  const connected = createMemo(() =>
+    props.api.state.provider.some(
+      (item) => item.id !== "sente" || Object.values(item.models).some((m) => m.cost?.input !== 0),
+    ),
+  )
+
+  return (
+    <box flexDirection="row" gap={1} flexShrink={0}>
+      <text fg={theme().text}>
+        {agent()}
+      </text>
+      <text fg={theme().textMuted}>·</text>
+      <text fg={theme().text}>
+        {model()}
+      </text>
+      <Show when={connected()}>
+        <text fg={theme().success}>●</text>
+      </Show>
+    </box>
+  )
+}
+
 function Version(props: { api: TuiPluginApi }) {
   const theme = () => props.api.theme.current
 
@@ -75,6 +102,7 @@ function View(props: { api: TuiPluginApi }) {
     >
       <Directory api={props.api} />
       <Mcp api={props.api} />
+      <ModelAgent api={props.api} />
       <box flexGrow={1} />
       <Version api={props.api} />
     </box>
