@@ -240,7 +240,7 @@ export function Footer(props: {
     { href: "https://teai.io/sente/discord", label: i18n.t("footer.community") },
     { href: "https://x.com/sente", label: "X" },
     { href: githubLink.href, label: i18n.t("header.github") },
-    { href: "https://www.youtube.com/@anomaly-co", label: i18n.t("footer.youtube") },
+    { href: "https://www.youtube.com/@anomalyco", label: i18n.t("footer.youtube") },
   ]
   const bridge = () =>
     props.bridge === undefined

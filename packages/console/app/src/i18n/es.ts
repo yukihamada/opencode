@@ -15,7 +15,7 @@ export const dict = {
   "nav.home": "Inicio",
   "nav.openMenu": "Abrir menú",
   "nav.getStartedFree": "Empezar gratis",
-  "nav.logoAlt": "Sente",
+  "nav.logoAlt": "OpenCode",
 
   "nav.context.copyLogo": "Copiar logo como SVG",
   "nav.context.copyWordmark": "Copiar marca como SVG",
@@ -37,14 +37,14 @@ export const dict = {
   "email.subscribe": "Suscribirse",
   "email.success": "Casi listo, revisa tu bandeja de entrada y confirma tu correo",
 
-  "notFound.title": "No encontrado | sente",
+  "notFound.title": "No encontrado | opencode",
   "notFound.heading": "404 - Página no encontrada",
   "notFound.home": "Inicio",
   "notFound.docs": "Documentación",
   "notFound.github": "GitHub",
   "notFound.discord": "Discord",
-  "notFound.logoLightAlt": "sente logo claro",
-  "notFound.logoDarkAlt": "sente logo oscuro",
+  "notFound.logoLightAlt": "opencode logo claro",
+  "notFound.logoDarkAlt": "opencode logo oscuro",
 
   "user.logout": "Cerrar sesión",
 
@@ -81,25 +81,25 @@ export const dict = {
   "error.reloadAmountMin": "La cantidad de recarga debe ser al menos ${{amount}}",
   "error.reloadTriggerMin": "El disparador de saldo debe ser al menos ${{amount}}",
 
-  "app.meta.description": "Sente - El agente de codificación de código abierto.",
+  "app.meta.description": "OpenCode - El agente de codificación de código abierto.",
 
-  "home.title": "Sente | El agente de codificación IA de código abierto",
+  "home.title": "OpenCode | El agente de codificación IA de código abierto",
 
-  "temp.title": "sente | Agente de codificación IA creado para la terminal",
+  "temp.title": "opencode | Agente de codificación IA creado para la terminal",
   "temp.hero.title": "El agente de codificación IA creado para la terminal",
-  "temp.zen": "sente zen",
+  "temp.zen": "opencode zen",
   "temp.getStarted": "Empezar",
   "temp.feature.native.title": "TUI Nativa",
   "temp.feature.native.body": "Una interfaz de terminal responsiva, nativa y personalizable",
   "temp.feature.zen.beforeLink": "Una lista",
   "temp.feature.zen.link": "seleccionada de modelos",
-  "temp.feature.zen.afterLink": "proporcionada por sente",
+  "temp.feature.zen.afterLink": "proporcionada por opencode",
   "temp.feature.models.beforeLink": "Soporta más de 75 proveedores de LLM a través de",
   "temp.feature.models.afterLink": ", incluyendo modelos locales",
-  "temp.screenshot.caption": "sente TUI con el tema tokyonight",
-  "temp.screenshot.alt": "sente TUI con tema tokyonight",
-  "temp.logoLightAlt": "logo de sente claro",
-  "temp.logoDarkAlt": "logo de sente oscuro",
+  "temp.screenshot.caption": "opencode TUI con el tema tokyonight",
+  "temp.screenshot.alt": "opencode TUI con tema tokyonight",
+  "temp.logoLightAlt": "logo de opencode claro",
+  "temp.logoDarkAlt": "logo de opencode oscuro",
 
   "home.banner.badge": "Nuevo",
   "home.banner.text": "Presentamos Tabs para Desktop.",
@@ -117,9 +117,9 @@ export const dict = {
 
   "home.install.ariaLabel": "Opciones de instalación",
 
-  "home.what.title": "¿Qué es Sente?",
+  "home.what.title": "¿Qué es OpenCode?",
   "home.what.body":
-    "Sente es un agente de código abierto que te ayuda a escribir código en tu terminal, IDE o escritorio.",
+    "OpenCode es un agente de código abierto que te ayuda a escribir código en tu terminal, IDE o escritorio.",
   "home.what.lsp.title": "LSP habilitado",
   "home.what.lsp.body": "Carga automáticamente los LSPs correctos para el LLM",
   "home.what.multiSession.title": "Multi-sesión",
@@ -138,44 +138,44 @@ export const dict = {
 
   "home.growth.title": "El agente de codificación IA de código abierto",
   "home.growth.body":
-    "Con más de <strong>{{stars}}</strong> estrellas en GitHub, <strong>{{contributors}}</strong> colaboradores y más de <strong>{{commits}}</strong> commits, Sente es usado y confiado por más de <strong>{{monthlyUsers}}</strong> desarrolladores cada mes.",
+    "Con más de <strong>{{stars}}</strong> estrellas en GitHub, <strong>{{contributors}}</strong> colaboradores y más de <strong>{{commits}}</strong> commits, OpenCode es usado y confiado por más de <strong>{{monthlyUsers}}</strong> desarrolladores cada mes.",
   "home.growth.githubStars": "Estrellas en GitHub",
   "home.growth.contributors": "Colaboradores",
   "home.growth.monthlyDevs": "Desarrolladores Mensuales",
 
   "home.privacy.title": "Creado pensando en la privacidad",
   "home.privacy.body":
-    "Sente no almacena tu código ni datos de contexto, para que pueda operar en entornos sensibles a la privacidad.",
+    "OpenCode no almacena tu código ni datos de contexto, para que pueda operar en entornos sensibles a la privacidad.",
   "home.privacy.learnMore": "Más información sobre",
   "home.privacy.link": "privacidad",
 
-  "home.faq.q1": "¿Qué es Sente?",
+  "home.faq.q1": "¿Qué es OpenCode?",
   "home.faq.a1":
-    "Sente es un agente de código abierto que te ayuda a escribir y ejecutar código con cualquier modelo de IA. Está disponible como interfaz de terminal, aplicación de escritorio o extensión de IDE.",
-  "home.faq.q2": "¿Cómo uso Sente?",
+    "OpenCode es un agente de código abierto que te ayuda a escribir y ejecutar código con cualquier modelo de IA. Está disponible como interfaz de terminal, aplicación de escritorio o extensión de IDE.",
+  "home.faq.q2": "¿Cómo uso OpenCode?",
   "home.faq.a2.before": "La forma más fácil de empezar es leer la",
   "home.faq.a2.link": "introducción",
-  "home.faq.q3": "¿Necesito suscripciones extra de IA para usar Sente?",
+  "home.faq.q3": "¿Necesito suscripciones extra de IA para usar OpenCode?",
   "home.faq.a3.p1":
-    "No necesariamente, Sente viene con un conjunto de modelos gratuitos que puedes usar sin crear una cuenta.",
+    "No necesariamente, OpenCode viene con un conjunto de modelos gratuitos que puedes usar sin crear una cuenta.",
   "home.faq.a3.p2.beforeZen":
     "Aparte de estos, puedes usar cualquiera de los modelos de codificación populares creando una cuenta de",
   "home.faq.a3.p2.afterZen": ".",
   "home.faq.a3.p3":
-    "Aunque animamos a los usuarios a usar Zen, Sente también funciona con todos los proveedores populares como OpenAI, Anthropic, xAI, etc.",
+    "Aunque animamos a los usuarios a usar Zen, OpenCode también funciona con todos los proveedores populares como OpenAI, Anthropic, xAI, etc.",
   "home.faq.a3.p4.beforeLocal": "Incluso puedes conectar tus",
   "home.faq.a3.p4.localLink": "modelos locales",
-  "home.faq.q4": "¿Puedo usar mis suscripciones de IA existentes con Sente?",
+  "home.faq.q4": "¿Puedo usar mis suscripciones de IA existentes con OpenCode?",
   "home.faq.a4.p1":
-    "Sí, Sente soporta planes de suscripción de los principales proveedores. Puedes usar tus suscripciones de Claude Pro/Max, ChatGPT Plus/Pro o GitHub Copilot.",
-  "home.faq.q5": "¿Solo puedo usar Sente en la terminal?",
-  "home.faq.a5.beforeDesktop": "¡Ya no! Sente ahora está disponible como una aplicación para tu",
+    "Sí, OpenCode soporta planes de suscripción de los principales proveedores. Puedes usar tus suscripciones de Claude Pro/Max, ChatGPT Plus/Pro o GitHub Copilot.",
+  "home.faq.q5": "¿Solo puedo usar OpenCode en la terminal?",
+  "home.faq.a5.beforeDesktop": "¡Ya no! OpenCode ahora está disponible como una aplicación para tu",
   "home.faq.a5.desktop": "escritorio",
   "home.faq.a5.and": "y",
   "home.faq.a5.web": "web",
-  "home.faq.q6": "¿Cuánto cuesta Sente?",
+  "home.faq.q6": "¿Cuánto cuesta OpenCode?",
   "home.faq.a6":
-    "Sente es 100% gratuito de usar. También viene con un conjunto de modelos gratuitos. Puede haber costos adicionales si conectas cualquier otro proveedor.",
+    "OpenCode es 100% gratuito de usar. También viene con un conjunto de modelos gratuitos. Puede haber costos adicionales si conectas cualquier otro proveedor.",
   "home.faq.q7": "¿Qué hay sobre datos y privacidad?",
   "home.faq.a7.p1":
     "Tus datos e información solo se almacenan cuando usas nuestros modelos gratuitos o creas enlaces compartibles.",
@@ -183,8 +183,8 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "nuestros modelos",
   "home.faq.a7.p2.and": "y",
   "home.faq.a7.p2.shareLink": "páginas compartidas",
-  "home.faq.q8": "¿Es Sente de código abierto?",
-  "home.faq.a8.p1": "Sí, Sente es totalmente de código abierto. El código fuente es público en",
+  "home.faq.q8": "¿Es OpenCode de código abierto?",
+  "home.faq.a8.p1": "Sí, OpenCode es totalmente de código abierto. El código fuente es público en",
   "home.faq.a8.p2": "bajo la",
   "home.faq.a8.mitLicense": "Licencia MIT",
   "home.faq.a8.p3":
@@ -192,24 +192,24 @@ export const dict = {
 
   "home.zenCta.title": "Accede a modelos optimizados y confiables para agentes de codificación",
   "home.zenCta.body":
-    "Zen te da acceso a un conjunto seleccionado de modelos de IA que Sente ha probado y evaluado específicamente para agentes de codificación. No necesitas preocuparte por el rendimiento y la calidad inconsistentes entre proveedores, usa modelos validados que funcionan.",
+    "Zen te da acceso a un conjunto seleccionado de modelos de IA que OpenCode ha probado y evaluado específicamente para agentes de codificación. No necesitas preocuparte por el rendimiento y la calidad inconsistentes entre proveedores, usa modelos validados que funcionan.",
   "home.zenCta.link": "Aprende sobre Zen",
 
   "zen.title":
-    "Sente Zen | Un conjunto seleccionado de modelos optimizados y confiables para agentes de codificación",
+    "OpenCode Zen | Un conjunto seleccionado de modelos optimizados y confiables para agentes de codificación",
   "zen.hero.title": "Modelos optimizados y confiables para agentes de codificación",
   "zen.hero.body":
-    "Zen te da acceso a un conjunto seleccionado de modelos de IA que Sente ha probado y evaluado específicamente para agentes de codificación. No necesitas preocuparte por el rendimiento y la calidad inconsistentes, usa modelos validados que funcionan.",
+    "Zen te da acceso a un conjunto seleccionado de modelos de IA que OpenCode ha probado y evaluado específicamente para agentes de codificación. No necesitas preocuparte por el rendimiento y la calidad inconsistentes, usa modelos validados que funcionan.",
 
-  "zen.faq.q1": "¿Qué es Sente Zen?",
+  "zen.faq.q1": "¿Qué es OpenCode Zen?",
   "zen.faq.a1":
-    "Zen es un conjunto seleccionado de modelos de IA probados y evaluados para agentes de codificación, creado por el equipo detrás de Sente.",
+    "Zen es un conjunto seleccionado de modelos de IA probados y evaluados para agentes de codificación, creado por el equipo detrás de OpenCode.",
   "zen.faq.q2": "¿Qué hace a Zen más preciso?",
   "zen.faq.a2":
     "Zen solo proporciona modelos que han sido específicamente probados y evaluados para agentes de codificación. No usarías un cuchillo de mantequilla para cortar carne, no uses modelos pobres para codificar.",
   "zen.faq.q3": "¿Es Zen más barato?",
   "zen.faq.a3":
-    "Zen no tiene fines de lucro. Zen te transfiere los costos de los proveedores de modelos. Cuanto mayor sea el uso de Zen, más podrá Sente negociar mejores tarifas y transferírtelas.",
+    "Zen no tiene fines de lucro. Zen te transfiere los costos de los proveedores de modelos. Cuanto mayor sea el uso de Zen, más podrá OpenCode negociar mejores tarifas y transferírtelas.",
   "zen.faq.q4": "¿Cuánto cuesta Zen?",
   "zen.faq.a4.p1.beforePricing": "Zen",
   "zen.faq.a4.p1.pricingLink": "cobra por solicitud",
@@ -217,7 +217,7 @@ export const dict = {
   "zen.faq.a4.p2.beforeAccount": "Tu costo total depende del uso, y puedes establecer límites de gasto mensuales en tu",
   "zen.faq.a4.p2.accountLink": "cuenta",
   "zen.faq.a4.p3":
-    "Para cubrir costos, Sente añade solo una pequeña tarifa de procesamiento de pagos de $1.23 por cada recarga de saldo de $20.",
+    "Para cubrir costos, OpenCode añade solo una pequeña tarifa de procesamiento de pagos de $1.23 por cada recarga de saldo de $20.",
   "zen.faq.q5": "¿Qué hay sobre datos y privacidad?",
   "zen.faq.a5.beforeExceptions":
     "Todos los modelos Zen están alojados en EE. UU. Los proveedores siguen una política de cero retención y no usan tus datos para entrenamiento de modelos, con las",
@@ -228,7 +228,7 @@ export const dict = {
   "zen.faq.a7": "Sí, puedes deshabilitar la facturación en cualquier momento y usar tu saldo restante.",
   "zen.faq.q8": "¿Puedo usar Zen con otros agentes de codificación?",
   "zen.faq.a8":
-    "Aunque Zen funciona genial con Sente, puedes usar Zen con cualquier agente. Sigue las instrucciones de configuración en tu agente de codificación preferido.",
+    "Aunque Zen funciona genial con OpenCode, puedes usar Zen con cualquier agente. Sigue las instrucciones de configuración en tu agente de codificación preferido.",
 
   "zen.cta.start": "Empieza con Zen",
   "zen.pricing.title": "Añade $20 de saldo prepago",
@@ -237,12 +237,12 @@ export const dict = {
   "zen.problem.title": "¿Qué problema está resolviendo Zen?",
   "zen.problem.body":
     "Hay muchos modelos disponibles, pero solo unos pocos funcionan bien con agentes de codificación. La mayoría de los proveedores los configuran de manera diferente con resultados variables.",
-  "zen.problem.subtitle": "Estamos arreglando esto para todos, no solo para usuarios de Sente.",
+  "zen.problem.subtitle": "Estamos arreglando esto para todos, no solo para usuarios de OpenCode.",
   "zen.problem.item1": "Probando modelos seleccionados y consultando a sus equipos",
   "zen.problem.item2": "Trabajando con proveedores para asegurar que se entreguen correctamente",
   "zen.problem.item3": "Evaluando todas las combinaciones modelo-proveedor que recomendamos",
   "zen.how.title": "Cómo funciona Zen",
-  "zen.how.body": "Aunque sugerimos usar Zen con Sente, puedes usar Zen con cualquier agente.",
+  "zen.how.body": "Aunque sugerimos usar Zen con OpenCode, puedes usar Zen con cualquier agente.",
   "zen.how.step1.title": "Regístrate y añade $20 de saldo",
   "zen.how.step1.beforeLink": "sigue las",
   "zen.how.step1.link": "instrucciones de configuración",
@@ -256,10 +256,9 @@ export const dict = {
     "Todos los modelos Zen están alojados en EE. UU. Los proveedores siguen una política de cero retención y no usan tus datos para entrenamiento de modelos, con las",
   "zen.privacy.exceptionsLink": "siguientes excepciones",
 
-  "go.title": "Sente Go | Modelos de programación de bajo coste para todos",
-  "go.banner.text": "Kimi K3 tiene límites de uso 2x mayores por tiempo limitado",
+  "go.title": "OpenCode Go | Modelos de programación de bajo coste para todos",
   "go.meta.description":
-    "Go comienza en $5 el primer mes, luego 10 $/mes, con generosos límites de solicitudes de 5 horas para Grok 4.5, GLM-5.2, GLM-5.1, Kimi K3, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, DeepSeek V4 Flash y Hy3.",
+    "Go comienza en $5 el primer mes, luego 10 $/mes, con límites de uso generosos y acceso fiable a modelos de programación líderes.",
   "go.hero.title": "Modelos de programación de bajo coste para todos",
   "go.hero.body":
     "Go lleva la programación agéntica a programadores de todo el mundo. Ofrece límites generosos y acceso fiable a los modelos de código abierto más capaces, para que puedas crear con agentes potentes sin preocuparte por el coste o la disponibilidad.",
@@ -280,7 +279,7 @@ export const dict = {
 
   "go.testimonials.brand.zen": "Zen",
   "go.testimonials.brand.go": "Go",
-  "go.testimonials.handle": "@Sente",
+  "go.testimonials.handle": "@OpenCode",
   "go.testimonials.dax.name": "Dax Raad",
   "go.testimonials.dax.title": "ex-CEO, Terminal Products",
   "go.testimonials.dax.quoteAfter": "ha cambiado mi vida, es realmente una obviedad.",
@@ -302,15 +301,14 @@ export const dict = {
   "go.testimonials.frank.quote": "Ojalá siguiera en Nvidia.",
   "go.problem.title": "¿Qué problema resuelve Go?",
   "go.problem.body":
-    "Nos enfocamos en llevar la experiencia de Sente a tantas personas como sea posible. Sente Go es una suscripción de bajo coste: $5 el primer mes, luego 10 $/mes. Proporciona límites generosos y acceso fiable a los modelos de código abierto más capaces.",
+    "Nos enfocamos en llevar la experiencia de OpenCode a tantas personas como sea posible. OpenCode Go es una suscripción de bajo coste: $5 el primer mes, luego 10 $/mes. Proporciona límites generosos y acceso fiable a los modelos de código abierto más capaces.",
   "go.problem.subtitle": " ",
   "go.problem.item1": "Precios de suscripción de bajo coste",
   "go.problem.item2": "Límites generosos y acceso fiable",
   "go.problem.item3": "Creado para tantos programadores como sea posible",
-  "go.problem.item4":
-    "Incluye Grok 4.5, GLM-5.2, GLM-5.1, Kimi K3, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, DeepSeek V4 Flash y Hy3",
+  "go.problem.item4": "Una selección de modelos probados para programación agéntica",
   "go.how.title": "Cómo funciona Go",
-  "go.how.body": "Go comienza en $5 el primer mes, luego 10 $/mes. Puedes usarlo con Sente o cualquier agente.",
+  "go.how.body": "Go comienza en $5 el primer mes, luego 10 $/mes. Puedes usarlo con OpenCode o cualquier agente.",
   "go.how.step1.title": "Crear una cuenta",
   "go.how.step1.beforeLink": "sigue las",
   "go.how.step1.link": "instrucciones de configuración",
@@ -326,14 +324,14 @@ export const dict = {
   "go.privacy.beforeExceptions":
     "Los modelos de Go están alojados en EE. UU. Los proveedores siguen una política de retención cero y no utilizan tus datos para el entrenamiento de modelos, con las",
   "go.privacy.exceptionsLink": "siguientes excepciones",
-  "go.faq.q1": "¿Qué es Sente Go?",
+  "go.faq.q1": "¿Qué es OpenCode Go?",
   "go.faq.a1":
     "Go es una suscripción de bajo coste que te da acceso fiable a modelos de código abierto capaces para programación agéntica.",
   "go.faq.q2": "¿Qué modelos incluye Go?",
   "go.faq.a2": "Go incluye los modelos que se indican abajo, con límites generosos y acceso confiable.",
   "go.faq.q3": "¿Es Go lo mismo que Zen?",
   "go.faq.a3":
-    "No. Zen es pago por uso, mientras que Go comienza en $5 el primer mes, luego 10 $/mes, con límites generosos y acceso fiable a los modelos de código abierto Grok 4.5, GLM-5.2, GLM-5.1, Kimi K3, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, DeepSeek V4 Flash y Hy3.",
+    "No. Zen es de pago por uso, mientras que Go comienza en $5 el primer mes, luego 10 $/mes, con límites generosos y acceso fiable a una selección de modelos.",
   "go.faq.q4": "¿Cuánto cuesta Go?",
   "go.faq.a4.p1.beforePricing": "Go cuesta",
   "go.faq.a4.p1.pricingLink": "$5 el primer mes",
@@ -342,8 +340,24 @@ export const dict = {
   "go.faq.a4.p2.accountLink": "cuenta",
   "go.faq.a4.p3": "Cancela en cualquier momento.",
   "go.faq.q5": "¿Qué pasa con los datos y la privacidad?",
-  "go.faq.a5.body":
-    "El plan está diseñado principalmente para usuarios internacionales, con modelos alojados en EE. UU., UE y Singapur para un acceso global estable. Nuestros proveedores siguen una política de retención cero y no utilizan tus datos para el entrenamiento de modelos.",
+  "go.faq.a5.model": "Modelo",
+  "go.faq.a5.training": "Entrenamiento del modelo",
+  "go.faq.a5.retention": "Retención de datos",
+  "go.faq.a5.retention30": "30 días",
+  "go.faq.a5.retention0": "0 días",
+  "go.faq.a5.used": "Utilizado",
+  "go.faq.a5.notUsed": "No utilizado",
+  "go.faq.a5.noAgreement": "Sin acuerdo",
+  "go.faq.a5.notZdr": "Sin ZDR",
+  "go.faq.a5.grokRetention":
+    "ZDR deshabilita funciones importantes de la API que dependen de datos almacenados, incluidas la Responses API con estado, Files and Collections y la Batch API.",
+  "go.faq.a5.gptRetention":
+    "Se generan registros de supervisión de abusos para todo el uso de funciones de la API y se conservan durante un máximo de 30 días.",
+  "go.faq.a5.museRetention":
+    "Precios de tokens muy reducidos a cambio de permitir que tus prompts y las respuestas generadas se utilicen para entrenar futuros modelos de Meta.",
+  "go.faq.a5.learnMore": "Más información",
+  "go.faq.a5.deepseekRetention":
+    "El acuerdo de ZDR se renueva mensualmente. El acuerdo actual es válido hasta el 31 de agosto de 2026.",
   "go.faq.a5.beforeExceptions":
     "Los modelos de Go están alojados en EE. UU. Los proveedores siguen una política de retención cero y no utilizan tus datos para el entrenamiento de modelos, con las",
   "go.faq.a5.exceptionsLink": "siguientes excepciones",
@@ -357,7 +371,7 @@ export const dict = {
 
   "go.faq.q9": "¿Cuál es la diferencia entre los modelos gratuitos y Go?",
   "go.faq.a9":
-    "Los modelos gratuitos incluyen Big Pickle más modelos promocionales disponibles en el momento, con una cuota de 200 solicitudes/día. Go incluye Grok 4.5, GLM-5.2, GLM-5.1, Kimi K3, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, DeepSeek V4 Flash y Hy3 con cuotas de solicitud más altas aplicadas a través de ventanas móviles (5 horas, semanal y mensual), aproximadamente equivalente a 12 $ por 5 horas, 30 $ por semana y 60 $ por mes (los recuentos reales de solicitudes varían según el modelo y el uso).",
+    "Los modelos gratuitos incluyen Big Pickle y los modelos promocionales disponibles en ese momento, con una cuota de 200 solicitudes/día. Go ofrece una selección de modelos con cuotas de solicitudes más altas aplicadas en ventanas móviles (de 5 horas, semanales y mensuales), aproximadamente equivalentes a 12 $ por 5 horas, 30 $ por semana y 60 $ por mes (la cantidad real de solicitudes varía según el modelo y el uso).",
 
   "zen.api.error.rateLimitExceeded": "Límite de tasa excedido. Por favor, inténtalo de nuevo más tarde.",
   "zen.api.error.modelNotSupported": "Modelo {{model}} no soportado",
@@ -382,15 +396,18 @@ export const dict = {
     "Has alcanzado tu límite de gasto mensual de ${{amount}}. Gestiona tus límites aquí: {{membersUrl}}",
   "zen.api.error.modelDisabled": "El modelo está deshabilitado",
   "zen.api.error.regionNotAllowed":
-    "Este modelo está alojado en China. Si quieres usar este modelo, actívalo en tu configuración: {{consoleGoUrl}}",
+    "La versión más reciente de este modelo solo está disponible alojada en China y requiere una aceptación explícita: {{consoleGoUrl}}",
+  "zen.api.error.countryNotAllowed": "Este modelo no está disponible en tu país.",
+  "zen.api.error.trainingNotAllowed":
+    "Este modelo recopila datos que se utilizan para mejorar su calidad y requiere tu consentimiento explícito: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
-    "La promoción gratuita de {{model}} ha finalizado. Puedes seguir usando el modelo suscribiéndote a Sente Go - {{link}}",
+    "La promoción gratuita de {{model}} ha finalizado. Puedes seguir usando el modelo suscribiéndote a OpenCode Go - {{link}}",
 
-  "black.meta.title": "Sente Black | Accede a los mejores modelos de codificación del mundo",
-  "black.meta.description": "Obtén acceso a Claude, GPT, Gemini y más con los planes de suscripción de Sente Black.",
+  "black.meta.title": "OpenCode Black | Accede a los mejores modelos de codificación del mundo",
+  "black.meta.description": "Obtén acceso a Claude, GPT, Gemini y más con los planes de suscripción de OpenCode Black.",
   "black.hero.title": "Accede a los mejores modelos de codificación del mundo",
   "black.hero.subtitle": "Incluyendo Claude, GPT, Gemini y más",
-  "black.title": "Sente Black | Precios",
+  "black.title": "OpenCode Black | Precios",
   "black.paused": "La inscripción al plan Black está temporalmente pausada.",
   "black.plan.icon20": "Plan Black 20",
   "black.plan.icon100": "Plan Black 100",
@@ -409,10 +426,10 @@ export const dict = {
   "black.action.continue": "Continuar",
   "black.finePrint.beforeTerms": "Los precios mostrados no incluyen impuestos aplicables",
   "black.finePrint.terms": "Términos de Servicio",
-  "black.workspace.title": "Sente Black | Seleccionar Espacio de Trabajo",
+  "black.workspace.title": "OpenCode Black | Seleccionar Espacio de Trabajo",
   "black.workspace.selectPlan": "Selecciona un espacio de trabajo para este plan",
   "black.workspace.name": "Espacio de trabajo {{n}}",
-  "black.subscribe.title": "Suscribirse a Sente Black",
+  "black.subscribe.title": "Suscribirse a OpenCode Black",
   "black.subscribe.paymentMethod": "Método de pago",
   "black.subscribe.loadingPaymentForm": "Cargando formulario de pago...",
   "black.subscribe.selectWorkspaceToContinue": "Selecciona un espacio de trabajo para continuar",
@@ -424,9 +441,9 @@ export const dict = {
   "black.subscribe.processing": "Procesando...",
   "black.subscribe.submit": "Suscribirse ${{plan}}",
   "black.subscribe.form.chargeNotice": "Solo se te cobrará cuando tu suscripción se active",
-  "black.subscribe.success.title": "Estás en la lista de espera de Sente Black",
+  "black.subscribe.success.title": "Estás en la lista de espera de OpenCode Black",
   "black.subscribe.success.subscriptionPlan": "Plan de suscripción",
-  "black.subscribe.success.planName": "Sente Black {{plan}}",
+  "black.subscribe.success.planName": "OpenCode Black {{plan}}",
   "black.subscribe.success.amount": "Cantidad",
   "black.subscribe.success.amountValue": "${{plan}} al mes",
   "black.subscribe.success.paymentMethod": "Método de pago",
@@ -455,15 +472,15 @@ export const dict = {
     "Accede a modelos configurados para un rendimiento óptimo - sin degradaciones ni enrutamiento a proveedores más baratos.",
   "workspace.newUser.feature.lockin.title": "Sin Bloqueo",
   "workspace.newUser.feature.lockin.body":
-    "Usa Zen con cualquier agente de codificación, y continúa usando otros proveedores con sente cuando quieras.",
+    "Usa Zen con cualquier agente de codificación, y continúa usando otros proveedores con opencode cuando quieras.",
   "workspace.newUser.copyApiKey": "Copiar clave API",
   "workspace.newUser.copyKey": "Copiar Clave",
   "workspace.newUser.copied": "¡Copiada!",
   "workspace.newUser.step.enableBilling": "Habilitar facturación",
   "workspace.newUser.step.login.before": "Ejecuta",
-  "workspace.newUser.step.login.after": "y selecciona sente",
+  "workspace.newUser.step.login.after": "y selecciona opencode",
   "workspace.newUser.step.pasteKey": "Pega tu clave API",
-  "workspace.newUser.step.models.before": "Inicia sente y ejecuta",
+  "workspace.newUser.step.models.before": "Inicia opencode y ejecuta",
   "workspace.newUser.step.models.after": "para seleccionar un modelo",
 
   "workspace.models.title": "Modelos",
@@ -509,10 +526,10 @@ export const dict = {
   "workspace.cost.subscriptionShort": "sub",
 
   "workspace.keys.title": "Claves API",
-  "workspace.keys.subtitle": "Gestiona tus claves API para acceder a los servicios de sente.",
+  "workspace.keys.subtitle": "Gestiona tus claves API para acceder a los servicios de opencode.",
   "workspace.keys.create": "Crear Clave API",
   "workspace.keys.placeholder": "Introduce nombre de la clave",
-  "workspace.keys.empty": "Crea una clave API de sente Gateway",
+  "workspace.keys.empty": "Crea una clave API de opencode Gateway",
   "workspace.keys.table.name": "Nombre",
   "workspace.keys.table.key": "Clave",
   "workspace.keys.table.createdBy": "Creado Por",
@@ -627,15 +644,15 @@ export const dict = {
   "workspace.black.time.minutes": "minutos",
   "workspace.black.time.fewSeconds": "unos pocos segundos",
   "workspace.black.subscription.title": "Suscripción",
-  "workspace.black.subscription.message": "Estás suscrito a Sente Black por ${{plan}} al mes.",
+  "workspace.black.subscription.message": "Estás suscrito a OpenCode Black por ${{plan}} al mes.",
   "workspace.black.subscription.manage": "Gestionar Suscripción",
   "workspace.black.subscription.rollingUsage": "Uso de 5 horas",
   "workspace.black.subscription.weeklyUsage": "Uso Semanal",
   "workspace.black.subscription.resetsIn": "Se reinicia en",
   "workspace.black.subscription.useBalance": "Usa tu saldo disponible después de alcanzar los límites de uso",
   "workspace.black.waitlist.title": "Lista de Espera",
-  "workspace.black.waitlist.joined": "Estás en la lista de espera para el plan Sente Black de ${{plan}} al mes.",
-  "workspace.black.waitlist.ready": "Estamos listos para inscribirte en el plan Sente Black de ${{plan}} al mes.",
+  "workspace.black.waitlist.joined": "Estás en la lista de espera para el plan OpenCode Black de ${{plan}} al mes.",
+  "workspace.black.waitlist.ready": "Estamos listos para inscribirte en el plan OpenCode Black de ${{plan}} al mes.",
   "workspace.black.waitlist.leave": "Abandonar Lista de Espera",
   "workspace.black.waitlist.leaving": "Abandonando...",
   "workspace.black.waitlist.left": "Abandonada",
@@ -653,7 +670,7 @@ export const dict = {
   "workspace.lite.time.minute": "minuto",
   "workspace.lite.time.minutes": "minutos",
   "workspace.lite.time.fewSeconds": "unos pocos segundos",
-  "workspace.lite.subscription.message": "Estás suscrito a Sente Go.",
+  "workspace.lite.subscription.message": "Estás suscrito a OpenCode Go.",
   "workspace.lite.subscription.manage": "Gestionar Suscripción",
   "workspace.lite.subscription.rollingUsage": "Uso Continuo",
   "workspace.lite.subscription.weeklyUsage": "Uso Semanal",
@@ -661,20 +678,20 @@ export const dict = {
   "workspace.lite.subscription.resetsIn": "Se reinicia en",
   "workspace.lite.subscription.useBalance": "Usa tu saldo disponible después de alcanzar los límites de uso",
   "workspace.lite.subscription.selectProvider":
-    'Selecciona "Sente Go" como proveedor en tu configuración de sente para usar los modelos Go.',
+    'Selecciona "OpenCode Go" como proveedor en tu configuración de opencode para usar los modelos Go.',
   "workspace.lite.providers.title": "Proveedores",
   "workspace.lite.providers.description": "Controla qué proveedores se usan para el enrutamiento.",
   "workspace.lite.providers.useChina": "Activar modelos alojados en China",
   "workspace.lite.black.message":
-    "Actualmente estás suscrito a Sente Black o estás en la lista de espera. Por favor, cancela la suscripción primero si deseas cambiar a Go.",
+    "Actualmente estás suscrito a OpenCode Black o estás en la lista de espera. Por favor, cancela la suscripción primero si deseas cambiar a Go.",
   "workspace.lite.other.message":
-    "Otro miembro de este espacio de trabajo ya está suscrito a Sente Go. Solo un miembro por espacio de trabajo puede suscribirse.",
+    "Otro miembro de este espacio de trabajo ya está suscrito a OpenCode Go. Solo un miembro por espacio de trabajo puede suscribirse.",
   "workspace.lite.promo.description":
-    "Sente Go comienza en {{price}}, luego $10/mes, y ofrece acceso confiable a modelos de codificación abiertos populares con límites de uso generosos.",
+    "OpenCode Go comienza en {{price}}, luego $10/mes, y ofrece acceso confiable a modelos de codificación abiertos populares con límites de uso generosos.",
   "workspace.lite.promo.price": "$5 el primer mes",
   "workspace.lite.promo.modelsTitle": "Qué incluye",
   "workspace.lite.promo.footer":
-    "El plan está diseñado principalmente para usuarios internacionales, con modelos alojados en EE. UU., la UE y Singapur para un acceso global estable. Los precios y los límites de uso pueden cambiar a medida que aprendemos del uso inicial y los comentarios.",
+    "El plan está diseñado principalmente para usuarios internacionales y ofrece un acceso global estable. Los precios y los límites de uso pueden cambiar a medida que aprendemos del uso inicial y de los comentarios recibidos.",
   "workspace.lite.promo.subscribe": "Suscribirse a Go",
   "workspace.lite.promo.subscribing": "Redirigiendo...",
   "workspace.lite.promo.otherMethods": "Otros métodos de pago",
@@ -714,15 +731,15 @@ export const dict = {
   "workspace.referral.apply.confirmBody": "Aplica {{amount}} para reducir el uso actual de este workspace.",
   "workspace.referral.apply.confirmAction": "Aplicar",
 
-  "download.title": "Sente | Descargar",
-  "download.meta.description": "Descarga Sente para macOS, Windows y Linux",
-  "download.hero.title": "Descargar Sente Desktop",
+  "download.title": "OpenCode | Descargar",
+  "download.meta.description": "Descarga OpenCode para macOS, Windows y Linux",
+  "download.hero.title": "Descargar OpenCode Desktop",
   "download.hero.subtitle": "Disponible en Beta para macOS, Windows y Linux",
   "download.hero.button": "Descargar para {{os}}",
-  "download.section.terminal": "Sente Terminal",
-  "download.section.desktop": "Sente Desktop",
-  "download.section.extensions": "Extensiones Sente",
-  "download.section.integrations": "Integraciones Sente",
+  "download.section.terminal": "OpenCode Terminal",
+  "download.section.desktop": "OpenCode Desktop",
+  "download.section.extensions": "Extensiones OpenCode",
+  "download.section.integrations": "Integraciones OpenCode",
   "download.action.download": "Descargar",
   "download.action.install": "Instalar",
 
@@ -733,26 +750,26 @@ export const dict = {
   "download.platform.linuxRpm": "Linux (.rpm)",
 
   "download.faq.a3.beforeLocal":
-    "No necesariamente, pero probablemente. Necesitarás una suscripción de IA si quieres conectar Sente a un proveedor de pago, aunque puedes trabajar con",
+    "No necesariamente, pero probablemente. Necesitarás una suscripción de IA si quieres conectar OpenCode a un proveedor de pago, aunque puedes trabajar con",
   "download.faq.a3.localLink": "modelos locales",
   "download.faq.a3.afterLocal.beforeZen": "gratis. Aunque animamos a los usuarios a usar",
   "download.faq.a3.afterZen":
-    ", Sente funciona con todos los proveedores populares como OpenAI, Anthropic, xAI, etc.",
+    ", OpenCode funciona con todos los proveedores populares como OpenAI, Anthropic, xAI, etc.",
 
-  "download.faq.a5.p1": "Sente es 100% gratuito de usar.",
+  "download.faq.a5.p1": "OpenCode es 100% gratuito de usar.",
   "download.faq.a5.p2.beforeZen":
-    "Cualquier costo adicional vendrá de tu suscripción a un proveedor de modelos. Aunque Sente funciona con cualquier proveedor de modelos, recomendamos usar",
+    "Cualquier costo adicional vendrá de tu suscripción a un proveedor de modelos. Aunque OpenCode funciona con cualquier proveedor de modelos, recomendamos usar",
   "download.faq.a5.p2.afterZen": ".",
 
-  "download.faq.a6.p1": "Tus datos e información solo se almacenan cuando creas enlaces compartibles en Sente.",
+  "download.faq.a6.p1": "Tus datos e información solo se almacenan cuando creas enlaces compartibles en OpenCode.",
   "download.faq.a6.p2.beforeShare": "Más información sobre",
   "download.faq.a6.shareLink": "páginas compartidas",
 
-  "enterprise.title": "Sente | Soluciones empresariales para tu organización",
-  "enterprise.meta.description": "Contacta a Sente para soluciones empresariales",
+  "enterprise.title": "OpenCode | Soluciones empresariales para tu organización",
+  "enterprise.meta.description": "Contacta a OpenCode para soluciones empresariales",
   "enterprise.hero.title": "Tu código es tuyo",
   "enterprise.hero.body1":
-    "Sente opera de forma segura dentro de tu organización sin almacenar datos ni contexto, y sin restricciones de licencia ni reclamaciones de propiedad. Inicia una prueba con tu equipo, luego despliégalo en toda tu organización integrándolo con tu SSO y pasarela de IA interna.",
+    "OpenCode opera de forma segura dentro de tu organización sin almacenar datos ni contexto, y sin restricciones de licencia ni reclamaciones de propiedad. Inicia una prueba con tu equipo, luego despliégalo en toda tu organización integrándolo con tu SSO y pasarela de IA interna.",
   "enterprise.hero.body2": "Déjanos saber cómo podemos ayudar.",
   "enterprise.form.name.label": "Nombre completo",
   "enterprise.form.name.placeholder": "Jeff Bezos",
@@ -774,29 +791,29 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "Formato de correo inválido.",
   "enterprise.form.error.internalServer": "Error interno del servidor.",
   "enterprise.faq.title": "FAQ",
-  "enterprise.faq.q1": "¿Qué es Sente Enterprise?",
+  "enterprise.faq.q1": "¿Qué es OpenCode Enterprise?",
   "enterprise.faq.a1":
-    "Sente Enterprise es para organizaciones que quieren asegurar que su código y datos nunca salgan de su infraestructura. Puede hacer esto usando una configuración centralizada que se integra con tu SSO y pasarela de IA interna.",
-  "enterprise.faq.q2": "¿Cómo empiezo con Sente Enterprise?",
+    "OpenCode Enterprise es para organizaciones que quieren asegurar que su código y datos nunca salgan de su infraestructura. Puede hacer esto usando una configuración centralizada que se integra con tu SSO y pasarela de IA interna.",
+  "enterprise.faq.q2": "¿Cómo empiezo con OpenCode Enterprise?",
   "enterprise.faq.a2":
-    "Simplemente empieza con una prueba interna con tu equipo. Sente por defecto no almacena tu código ni datos de contexto, haciendo fácil empezar. Luego contáctanos para discutir precios y opciones de implementación.",
+    "Simplemente empieza con una prueba interna con tu equipo. OpenCode por defecto no almacena tu código ni datos de contexto, haciendo fácil empezar. Luego contáctanos para discutir precios y opciones de implementación.",
   "enterprise.faq.q3": "¿Cómo funciona el precio para empresas?",
   "enterprise.faq.a3":
     "Ofrecemos precios empresariales por asiento. Si tienes tu propia pasarela de LLM, no cobramos por los tokens usados. Para más detalles, contáctanos para una cotización personalizada basada en las necesidades de tu organización.",
-  "enterprise.faq.q4": "¿Están mis datos seguros con Sente Enterprise?",
+  "enterprise.faq.q4": "¿Están mis datos seguros con OpenCode Enterprise?",
   "enterprise.faq.a4":
-    "Sí. Sente no almacena tu código ni datos de contexto. Todo el procesamiento ocurre localmente o a través de llamadas directas a la API de tu proveedor de IA. Con configuración central y integración SSO, tus datos permanecen seguros dentro de la infraestructura de tu organización.",
+    "Sí. OpenCode no almacena tu código ni datos de contexto. Todo el procesamiento ocurre localmente o a través de llamadas directas a la API de tu proveedor de IA. Con configuración central y integración SSO, tus datos permanecen seguros dentro de la infraestructura de tu organización.",
 
-  "brand.title": "Sente | Marca",
-  "brand.meta.description": "Guías de marca de Sente",
+  "brand.title": "OpenCode | Marca",
+  "brand.meta.description": "Guías de marca de OpenCode",
   "brand.heading": "Guías de marca",
-  "brand.subtitle": "Recursos y activos para ayudarte a trabajar con la marca Sente.",
+  "brand.subtitle": "Recursos y activos para ayudarte a trabajar con la marca OpenCode.",
   "brand.downloadAll": "Descargar todos los activos",
 
-  "changelog.title": "Sente | Registro de cambios",
-  "changelog.meta.description": "Notas de versión y registro de cambios de Sente",
+  "changelog.title": "OpenCode | Registro de cambios",
+  "changelog.meta.description": "Notas de versión y registro de cambios de OpenCode",
   "changelog.hero.title": "Registro de cambios",
-  "changelog.hero.subtitle": "Nuevas actualizaciones y mejoras para Sente",
+  "changelog.hero.subtitle": "Nuevas actualizaciones y mejoras para OpenCode",
   "changelog.empty": "No se encontraron entradas en el registro de cambios.",
   "changelog.viewJson": "Ver JSON",
 
