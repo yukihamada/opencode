@@ -178,7 +178,7 @@ const layer = Layer.effect(
         key: SystemContext.Key.make("core/model"),
         codec: Schema.toCodecJson(Schema.String),
         load: Effect.succeed(
-          [model.providerID, model.id, ...(model.variant === "default" ? [] : [model.variant])].join("/"),
+          [model.providerID, model.id, ...(model.variant && model.variant !== "default" ? [model.variant] : [])].join("/"),
         ),
         baseline: (model) => `The model you are running as is: ${model}`,
         update: (_previous, model) => `The model you are running as is now: ${model}`,

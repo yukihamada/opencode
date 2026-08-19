@@ -752,8 +752,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
       ])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[1]?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Changed context" }])
@@ -789,7 +789,10 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-build", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([
+        "Build agent instructions",
+        "Initial context\n\nThe model you are running as is: fake/fake-model",
+      ])
     }),
   )
 
@@ -815,7 +818,7 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-reviewer", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context\n\nThe model you are running as is: fake/fake-model"])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
@@ -844,7 +847,7 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-selected", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context\n\nThe model you are running as is: fake/fake-model"])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
@@ -871,8 +874,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context\n\nBuild skills"],
-        ["Initial context\n\nBuild skills"],
+        ["Initial context\n\nBuild skills\n\nThe model you are running as is: fake/fake-model"],
+        ["Initial context\n\nBuild skills\n\nThe model you are running as is: fake/fake-model"],
       ])
       expect(systemTexts(requests[1]!)).toContainEqual(expect.stringContaining("Reviewer skills"))
     }),
@@ -905,7 +908,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context\n\nBuild skills"],
+        ["Initial context\n\nBuild skills\n\nThe model you are running as is: fake/fake-model"],
       ])
     }),
   )
@@ -934,7 +937,9 @@ describe("SessionRunnerLLM", () => {
       response = []
       yield* session.resume(sessionID)
       expect(requests.map((request) => request.model)).toEqual([model])
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([["Initial context"]])
+      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+      ])
     }),
   )
 
@@ -983,9 +988,9 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
       ])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[2]?.messages.filter((message) => message.role === "system")).toHaveLength(2)
@@ -1029,9 +1034,9 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
       ])
     }),
   )
@@ -1066,8 +1071,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Replacement context"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+        ["Replacement context\n\nThe model you are running as is: fake/fake-model"],
       ])
       yield* replaySessionProjection(sessionID)
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
@@ -1205,7 +1210,9 @@ describe("SessionRunnerLLM", () => {
       expect(summary).toContain(oversized)
       expect(continuation).not.toContain("OVERSIZED_BOUNDARY")
       expect(continuation).not.toContain("OVERSIZED_END")
-      expect(continuation).toContain("<recent-context>\n\n</recent-context>")
+      expect(continuation).toContain(
+        "<recent-context>\n[System update]: The model you are running as is now: fake/compact\n</recent-context>",
+      )
     }),
   )
 
@@ -1302,8 +1309,9 @@ describe("SessionRunnerLLM", () => {
       expect(requests).toHaveLength(2)
       const context = yield* session.context(sessionID)
       expect(context.some((message) => message.type === "compaction")).toBe(false)
-      expect(context.slice(-2)).toMatchObject([
+      expect(context.slice(-3)).toMatchObject([
         { type: "user", text: "Continue" },
+        { type: "system", text: "The model you are running as is now: fake/recovery" },
         { type: "assistant", finish: "error", error: { message: "prompt too long" } },
       ])
     }),
@@ -1366,7 +1374,9 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([
+        "Initial context\n\nThe model you are running as is: fake/fake-model",
+      ])
       expect(systemTexts(requests.at(-1)!)).toContain("Changed context")
     }),
   )
@@ -1565,10 +1575,10 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests.map((request) => request.model)).toEqual([model, replacementModel])
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
+        ["Initial context\n\nThe model you are running as is: fake/fake-model"],
       ])
-      expect(systemTexts(requests[1]!)).toContain("Replacement context")
+      expect(systemTexts(requests[1]!)).toContain("Replacement context\n\nThe model you are running as is now: fake/replacement")
     }),
   )
 

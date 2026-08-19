@@ -16,10 +16,12 @@ const session = (input: {
   directory?: string
   parentID?: string
   archived?: number
+  hidden?: boolean
   updated?: number
 }) => ({
   id: input.id,
   parentID: input.parentID,
+  hidden: input.hidden,
   projectID: "project",
   cost: 0,
   tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -81,6 +83,7 @@ describe("Home V2 session index", () => {
       session({ id: "root", updated: 30 }),
       activeNull,
       session({ id: "child", parentID: "root", updated: 40 }),
+      session({ id: "hidden", hidden: true, updated: 45 }),
       session({ id: "archived", archived: 50, updated: 50 }),
     ])
 
@@ -97,6 +100,11 @@ describe("Home V2 session index", () => {
       expect.objectContaining({
         id: "active-null",
         time: { created: 1, updated: 20, archived: null },
+      }),
+      expect.objectContaining({
+        id: "child",
+        parentID: "root",
+        time: { created: 1, updated: 40 },
       }),
     ])
   })

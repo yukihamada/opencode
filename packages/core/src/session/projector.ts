@@ -11,7 +11,6 @@ import { WorkspaceTable } from "../control-plane/workspace.sql"
 import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
-import { SessionContextEpoch } from "./context-epoch"
 import { WorkspaceV2 } from "../workspace"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
@@ -366,8 +365,8 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
-        // Rebuild the context epoch so the agent's baseline reflects the newly selected model.
-        yield* SessionContextEpoch.reset(db, event.data.sessionID)
+        // The model context source flows through SessionContextEpoch.reconcile as a
+        // System update on the next turn, keeping the durable baseline intact.
         yield* run(db, event)
       }),
     )

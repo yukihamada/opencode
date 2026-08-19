@@ -196,7 +196,7 @@ describe("config queries", () => {
     } as unknown as SenteClient
 
     const result = await new QueryClient().fetchQuery(
-      loadGlobalConfigQuery(ServerScope.local, sdk),
+      loadGlobalConfigQuery(ServerScope.local, sdk, Promise.resolve("v2")),
     )
 
     expect(result).toEqual({})
@@ -217,7 +217,7 @@ describe("config queries", () => {
     } as unknown as SenteClient
 
     const result = await new QueryClient().fetchQuery(
-      loadGlobalConfigQuery(ServerScope.local, sdk),
+      loadGlobalConfigQuery(ServerScope.local, sdk, Promise.resolve("v1")),
     )
 
     expect(result).toEqual(config)

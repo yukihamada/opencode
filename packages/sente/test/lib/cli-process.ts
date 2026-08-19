@@ -63,6 +63,10 @@ function isolatedEnv(home: string, configJson: string): Record<string, string> {
   return {
     SENTE_TEST_HOME: home,
     HOME: home,
+    // Pin the locale so yargs help output is deterministic regardless of the
+    // developer's LANG (yargs localizes "Options"/[boolean] etc.).
+    LANG: "en_US.UTF-8",
+    LC_ALL: "en_US.UTF-8",
     XDG_CONFIG_HOME: path.join(home, ".config"),
     XDG_DATA_HOME: path.join(home, ".local/share"),
     XDG_STATE_HOME: path.join(home, ".local/state"),

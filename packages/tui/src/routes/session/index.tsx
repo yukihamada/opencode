@@ -344,6 +344,9 @@ export function Session() {
   let seeded = false
   let scroll: ScrollBoxRenderable
   let prompt: PromptRef | undefined
+  const [autoScrollEnabled, setAutoScrollEnabled] = createSignal(true)
+  let lastScrollY = 0
+  let scrollTimeout: ReturnType<typeof setTimeout> | undefined
   const bind = (r: PromptRef | undefined) => {
     prompt = r
     promptRef.set(r)
@@ -422,6 +425,7 @@ export function Session() {
   }
 
   function toBottom() {
+    setAutoScrollEnabled(true)
     setTimeout(() => {
       if (!scroll || scroll.isDestroyed) return
       scroll.scrollTo(scroll.scrollHeight)
@@ -1179,7 +1183,22 @@ export function Session() {
           <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
             <Show when={session()}>
               <scrollbox
-                ref={(r) => (scroll = r)}
+                ref={(r) => {
+                  scroll = r
+                  createEffect(on(() => scroll.y, (y) => {
+                    if (y < lastScrollY) {
+                      // User scrolled up, disable autoscroll temporarily
+                      setAutoScrollEnabled(false)
+                      clearTimeout(scrollTimeout)
+                      scrollTimeout = setTimeout(() => setAutoScrollEnabled(true), 5000) // Re-enable after 5s inactivity
+                    } else if (y >= scroll.scrollHeight - scroll.viewport.height) {
+                      // User scrolled to bottom, re-enable autoscroll
+                      setAutoScrollEnabled(true)
+                      clearTimeout(scrollTimeout)
+                    }
+                    lastScrollY = y
+                  }))
+                }}
                 viewportOptions={{
                   paddingRight: showScrollbar() ? 1 : 0,
                 }}
@@ -1191,8 +1210,8 @@ export function Session() {
                     foregroundColor: theme.border,
                   },
                 }}
-                stickyScroll={true}
-                stickyStart="bottom"
+                stickyScroll={autoScrollEnabled()}
+                stickyStart={autoScrollEnabled() ? "bottom" : undefined}
                 flexGrow={1}
                 scrollAcceleration={scrollAcceleration()}
               >

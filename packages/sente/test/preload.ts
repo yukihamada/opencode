@@ -38,6 +38,13 @@ process.env["XDG_STATE_HOME"] = path.join(dir, "state")
 process.env["SENTE_MODELS_PATH"] = path.join(import.meta.dir, "tool", "fixtures", "models-api.json")
 process.env["SENTE_EXPERIMENTAL_EVENT_SYSTEM"] = "true"
 process.env["SENTE_EXPERIMENTAL_WORKSPACES"] = "true"
+// Tests must be hermetic: a sente/opencode session exports SENTE_CONFIG (and
+// legacy OPENCODE_CONFIG) pointing at the user's real override config, which
+// Flag captures at import time and would leak real plugins into config tests.
+delete process.env.SENTE_CONFIG
+delete process.env.SENTE_CONFIG_CONTENT
+delete process.env.SENTE_CONFIG_DIR
+delete process.env.OPENCODE_CONFIG
 
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills

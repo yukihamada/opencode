@@ -202,11 +202,17 @@ export function detectDesktopNativeLocale(languages: readonly string[]): Desktop
     if (["no", "nb", "nn"].includes(source.language)) return "no"
     const match = DESKTOP_NATIVE_LOCALES.find((candidate) => {
       const target = locale(DESKTOP_NATIVE_LOCALE_TAGS[candidate])
-      return target?.language === source.language && target.script === source.script
+      return target?.language === source.language && sameScript(target.script, source.script)
     })
     if (match) return match
   }
   return "en"
+}
+
+// CLDR 46 likely-subtags resolve pa-PK to pa-Aran-PK (Nastaliq) while older
+// runtimes report pa-Arab-PK. Treat both as the Arabic script for matching.
+function sameScript(left: string | undefined, right: string | undefined) {
+  return left === right || (left === "Arab" && right === "Aran") || (left === "Aran" && right === "Arab")
 }
 
 export function desktopNativePluralCategories(locale: DesktopNativeLocale) {
@@ -222,7 +228,7 @@ function locale(value: string) {
 }
 
 export const DESKTOP_NATIVE_ENGLISH = {
-  "desktop.menu.app": "OpenCode",
+  "desktop.menu.app": "Sente",
   "desktop.menu.file": "File",
   "desktop.menu.edit": "Edit",
   "desktop.menu.view": "View",
@@ -262,11 +268,11 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.menu.nextProject": "Next Project",
   "desktop.menu.minimize": "Minimize",
   "desktop.menu.maximize": "Maximize",
-  "desktop.menu.documentation": "OpenCode Documentation",
+  "desktop.menu.documentation": "Sente Documentation",
   "desktop.menu.supportForum": "Support Forum",
   "desktop.menu.shareFeedback": "Share Feedback",
   "desktop.menu.reportBug": "Report a Bug",
-  "desktop.menu.ariaLabel": "OpenCode menu",
+  "desktop.menu.ariaLabel": "Sente menu",
 
   "desktop.updater.dialog.checkFailed.message": "Update check failed.",
   "desktop.updater.dialog.checkFailed.title": "Update Error",
@@ -281,9 +287,9 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.recovery.action.exportLogs": "Export Logs",
   "desktop.recovery.action.keepWaiting": "Keep Waiting",
   "desktop.recovery.action.quit": "Quit",
-  "desktop.recovery.loadFailed": "OpenCode failed to load",
-  "desktop.recovery.terminated": "OpenCode window terminated unexpectedly",
-  "desktop.recovery.unresponsive": "OpenCode is not responding",
+  "desktop.recovery.loadFailed": "Sente failed to load",
+  "desktop.recovery.terminated": "Sente window terminated unexpectedly",
+  "desktop.recovery.unresponsive": "Sente is not responding",
   "desktop.recovery.unresponsive.detail": "You can relaunch the app, open the logs, or keep waiting.",
   "desktop.recovery.loadFailed.detail": "Window: {{window}}\nURL: {{url}}\nError: {{code}} {{description}}",
   "desktop.recovery.terminated.detail": "Window: {{window}}\nReason: {{reason}}\nCode: {{code}}",
@@ -302,13 +308,13 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.wsl.error.executeDistro": "Cannot execute commands in distro",
   "desktop.wsl.error.installWsl": "WSL installation failed",
   "desktop.wsl.error.installDistro": "Failed to install distro: {{distro}}",
-  "desktop.wsl.error.installOpencode": "OpenCode installation failed",
+  "desktop.wsl.error.installOpencode": "Sente installation failed",
   "desktop.wsl.error.alreadyAdded": "{{distro}} is already added",
-  "desktop.wsl.error.opencodeMissing": "opencode is not installed in this distro",
-  "desktop.wsl.error.opencodeCannotRun": "opencode is installed but could not run",
-  "desktop.wsl.error.opencodeNotInstalled": "OpenCode is not installed in {{distro}}",
+  "desktop.wsl.error.opencodeMissing": "sente is not installed in this distro",
+  "desktop.wsl.error.opencodeCannotRun": "sente is installed but could not run",
+  "desktop.wsl.error.opencodeNotInstalled": "Sente is not installed in {{distro}}",
   "desktop.wsl.error.updateVersion":
-    "OpenCode update finished but {{distro}} still reports {{installed}}; expected {{expected}}",
+    "Sente update finished but {{distro}} still reports {{installed}}; expected {{expected}}",
   "desktop.wsl.error.noVersion": "no version",
   "desktop.wsl.error.serverExited": "WSL server exited after startup (code={{code}} signal={{signal}})",
   "desktop.wsl.error.serverExitedBeforeHealthy":

@@ -16,8 +16,7 @@ import { Effect } from "effect"
 import { cliIt } from "../../lib/cli-process"
 import { normalizeForSnapshot, PATH_SEP } from "../../lib/snapshot"
 
-// Composes `normalizeForSnapshot` (CRLF + tmpdir) with two help-specific
-// rules:
+// Composes `normalizeForSnapshot` (CRLF + tmpdir) with help-specific rules:
 //
 //   1. The harness's `oc-cli-XXX` subdir under TMPDIR collapses to `<HOME>`.
 //      `PATH_SEP` matches `/` and `\\` so the rule works on POSIX + Windows.
@@ -26,6 +25,12 @@ import { normalizeForSnapshot, PATH_SEP } from "../../lib/snapshot"
 //      pre-normalized default's character length, so different random home
 //      path widths produce different leading-whitespace counts (or even
 //      line-wraps onto a fresh line on Windows). `\s+` matches both forms.
+//
+//   3. yargs right-aligns hint runs (`[aliases: ls]`, `[boolean]`,
+//      `[array] [default: []]`, …) to the effective wrap width, and bun's
+//      rendering differs by a few columns between macOS and Linux CI,
+//      shifting right-aligned hints. Collapse the alignment padding around
+//      bracket hint runs so snapshots stay layout-stable across platforms.
 function normalize(text: string): string {
   return normalizeForSnapshot(text, {
     pathReplacements: [
@@ -34,6 +39,8 @@ function normalize(text: string): string {
       // hood). A `[a-z0-9]+` regex would leave uppercase chars trailing.
       [new RegExp(`<TMPDIR>${PATH_SEP}oc-cli-[A-Za-z0-9]+`, "g"), "<HOME>"],
       [/\s+\[string\] \[default: "<HOME>"\]/g, ' [string] [default: "<HOME>"]'],
+      [/[ \t]{2,}((?:\[[^\]]*\][ \t]?)+)[ \t]*$/gm, " $1"],
+      [/^((?:\[[^\]]*\][ \t]?)+)[ \t]*$/gm, "$1"],
     ],
   })
 }

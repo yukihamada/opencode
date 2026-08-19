@@ -5,7 +5,10 @@ import { Effect, Layer } from "effect"
 import { AgentV2 } from "@sente-ai/core/agent"
 import { AppNodeBuilder } from "@sente-ai/core/effect/app-node-builder"
 import { LayerNode } from "@sente-ai/core/effect/layer-node"
+import { EventV2 } from "@sente-ai/core/event"
 import { FSUtil } from "@sente-ai/core/fs-util"
+import { Watcher } from "@sente-ai/core/filesystem/watcher"
+import { Database } from "@sente-ai/core/database/database"
 import { AbsolutePath } from "@sente-ai/core/schema"
 import { SkillV2 } from "@sente-ai/core/skill"
 import { SkillDiscovery } from "@sente-ai/core/skill/discovery"
@@ -23,8 +26,15 @@ const discovery = Layer.succeed(
     },
   }),
 )
+const watcher = Layer.succeed(
+  Watcher.Service,
+  Watcher.Service.of({ watch: () => Effect.succeed(Effect.void) }),
+)
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([SkillV2.node, AgentV2.node]), [[SkillDiscovery.node, discovery]]),
+  AppNodeBuilder.build(LayerNode.group([SkillV2.node, AgentV2.node, Database.node, EventV2.node]), [
+    [SkillDiscovery.node, discovery],
+    [Watcher.node, watcher],
+  ]),
 )
 
 function write(directory: string, name: string, description: string) {
