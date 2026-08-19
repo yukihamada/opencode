@@ -132,7 +132,7 @@ export function createHomeSessionIndexCache(queryClient: QueryClient, server: st
 // parentID: null, order: "desc" }), then remove this adapter and its V1 fields.
 export function parseHomeSessionIndex(sessions: SessionV2Info[]): Session[] {
   return sessions.flatMap((item) => {
-    if (item.parentID || typeof item.time.archived === "number") return []
+    if (item.hidden || typeof item.time.archived === "number") return []
     return [toLegacySummary(item)]
   })
 }

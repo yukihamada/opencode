@@ -13,6 +13,7 @@ export type Event =
   | EventSessionUpdated
   | EventSessionDeleted
   | EventMessageUpdated
+  | EventMessageDiffUpdated
   | EventMessageRemoved
   | EventMessagePartUpdated
   | EventMessagePartRemoved
@@ -790,6 +791,15 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           info: Message
+        }
+      }
+    | {
+        id: string
+        type: "message.diff.updated"
+        properties: {
+          sessionID: string
+          messageID: string
+          diffs: Array<SnapshotFileDiff>
         }
       }
     | {
@@ -1605,6 +1615,7 @@ export type GlobalEvent = {
     | SyncEventSessionUpdated
     | SyncEventSessionDeleted
     | SyncEventMessageUpdated
+    | SyncEventMessageDiffUpdated
     | SyncEventMessageRemoved
     | SyncEventMessagePartUpdated
     | SyncEventMessagePartRemoved
@@ -2243,6 +2254,7 @@ export type GlobalSession = {
     snapshot?: string
     diff?: string
   }
+  hidden?: boolean
   project: ProjectSummary | null
 }
 
@@ -2540,11 +2552,389 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type Session1 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
+}
+
+export type Session2 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
     message: string
   }
+}
+
+export type Session3 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
+}
+
+export type Session4 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
+}
+
+export type Session5 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
+}
+
+export type Session6 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
+}
+
+export type Session7 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
 }
 
 export type TextPartInput = {
@@ -2599,6 +2989,114 @@ export type SessionBusyError = {
   _tag: "SessionBusyError"
   sessionID: string
   message: string
+}
+
+export type Session8 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
+}
+
+export type Session9 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  hidden?: boolean
 }
 
 export type EventTuiPromptAppend = {
@@ -2861,6 +3359,7 @@ export type V2Event =
   | SessionUpdated
   | SessionDeleted
   | MessageUpdated
+  | MessageDiffUpdated
   | MessageRemoved
   | MessagePartUpdated
   | MessagePartRemoved
@@ -3247,6 +3746,22 @@ export type SyncEventMessageUpdated = {
     data: {
       sessionID: string
       info: Message
+    }
+  }
+}
+
+export type SyncEventMessageDiffUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "message.diff.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      messageID: string
+      diffs: Array<SnapshotFileDiff>
     }
   }
 }
@@ -3927,6 +4442,7 @@ export type SessionV2Info = {
   location: LocationRef
   subpath?: string
   revert?: RevertState
+  hidden?: boolean
 }
 
 export type PromptInputFileAttachment = {
@@ -5161,6 +5677,25 @@ export type MessageUpdated = {
   }
 }
 
+export type MessageDiffUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "message.diff.updated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    messageID: string
+    diffs: Array<SnapshotFileDiff>
+  }
+}
+
 export type MessageRemoved = {
   id: string
   metadata?: {
@@ -6216,6 +6751,16 @@ export type EventMessageUpdated = {
   properties: {
     sessionID: string
     info: Message
+  }
+}
+
+export type EventMessageDiffUpdated = {
+  id: string
+  type: "message.diff.updated"
+  properties: {
+    sessionID: string
+    messageID: string
+    diffs: Array<SnapshotFileDiff>
   }
 }
 
@@ -9465,7 +10010,7 @@ export type SessionListResponses = {
   /**
    * List of sessions
    */
-  200: Array<Session>
+  200: Array<Session1>
 }
 
 export type SessionListResponse = SessionListResponses[keyof SessionListResponses]
@@ -9485,6 +10030,7 @@ export type SessionCreateData = {
     }
     permission?: PermissionRuleset
     workspaceID?: string
+    hidden?: boolean
   }
   path?: never
   query?: {
@@ -9507,7 +10053,7 @@ export type SessionCreateResponses = {
   /**
    * Successfully created session
    */
-  200: Session
+  200: Session3
 }
 
 export type SessionCreateResponse = SessionCreateResponses[keyof SessionCreateResponses]
@@ -9605,7 +10151,7 @@ export type SessionGetResponses = {
   /**
    * Get session
    */
-  200: Session
+  200: Session2
 }
 
 export type SessionGetResponse = SessionGetResponses[keyof SessionGetResponses]
@@ -9648,7 +10194,7 @@ export type SessionUpdateResponses = {
   /**
    * Successfully updated session
    */
-  200: Session
+  200: Session4
 }
 
 export type SessionUpdateResponse = SessionUpdateResponses[keyof SessionUpdateResponses]
@@ -9682,7 +10228,7 @@ export type SessionChildrenResponses = {
   /**
    * List of children
    */
-  200: Array<Session>
+  200: Array<Session1>
 }
 
 export type SessionChildrenResponse = SessionChildrenResponses[keyof SessionChildrenResponses]
@@ -9951,7 +10497,7 @@ export type SessionForkResponses = {
   /**
    * 200
    */
-  200: Session
+  200: Session5
 }
 
 export type SessionForkResponse = SessionForkResponses[keyof SessionForkResponses]
@@ -10057,7 +10603,7 @@ export type SessionUnshareResponses = {
   /**
    * Successfully unshared session
    */
-  200: Session
+  200: Session7
 }
 
 export type SessionUnshareResponse = SessionUnshareResponses[keyof SessionUnshareResponses]
@@ -10095,7 +10641,7 @@ export type SessionShareResponses = {
   /**
    * Successfully shared session
    */
-  200: Session
+  200: Session6
 }
 
 export type SessionShareResponse = SessionShareResponses[keyof SessionShareResponses]
@@ -10324,7 +10870,7 @@ export type SessionRevertResponses = {
   /**
    * Updated session
    */
-  200: Session
+  200: Session8
 }
 
 export type SessionRevertResponse = SessionRevertResponses[keyof SessionRevertResponses]
@@ -10362,7 +10908,7 @@ export type SessionUnrevertResponses = {
   /**
    * Updated session
    */
-  200: Session
+  200: Session9
 }
 
 export type SessionUnrevertResponse = SessionUnrevertResponses[keyof SessionUnrevertResponses]

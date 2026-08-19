@@ -6,9 +6,10 @@ import {
   Message,
   SystemPart,
   isContextOverflowFailure,
+  type Model,
   type ProviderErrorEvent,
 } from "@sente-ai/llm"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Effect, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -165,10 +166,31 @@ const layer = Layer.effect(
     const continueAfterOverflowCompaction = (step: number) =>
       new TurnTransitionError({ _tag: "ContinueAfterOverflowCompaction", step })
 
-    const loadSystemContext = (agent: AgentV2.Selection) =>
+    const modelRef = (model: Model, variant: ModelV2.VariantID | undefined): ModelV2.Ref => ({
+      id: ModelV2.ID.make(model.id),
+      providerID: ProviderV2.ID.make(model.provider),
+      ...(variant === undefined ? {} : { variant }),
+    })
+
+    // Expose the resolved model to the agent as a privileged system-context source.
+    const modelSource = (model: ModelV2.Ref) =>
+      SystemContext.make({
+        key: SystemContext.Key.make("core/model"),
+        codec: Schema.toCodecJson(Schema.String),
+        load: Effect.succeed(
+          [model.providerID, model.id, ...(model.variant === "default" ? [] : [model.variant])].join("/"),
+        ),
+        baseline: (model) => `The model you are running as is: ${model}`,
+        update: (_previous, model) => `The model you are running as is now: ${model}`,
+      })
+    const loadSystemContext = (agent: AgentV2.Selection, model: ModelV2.Ref) =>
       Effect.all([systemContext.load(), skillGuidance.load(agent), referenceGuidance.load()], {
         concurrency: "unbounded",
-      }).pipe(Effect.map(SystemContext.combine))
+      }).pipe(
+        Effect.map(([system, skill, reference]) =>
+          SystemContext.combine([system, skill, reference, modelSource(model)]),
+        ),
+      )
 
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
@@ -180,7 +202,10 @@ const layer = Layer.effect(
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt
       const agent = yield* agents.select(session.agent)
-      const initialized = yield* SessionContextEpoch.initialize(db, loadSystemContext(agent), session.id)
+      const model = yield* models.resolve(session)
+      const modelReference = modelRef(model, session.model?.variant)
+      const systemContextValue = loadSystemContext(agent, modelReference)
+      const initialized = yield* SessionContextEpoch.initialize(db, systemContextValue, session.id)
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
       let needsContinuation = false
       let currentStep = step
@@ -194,9 +219,7 @@ const layer = Layer.effect(
         }
         if (promoted > 0) currentStep = 1
       }
-      const system =
-        initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
-      const model = yield* models.resolve(session)
+      const system = initialized ?? (yield* SessionContextEpoch.prepare(db, events, systemContextValue, session.id))
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
@@ -218,11 +241,7 @@ const layer = Layer.effect(
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
         agent: agent.id,
-        model: {
-          id: ModelV2.ID.make(model.id),
-          providerID: ProviderV2.ID.make(model.provider),
-          ...(session.model?.variant === undefined ? {} : { variant: session.model.variant }),
-        },
+        model: modelReference,
         snapshot: startSnapshot,
       })
       const withPublication = Semaphore.makeUnsafe(1).withPermit

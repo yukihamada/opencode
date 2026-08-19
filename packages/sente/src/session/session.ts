@@ -108,6 +108,7 @@ export function fromRow(row: SessionRow): Info {
     metadata: row.metadata ?? undefined,
     revert,
     permission: row.permission ? [...row.permission] : undefined,
+    hidden: row.hidden ?? undefined,
     time: {
       created: row.time_created,
       updated: row.time_updated,
@@ -151,6 +152,7 @@ export function toRow(info: Info) {
         }
       : null,
     permission: info.permission,
+    hidden: info.hidden ?? false,
     time_created: info.time.created,
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
@@ -241,6 +243,7 @@ export const Info = Schema.Struct({
   time: Time,
   permission: optional(PermissionV1.Ruleset),
   revert: optional(Revert),
+  hidden: optional(Schema.Boolean),
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -266,6 +269,7 @@ export const CreateInput = Schema.optional(
     metadata: Schema.optional(Metadata),
     permission: Schema.optional(PermissionV1.Ruleset),
     workspaceID: Schema.optional(WorkspaceV2.ID),
+    hidden: Schema.optional(Schema.Boolean),
   }),
 )
 export type CreateInput = Types.DeepMutable<Schema.Schema.Type<typeof CreateInput>>
@@ -423,6 +427,7 @@ export interface Interface {
     metadata?: typeof Metadata.Type
     permission?: PermissionV1.Ruleset
     workspaceID?: WorkspaceV2.ID
+    hidden?: boolean
   }) => Effect.Effect<Info>
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
@@ -509,6 +514,7 @@ const layer: Layer.Layer<
       path?: string
       metadata?: typeof Metadata.Type
       permission?: PermissionV1.Ruleset
+      hidden?: boolean
     }) {
       const ctx = yield* InstanceState.context
       const result: Info = {
@@ -525,6 +531,7 @@ const layer: Layer.Layer<
         model: input.model,
         metadata: input.metadata,
         permission: input.permission ? [...input.permission] : undefined,
+        hidden: input.hidden,
         cost: 0,
         tokens: EmptyTokens,
         time: {
@@ -556,6 +563,9 @@ const layer: Layer.Layer<
 
     const listGlobal = Effect.fn("Session.listGlobal")(function* (input?: GlobalListInput) {
       const conditions: SQL[] = []
+      // Hidden/internal sessions are excluded from ordinary discovery lists but
+      // remain addressable by ID. Visibility is independent of parentage.
+      conditions.push(eq(SessionTable.hidden, false))
       if (input?.directory) conditions.push(eq(SessionTable.directory, input.directory))
       if (input?.roots) conditions.push(isNull(SessionTable.parent_id))
       if (input?.start) conditions.push(gte(SessionTable.time_updated, input.start))
@@ -674,6 +684,7 @@ const layer: Layer.Layer<
       metadata?: typeof Metadata.Type
       permission?: PermissionV1.Ruleset
       workspaceID?: WorkspaceV2.ID
+      hidden?: boolean
     }) {
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
@@ -687,6 +698,7 @@ const layer: Layer.Layer<
         metadata: input?.metadata,
         permission: input?.permission,
         workspaceID: input?.workspaceID ?? workspace,
+        hidden: input?.hidden,
       })
     })
 
@@ -961,7 +973,7 @@ function listByProject(
     experimentalWorkspaces: boolean
   },
 ) {
-  const conditions = [eq(SessionTable.project_id, input.projectID)]
+  const conditions = [eq(SessionTable.project_id, input.projectID), eq(SessionTable.hidden, false)]
 
   if (input.workspaceID) {
     conditions.push(eq(SessionTable.workspace_id, input.workspaceID))

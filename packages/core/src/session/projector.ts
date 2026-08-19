@@ -67,6 +67,7 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
     tokens_cache_write: (info.tokens ?? { cache: { write: 0 } }).cache.write,
     revert: info.revert ? { ...info.revert, messageID: SessionMessage.ID.make(info.revert.messageID) } : null,
     permission: info.permission ? [...info.permission] : undefined,
+    hidden: info.hidden ?? false,
     time_created: info.time.created,
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
@@ -271,6 +272,28 @@ const layer = Layer.effectDiscard(
           .pipe(Effect.orDie)
       }),
     )
+    yield* events.project(SessionV1.Event.MessageDiffUpdated, (event) =>
+      Effect.gen(function* () {
+        const row = yield* db
+          .select()
+          .from(MessageTable)
+          .where(eq(MessageTable.id, event.data.messageID))
+          .get()
+          .pipe(Effect.orDie)
+        if (!row || row.data.role !== "user") return
+        const summary = row.data.summary ?? {}
+        const data = {
+          ...row.data,
+          summary: { ...summary, diffs: event.data.diffs },
+        } as typeof row.data
+        yield* db
+          .update(MessageTable)
+          .set({ data })
+          .where(eq(MessageTable.id, event.data.messageID))
+          .run()
+          .pipe(Effect.orDie)
+      }),
+    )
     yield* events.project(SessionV1.Event.MessageRemoved, (event) =>
       Effect.gen(function* () {
         const rows = yield* db
@@ -342,6 +365,8 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
+        // Rebuild the context epoch so the agent's baseline reflects the newly selected model.
+        yield* SessionContextEpoch.reset(db, event.data.sessionID)
         yield* run(db, event)
       }),
     )

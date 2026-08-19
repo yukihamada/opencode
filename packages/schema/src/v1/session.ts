@@ -565,6 +565,7 @@ export const SessionInfo = Schema.Struct({
   }),
   permission: optional(PermissionV1.Ruleset),
   revert: optional(SessionRevert),
+  hidden: optional(Schema.Boolean),
 }).annotate({ identifier: "Session" })
 export type SessionInfo = typeof SessionInfo.Type
 
@@ -599,6 +600,15 @@ const events = {
     schema: {
       sessionID: SessionID,
       info: Info,
+    },
+  }),
+  MessageDiffUpdated: define({
+    type: "message.diff.updated",
+    ...options,
+    schema: {
+      sessionID: SessionID,
+      messageID: MessageID,
+      diffs: Schema.Array(FileDiff.Info),
     },
   }),
   MessageRemoved: define({
@@ -666,6 +676,7 @@ export const Event = {
     events.Updated,
     events.Deleted,
     events.MessageUpdated,
+    events.MessageDiffUpdated,
     events.MessageRemoved,
     events.PartUpdated,
     events.PartRemoved,

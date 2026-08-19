@@ -57,6 +57,7 @@ export const SessionTable = sqliteTable(
     ...Timestamps,
     time_compacting: integer(),
     time_archived: integer(),
+    hidden: integer({ mode: "boolean" }).notNull().default(false),
   },
   (table) => [
     index("session_project_idx").on(table.project_id),

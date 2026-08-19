@@ -299,4 +299,18 @@ describe("session.list", () => {
       }),
     { git: true },
   )
+
+  it.instance(
+    "excludes hidden sessions from list",
+    () =>
+      Effect.gen(function* () {
+        const visible = yield* withSession({ title: "visible-session" })
+        const hidden = yield* withSession({ title: "hidden-session", hidden: true })
+
+        const ids = (yield* SessionNs.use.list()).map((session) => session.id)
+        expect(ids).toContain(visible.id)
+        expect(ids).not.toContain(hidden.id)
+      }),
+    { git: true },
+  )
 })

@@ -122,8 +122,25 @@ const layer = Layer.effect(
       const target = messages.find((m) => m.info.id === input.messageID)
       if (!target || target.info.role !== "user") return
       const msgDiffs = yield* computeDiff({ messages })
+      const prevDiffs = target.info.summary?.diffs
       target.info.summary = { ...target.info.summary, diffs: msgDiffs }
-      yield* sessions.updateMessage(target.info)
+      // Publish the message update without the (growing) diffs so the durable
+      // `message.updated` event stays small; the diffs are carried by a
+      // dedicated `message.diff.updated` event instead. This avoids
+      // re-serializing the cumulative diff on every step (O(N^2) event bytes).
+      const info = {
+        ...target.info,
+        summary: { ...target.info.summary, diffs: [] },
+      }
+      yield* sessions.updateMessage(info)
+      const diffsChanged = !prevDiffs || JSON.stringify(prevDiffs) !== JSON.stringify(msgDiffs)
+      if (diffsChanged) {
+        yield* events.publish(SessionV1.Event.MessageDiffUpdated, {
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          diffs: msgDiffs,
+        })
+      }
     })
 
     const diff = Effect.fn("SessionSummary.diff")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
