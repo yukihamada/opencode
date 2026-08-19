@@ -164,7 +164,7 @@ describe("bootstrapDirectory", () => {
             throw new Error("legacy directory config should not be called")
           },
         },
-      } as unknown as OpencodeClient,
+      } as unknown as SenteClient,
       api,
       store,
       setStore,
@@ -193,10 +193,10 @@ describe("config queries", () => {
           },
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
 
     const result = await new QueryClient().fetchQuery(
-      loadGlobalConfigQuery(ServerScope.local, sdk, Promise.resolve("v2")),
+      loadGlobalConfigQuery(ServerScope.local, sdk),
     )
 
     expect(result).toEqual({})
@@ -214,10 +214,10 @@ describe("config queries", () => {
           },
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
 
     const result = await new QueryClient().fetchQuery(
-      loadGlobalConfigQuery(ServerScope.local, sdk, Promise.resolve("v1")),
+      loadGlobalConfigQuery(ServerScope.local, sdk),
     )
 
     expect(result).toEqual(config)

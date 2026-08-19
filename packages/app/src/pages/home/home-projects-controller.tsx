@@ -120,7 +120,7 @@ export function createHomeProjectsController(home: HomeController) {
     },
     utility: {
       settings: openSettings,
-      help: () => platform.openLink("https://teai.io/sente/desktop-feedback"),
+      help: () => platform.openExternal("https://teai.io/sente/desktop-feedback"),
     },
   }
 }

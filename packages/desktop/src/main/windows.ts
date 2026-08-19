@@ -4,11 +4,12 @@ import type { DesktopTheme } from "@sente-ai/ui/theme/types"
 import oc2ThemeJson from "../../../ui/src/theme/themes/oc-2.json"
 import { randomUUID } from "node:crypto"
 import { rmSync } from "node:fs"
-import { app, BrowserWindow, dialog, net, nativeImage, nativeTheme, protocol } from "electron"
+import { app, BrowserWindow, dialog, net, nativeImage, nativeTheme, protocol, shell } from "electron"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import type { TitlebarTheme } from "../preload/types"
 import { exportDebugLogs, write as writeLog } from "./logging"
+import { resolveExternalURL } from "./external-url"
 import { getStore, removeStoreFile } from "./store"
 import { PINCH_ZOOM_ENABLED_KEY, WINDOW_IDS_KEY } from "./store-keys"
 import { createUnresponsiveSampler } from "./unresponsive"
@@ -504,4 +505,13 @@ function upsertKeyValue(obj: Record<string, any>, keyToChange: string, value: an
   }
   // Insert at end instead
   obj[keyToChange] = value
+}
+
+export function openExternalURL(value: string) {
+  const url = resolveExternalURL(value)
+  if (!url) {
+    writeLog("window", "blocked external target", { url: value }, "warn")
+    return
+  }
+  void shell.openExternal(url)
 }

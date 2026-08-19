@@ -4,7 +4,6 @@ import {
   ACCEPTED_FILE_EXTENSIONS,
   AppBaseProviders,
   AppInterface,
-  handleNotificationClick,
   loadLocaleDict,
   normalizeLocale,
   type Locale,
@@ -33,7 +32,7 @@ import { useTheme } from "@sente-ai/ui/theme/context"
 
 const root = document.getElementById("root")
 if (import.meta.env.DEV && !(root instanceof HTMLElement)) {
-  throw new Error(t("error.dev.rootNotFound"))
+  throw new Error(t("desktop.error.dev.rootNotFound"))
 }
 
 if (import.meta.env.VITE_SENTRY_DSN) {
@@ -209,8 +208,8 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
       })
     },
 
-    openLink(url: string) {
-      window.api.openLink(url)
+    openExternal(url: string) {
+      window.api.openExternal(url)
     },
     async openPath(path: string, app?: string) {
       if (os === "windows") {
@@ -221,14 +220,6 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
     },
     async revealPath(path: string) {
       return window.api.revealPath(path)
-    },
-
-    back() {
-      window.history.back()
-    },
-
-    forward() {
-      window.history.forward()
     },
 
     storage,
@@ -250,7 +241,7 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
       window.api.relaunch()
     },
 
-    notify: async (title, description, href) => {
+    notify: async (title, description, onClick) => {
       const focused = await window.api.getWindowFocused().catch(() => document.hasFocus())
       if (focused) return
 
@@ -261,7 +252,7 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
       notification.onclick = () => {
         void window.api.showWindow()
         void window.api.setWindowFocus()
-        handleNotificationClick(href)
+        onClick?.()
         notification.close()
       }
     },
@@ -290,8 +281,6 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
     setDisplayBackend: async (backend) => {
       await window.api.setDisplayBackend(backend)
     },
-
-    parseMarkdown: (markdown: string) => window.api.parseMarkdownCommand(markdown),
 
     webviewZoom,
 
@@ -346,8 +335,6 @@ function DesktopRoot(props: { windowState: DesktopWindowState }) {
     return next satisfies Locale
   }
 
-  const [windowCount] = createResource(() => window.api.getWindowCount())
-
   // Fetch sidecar credentials (available immediately, before health check)
   const [sidecar] = createResource(() => window.api.awaitInitialization())
 
@@ -362,7 +349,7 @@ function DesktopRoot(props: { windowState: DesktopWindowState }) {
     const link = (e.target as HTMLElement).closest("a.external-link") as HTMLAnchorElement | null
     if (link?.href) {
       e.preventDefault()
-      platform.openLink(link.href)
+      platform.openExternal(link.href)
     }
   }
 
@@ -388,7 +375,7 @@ function DesktopRoot(props: { windowState: DesktopWindowState }) {
     const wslServers = useWslServers()
     const ready = createMemo(
       () =>
-        !defaultServer.loading && !sidecar.loading && !windowCount.loading && !locale.loading && !wslServers.isLoading,
+        !defaultServer.loading && !sidecar.loading && !locale.loading && !wslServers.isLoading,
     )
     const servers = createMemo(() => {
       const data = initializationData(sidecar)

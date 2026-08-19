@@ -1,18 +1,20 @@
 import { execFile } from "node:child_process"
 import { stat } from "node:fs/promises"
-import { basename } from "node:path"
+import { basename, join } from "node:path"
 import { app, BrowserWindow, Notification, clipboard, dialog, ipcMain, shell } from "electron"
 import type { IpcMainEvent, IpcMainInvokeEvent } from "electron"
 import type { DesktopMenuAction } from "@sente-ai/app/desktop-menu"
+import { parseDesktopNativeBundle, type DesktopNativeBundle } from "@sente-ai/app/i18n/desktop-native"
 
 import type { FatalRendererError, ServerReadyData, TitlebarTheme } from "../preload/types"
 import { runDesktopMenuAction } from "./desktop-menu-actions"
 import { setForceFocus } from "./debug"
 import { assertAttachmentBudget, createPickedFileAuthorizations } from "./attachment-picker"
 import { getStore, removeStoreFileIfEmpty } from "./store"
-import { getPinchZoomEnabled, getWindowID, setPinchZoomEnabled, setTitlebar, updateTitlebar } from "./windows"
+import { getPinchZoomEnabled, getWindowID, openExternalURL, setPinchZoomEnabled, setTitlebar, updateTitlebar } from "./windows"
 import type { UpdaterController } from "./updater-controller"
 import { createUpdaterSubscriptions } from "./updater-subscriptions"
+import { createDesktopDraftStore } from "./draft-store"
 
 const pickerFilters = (ext?: string[]) => {
   if (!ext || ext.length === 0) return undefined
@@ -33,7 +35,6 @@ type Deps = {
   isOldLayoutEligible: () => Promise<boolean> | boolean
   getDisplayBackend: () => Promise<string | null>
   setDisplayBackend: (backend: string | null) => Promise<void> | void
-  parseMarkdown: (markdown: string) => Promise<string> | string
   checkAppExists: (appName: string) => Promise<boolean> | boolean
   resolveAppPath: (appName: string) => Promise<string | null>
   updater: UpdaterController
@@ -41,9 +42,11 @@ type Deps = {
   setBackgroundColor: (color: string) => void
   exportDebugLogs: () => Promise<string>
   recordFatalRendererError: (error: FatalRendererError) => Promise<void> | void
+  setNativeTranslations: (bundle: DesktopNativeBundle) => void
 }
 
 export function registerIpcHandlers(deps: Deps) {
+  const drafts = createDesktopDraftStore(join(app.getPath("userData"), "drafts.sqlite"))
   const updaterSubscriptions = createUpdaterSubscriptions()
   app.once("will-quit", updaterSubscriptions.clear)
 
@@ -63,7 +66,6 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("set-display-backend", (_event: IpcMainInvokeEvent, backend: string | null) =>
     deps.setDisplayBackend(backend),
   )
-  ipcMain.handle("parse-markdown", (_event: IpcMainInvokeEvent, markdown: string) => deps.parseMarkdown(markdown))
   ipcMain.handle("check-app-exists", (_event: IpcMainInvokeEvent, appName: string) => deps.checkAppExists(appName))
   ipcMain.handle("resolve-app-path", (_event: IpcMainInvokeEvent, appName: string) => deps.resolveAppPath(appName))
   ipcMain.handle("updater-subscribe", (event) => {
@@ -116,6 +118,25 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("store-length", (_event: IpcMainInvokeEvent, name: string) => {
     const store = getStore(name)
     return Object.keys(store.store).length
+  })
+
+  ipcMain.handle("draft-get", (_event: IpcMainInvokeEvent, key: string) => drafts.get(key))
+  ipcMain.handle("draft-set", (_event: IpcMainInvokeEvent, key: string, value: string) => drafts.set(key, value))
+  ipcMain.handle("draft-delete", (_event: IpcMainInvokeEvent, key: string) => drafts.set(key, null))
+  ipcMain.handle("draft-blob-put", (_event: IpcMainInvokeEvent, data: ArrayBuffer) => drafts.putBlob(new Uint8Array(data)))
+  ipcMain.handle("draft-blob-get", (_event: IpcMainInvokeEvent, id: string) => {
+    const data = drafts.getBlob(id)
+    return data ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : null
+  })
+
+  ipcMain.handle("set-native-translations", (event: IpcMainInvokeEvent, value: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win.isDestroyed() || win.webContents !== event.sender || event.senderFrame !== event.sender.mainFrame) {
+      throw new Error("Invalid native translation sender")
+    }
+    const bundle = parseDesktopNativeBundle(value)
+    if (!bundle) throw new Error("Invalid native translation bundle")
+    deps.setNativeTranslations(bundle)
   })
 
   ipcMain.handle(
@@ -177,8 +198,8 @@ export function registerIpcHandlers(deps: Deps) {
     },
   )
 
-  ipcMain.on("open-link", (_event: IpcMainEvent, url: string) => {
-    void shell.openExternal(url)
+  ipcMain.on("open-external", (_event: IpcMainEvent, url: string) => {
+    openExternalURL(url)
   })
 
   ipcMain.handle("open-path", async (_event: IpcMainInvokeEvent, path: string, app?: string) => {
