@@ -293,7 +293,11 @@ describe("HttpApi Server.listen", () => {
       return true
     }) as typeof process.stderr.write
     try {
-      const response = await Server.Default().app.request("/status")
+      // Upstream probes "/" via the UI proxy (live app.opencode.ai/status);
+      // the fork's teai.io host has no /status page, so hit the in-process
+      // health route instead. Either way the assertion only needs one 200
+      // response served through the default handler.
+      const response = await Server.Default().app.request("/global/health")
       expect(response.status).toBe(200)
     } finally {
       process.stderr.write = original

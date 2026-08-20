@@ -62,12 +62,14 @@ describe("McpOAuthCallback.ensureRunning", () => {
   })
 
   test("starts server with custom redirectUri port and path", async () => {
-    await McpOAuthCallback.ensureRunning("http://127.0.0.1:18000/custom/callback")
+    const port = await getFreeLoopbackPort()
+    await McpOAuthCallback.ensureRunning(`http://127.0.0.1:${port}/custom/callback`)
     expect(McpOAuthCallback.isRunning()).toBe(true)
   })
 
   test("stops after the callback completes", async () => {
-    const redirectUri = "http://127.0.0.1:18003/custom/callback"
+    const port = await getFreeLoopbackPort()
+    const redirectUri = `http://127.0.0.1:${port}/custom/callback`
     await McpOAuthCallback.ensureRunning(redirectUri)
     const callback = McpOAuthCallback.waitForCallback("success")
 

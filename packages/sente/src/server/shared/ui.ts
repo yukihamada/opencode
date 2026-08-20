@@ -38,7 +38,9 @@ function proxyResponseHeaders(headers: Record<string, string>) {
 }
 
 export function upstreamURL(path: string) {
-  return new URL(path, UI_UPSTREAM).toString()
+  // UI_UPSTREAM may carry a base path (https://teai.io/sente/app); join the
+  // request path onto it instead of letting URL resolution drop it.
+  return new URL(UI_UPSTREAM.pathname.replace(/\/+$/, "") + path, UI_UPSTREAM).toString()
 }
 
 export function embeddedUI(disableEmbeddedWebUi: boolean) {

@@ -46,6 +46,16 @@ delete process.env.SENTE_CONFIG_CONTENT
 delete process.env.SENTE_CONFIG_DIR
 delete process.env.OPENCODE_CONFIG
 
+// On macOS, @parcel/watcher's fs-events backend starves the event loop once
+// hundreds of git-tmpdir instances each subscribe to their directory: every
+// test file write fans out into native callbacks plus EventV2 publishes, and
+// timing-sensitive tests (PTY exit polling, subprocess runs) flake. The
+// watcher itself stays covered by watcher.test.ts, which opts back in with
+// its own ConfigProvider. Linux/Windows CI keeps upstream's behavior.
+if (process.platform === "darwin") {
+  process.env.SENTE_EXPERIMENTAL_DISABLE_FILEWATCHER = "1"
+}
+
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills
 const testHome = path.join(dir, "home")

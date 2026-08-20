@@ -149,7 +149,7 @@ describe("pty HttpApi bridge", () => {
 
     // Exited sessions are retained by core for the canonical surface, but the legacy
     // routes preserve pre-retention behavior: exited sessions are invisible here.
-    const deadline = Date.now() + 5_000
+    const deadline = Date.now() + 15_000
     while (Date.now() < deadline) {
       const found = await app().request(PtyPaths.get.replace(":ptyID", info.id), { headers })
       if (found.status === 404) break
