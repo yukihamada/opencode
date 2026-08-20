@@ -37,4 +37,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Build Storybook
+        # ubuntu-latest caps Node's heap at ~4 GB; storybook+solid needs more headroom
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: bun --cwd packages/storybook build
