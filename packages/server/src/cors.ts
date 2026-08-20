@@ -1,6 +1,6 @@
 import { Context } from "effect"
 
-const senteOrigin = /^https:\/\/([a-z0-9-]+\.)*sente\.ai$/
+const senteOrigin = /^https:\/\/([a-z0-9-]+\.)*teai\.io$/
 
 export type CorsOptions = { readonly cors?: ReadonlyArray<string> }
 
