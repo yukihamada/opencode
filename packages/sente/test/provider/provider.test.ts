@@ -379,6 +379,31 @@ it.instance(
 )
 
 it.instance(
+  "defaultModel retries bare provider/model when model id needs provider prefix",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.defaultModel()
+    expect(String(model.providerID)).toBe("teai")
+    expect(String(model.modelID)).toBe("teai/auto")
+  }),
+  {
+    config: {
+      model: "teai/auto",
+      provider: {
+        teai: {
+          name: "teai.io",
+          npm: "@ai-sdk/openai-compatible",
+          api: "https://api.teai.io/v1",
+          options: { apiKey: "test-key" },
+          models: {
+            "teai/auto": { name: "teai/auto (teai)" },
+          },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
   "defaultModel returns a typed error when config excludes every provider",
   Effect.gen(function* () {
     const error = yield* Provider.use.defaultModel().pipe(Effect.flip)

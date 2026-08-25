@@ -48,9 +48,10 @@ export const GrepTool = Tool.define(
           })
 
           const ins = yield* InstanceState.context
-          const requested = path.isAbsolute(params.path ?? ins.directory)
-            ? (params.path ?? ins.directory)
-            : path.join(ins.directory, params.path ?? ".")
+          const requestedPath = FSUtil.expandHome(params.path ?? ins.directory)
+          const requested = path.isAbsolute(requestedPath)
+            ? requestedPath
+            : path.join(ins.directory, requestedPath)
           const requestedInfo = yield* fs.stat(requested).pipe(Effect.catch(() => Effect.succeed(undefined)))
           yield* assertExternalDirectoryEffect(ctx, requested, {
             bypass: false,

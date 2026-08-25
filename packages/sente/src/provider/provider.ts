@@ -1977,7 +1977,10 @@ const layer = Layer.effect(
 
     const defaultModel = Effect.fn("Provider.defaultModel")(function* () {
       const cfg = yield* config.get()
-      if (cfg.model) return parseModel(cfg.model)
+      if (cfg.model) {
+        const s = yield* InstanceState.get(state)
+        return retryBareModel(s.providers, parseModel(cfg.model))
+      }
 
       const s = yield* InstanceState.get(state)
       const recent = yield* fs.readJson(path.join(Global.Path.state, "model.json")).pipe(
@@ -2031,6 +2034,21 @@ export function parseModel(model: string) {
     providerID: ProviderV2.ID.make(providerID),
     modelID: ModelV2.ID.make(rest.join("/")),
   }
+}
+
+// Bare "provider/model" strings where the model id itself contains the
+// provider prefix (e.g. "teai/auto" on teai.io) are ambiguous. If the parsed
+// model doesn't exist but "provider/provider/model" does, retry with the
+// provider prefix prepended so headless runs accept both forms.
+function retryBareModel<T extends { models: Record<string, { id: string }> }>(
+  providers: Record<string, T>,
+  parsed: { providerID: ProviderV2.ID; modelID: ModelV2.ID },
+) {
+  const provider = providers[parsed.providerID]
+  if (!provider) return parsed
+  if (provider.models[parsed.modelID]) return parsed
+  if (!provider.models[`${parsed.providerID}/${parsed.modelID}`]) return parsed
+  return { providerID: parsed.providerID, modelID: ModelV2.ID.make(`${parsed.providerID}/${parsed.modelID}`) }
 }
 
 export const node = LayerNode.make({
