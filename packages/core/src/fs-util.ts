@@ -1,6 +1,7 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { dirname, isAbsolute, join, relative, resolve as pathResolve, sep } from "path"
 import { realpathSync } from "fs"
+import { homedir } from "os"
 import * as NFS from "fs/promises"
 import { lookup } from "mime-types"
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
@@ -223,6 +224,17 @@ export namespace FSUtil {
   // Pure helpers that don't need Effect (path manipulation, sync operations)
   export function mimeType(p: string): string {
     return lookup(p) || "application/octet-stream"
+  }
+
+  // Models frequently write tool paths as "~/..." — shells expand that, but
+  // fs.readFile/glob/fs.exists never do, so a "~"-path silently falls through
+  // the isAbsolute() check in every tool and gets treated as relative to the
+  // project directory instead of $HOME (seen in production: sente-c fixed the
+  // same class of bug in its C tool implementations, see commit 7be640b).
+  export function expandHome(p: string): string {
+    if (p === "~") return homedir()
+    if (p.startsWith("~/") || p.startsWith("~\\")) return join(homedir(), p.slice(2))
+    return p
   }
 
   export function normalizePath(p: string): string {

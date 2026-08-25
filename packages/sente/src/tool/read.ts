@@ -231,7 +231,7 @@ export const ReadTool = Tool.define<
       ctx: Tool.Context<Metadata>,
     ) {
       const instance = yield* InstanceState.context
-      let filepath = params.filePath
+      let filepath = FSUtil.expandHome(params.filePath)
       if (!path.isAbsolute(filepath)) {
         filepath = path.resolve(instance.directory, filepath)
       }
