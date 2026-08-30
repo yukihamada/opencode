@@ -697,9 +697,20 @@ export const RunCommand = effectCmd({
         // created, and replies issued from inside the loop must use that client.
         async function loop(client: SenteClient, events: Awaited<ReturnType<typeof sdk.event.subscribe>>) {
           const toggles = new Map<string, boolean>()
+          // 🔒 ported from upstream anomalyco/opencode#43675: a subagent (Task tool)
+          // spawns its own child session, whose permission.asked events used to be
+          // dropped below (sessionID mismatch) — the subagent would then hang
+          // forever on an unanswerable permission prompt instead of `run --auto`
+          // approving it or the parent surfacing it. Track child session IDs so
+          // their permission events reach the same handling as the parent's.
+          const sessions = new Set([sessionID])
           let error: string | undefined
 
           for await (const event of events.stream) {
+            if (event.type === "session.created" && event.properties.info.parentID) {
+              if (sessions.has(event.properties.info.parentID)) sessions.add(event.properties.info.id)
+            }
+
             if (
               event.type === "message.updated" &&
               event.properties.sessionID === sessionID &&
@@ -796,7 +807,7 @@ export const RunCommand = effectCmd({
 
             if (event.type === "permission.asked") {
               const permission = event.properties
-              if (permission.sessionID !== sessionID) continue
+              if (!sessions.has(permission.sessionID)) continue
 
               if (auto) {
                 await client.permission.reply({

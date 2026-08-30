@@ -1371,7 +1371,24 @@ const layer = Layer.effect(
       Effect.gen(function* () {
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
-        const modelsDev = yield* modelsDevSvc.get()
+        // 🚀 perf: compute the allow/deny lists before building the models.dev
+        // catalog (not after, as this used to) so a small `enabled_providers`
+        // allowlist actually skips building+transforming the ~200 unused
+        // providers instead of only filtering them out of the final result.
+        // The final `providers` output is unchanged (line below still deletes
+        // anything `!isProviderAllowed` survives to) — this only removes work
+        // that was always going to be thrown away.
+        const disabledEarly = new Set(cfg.disabled_providers ?? [])
+        const enabledEarly = cfg.enabled_providers ? new Set(cfg.enabled_providers) : null
+        const modelsDevFull = yield* modelsDevSvc.get()
+        const modelsDev =
+          enabledEarly || disabledEarly.size > 0
+            ? Object.fromEntries(
+                Object.entries(modelsDevFull).filter(
+                  ([id]) => (!enabledEarly || enabledEarly.has(id)) && !disabledEarly.has(id),
+                ),
+              )
+            : modelsDevFull
         const catalog = mapValues(modelsDev, fromModelsDevProvider)
         const database = mapValues(catalog, toPublicInfo)
 
@@ -1412,8 +1429,8 @@ const layer = Layer.effect(
 
         // now read config providers - includes any modifications from plugin config() hook
         const configProviders = Object.entries(cfg.provider ?? {})
-        const disabled = new Set(cfg.disabled_providers ?? [])
-        const enabled = cfg.enabled_providers ? new Set(cfg.enabled_providers) : null
+        const disabled = disabledEarly
+        const enabled = enabledEarly
 
         function isProviderAllowed(providerID: ProviderV2.ID): boolean {
           if (enabled && !enabled.has(providerID)) return false
