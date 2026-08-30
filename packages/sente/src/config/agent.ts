@@ -10,11 +10,14 @@ import { ConfigParse } from "./parse"
 
 export async function load(dir: string) {
   const result: Record<string, ConfigAgentV1.Info> = {}
+  // 🚀 perf: see the matching note in config/command.ts — this recursive ** glob
+  // must not walk node_modules/.git on a real project.
   for (const item of await Glob.scan("{agent,agents}/**/*.md", {
     cwd: dir,
     absolute: true,
     dot: true,
     symlink: true,
+    ignore: ["**/node_modules/**", "**/.git/**"],
   })) {
     const md = await ConfigMarkdown.parse(item).catch(() => undefined)
     if (!md) continue
