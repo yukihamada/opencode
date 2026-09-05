@@ -1455,8 +1455,19 @@ const layer = Layer.effect(
 
         // now read config providers - includes any modifications from plugin config() hook
         const configProviders = Object.entries(cfg.provider ?? {})
-        const disabled = disabledEarly
-        const enabled = enabledEarly
+        // Re-read the allow/deny lists here: the plugin config() hook may have changed
+        // them after the early pre-filter above (which only saw the on-disk config).
+        const disabled = new Set(cfg.disabled_providers ?? [])
+        const enabled = cfg.enabled_providers ? new Set(cfg.enabled_providers) : null
+        // If the hook widened the allowlist, backfill the catalog entries the
+        // pre-filter skipped so those providers are still resolvable below.
+        for (const [id, entry] of Object.entries(modelsDevFull)) {
+          if (id in modelsDev) continue
+          if (enabled && !enabled.has(id)) continue
+          if (disabled.has(id)) continue
+          catalog[id] = fromModelsDevProvider(entry)
+          database[id] = toPublicInfo(catalog[id])
+        }
 
         function isProviderAllowed(providerID: ProviderV2.ID): boolean {
           if (enabled && !enabled.has(providerID)) return false
