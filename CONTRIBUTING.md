@@ -157,7 +157,7 @@ Caveats:
 - If `spawn` does not work for you, you can debug the server separately:
   - Debug server: `bun run --inspect=ws://localhost:6499/ --cwd packages/sente ./src/index.ts serve --port 4096`,
     then attach TUI with `sente attach http://localhost:4096`
-  - Debug TUI: `bun run --inspect=ws://localhost:6499/ --cwd packages/sente --conditions=browser ./src/index.ts`
+  - Debug TUI: `bun run --inspect=ws://localhost:6499/ --cwd packages/sente ./src/index.ts`
 
 Other tips and tricks:
 

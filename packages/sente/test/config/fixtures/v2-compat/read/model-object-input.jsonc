@@ -1,0 +1,4 @@
+{
+  "$schema": "https://teai.io/sente/config.json",
+  "model": { "providerID": "anthropic", "model": "claude-sonnet", "variant": "fast" },
+}

@@ -17,6 +17,9 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "@sente-ai/function#test": {
+      "outputs": []
+    },
     "@sente-ai/app#test": {
       "dependsOn": ["^build"],
       "outputs": []
