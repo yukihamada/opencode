@@ -100,6 +100,11 @@ const layer = Layer.effect(
         }
         for (const directory of directories) {
           if (watches.has(directory)) continue
+          // Skill directories are optional (e.g. ~/.config/sente/skill, .sente/skills);
+          // watching a missing one only produces a "failed to watch directory" error
+          // on every boot, so skip it until it exists.
+          const exists = yield* fs.exists(directory).pipe(Effect.catch(() => Effect.succeed(false)))
+          if (!exists) continue
           const real = yield* fs.realPath(directory).pipe(Effect.catch(() => Effect.succeed(directory)))
           realPaths.set(directory, real)
           const childScope = yield* Scope.fork(scope)
