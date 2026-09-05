@@ -58,6 +58,7 @@ import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
+import { Resume } from "../../util/resume"
 import { Toast, useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
 import stripAnsi from "strip-ansi"
@@ -587,6 +588,39 @@ export function Session() {
           providerID: selectedModel.providerID,
         })
         dialog.clear()
+      },
+    },
+    {
+      title: "Resume interrupted work",
+      value: "session.resume",
+      category: "Session",
+      slash: {
+        name: "resume-work",
+        aliases: ["tsuzuki"],
+      },
+      run: () => {
+        const selectedModel = local.model.current()
+        if (!selectedModel) {
+          toast.show({
+            variant: "warning",
+            message: "Connect a provider to resume this session",
+            duration: 3000,
+          })
+          return
+        }
+        dialog.clear()
+        void Resume.send(sdk, {
+          sessionID: route.sessionID,
+          model: selectedModel,
+          agent: local.agent.current()?.name,
+          variant: local.model.variant.current(),
+        }).catch((error) => {
+          toast.show({
+            variant: "error",
+            message: error instanceof Error ? error.message : "Failed to resume session",
+            duration: 5000,
+          })
+        })
       },
     },
     {

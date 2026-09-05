@@ -5,6 +5,8 @@ export interface Args {
   agent?: string
   prompt?: string
   continue?: boolean
+  /** Like `continue`, but also picks up interrupted work automatically. */
+  resume?: boolean
   sessionID?: string
   fork?: boolean
   auto?: boolean

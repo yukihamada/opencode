@@ -88,6 +88,11 @@ export const TuiThreadCommand = cmd({
         describe: "continue the last session",
         type: "boolean",
       })
+      .option("resume", {
+        alias: ["r"],
+        describe: "continue the last session and pick up interrupted work automatically",
+        type: "boolean",
+      })
       .option("session", {
         alias: ["s"],
         type: "string",
@@ -162,7 +167,7 @@ export const TuiThreadCommand = cmd({
       const { runMini } = await import("./run")
       await runMini({
         directory: resolveThreadDirectory(args.project),
-        continue: args.continue,
+        continue: args.continue || args.resume,
         session: args.session,
         fork: args.fork,
         model: args.model,
@@ -286,6 +291,7 @@ export const TuiThreadCommand = cmd({
             events: transport.events,
             args: {
               continue: args.continue,
+              resume: args.resume,
               sessionID: args.session,
               agent: args.agent,
               model: args.model,
@@ -303,7 +309,9 @@ export const TuiThreadCommand = cmd({
         unguard?.()
       } catch {}
     }
-    process.exit(0)
+    // Honor an exit code the TUI asked for (e.g. SENTE_RESTART_EXIT_CODE so the
+    // te launcher relaunches with --resume after "/restart"). Default stays 0.
+    process.exit(typeof process.exitCode === "number" ? process.exitCode : 0)
   },
 })
 // scratch

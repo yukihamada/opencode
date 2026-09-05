@@ -58,6 +58,8 @@ import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
+import { Resume } from "./util/resume"
+import { useEpilogue } from "./context/epilogue"
 import { ToastProvider, useToast } from "./ui/toast"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
@@ -285,7 +287,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                 <ToastProvider>
                                   <RouteProvider
                                     initialRoute={
-                                      input.args.continue
+                                      input.args.continue || input.args.resume
                                         ? {
                                             type: "session",
                                             sessionID: "dummy",
@@ -499,9 +501,10 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   })
 
   let continued = false
+  const [resumeTarget, setResumeTarget] = createSignal<string | undefined>()
   createEffect(() => {
     // When using -c, session list is loaded in blocking phase, so we can navigate at "partial"
-    if (continued || sync.status === "loading" || !args.continue) return
+    if (continued || sync.status === "loading" || !(args.continue || args.resume)) return
     const match = sync.data.session
       .toSorted((a, b) => b.time.updated - a.time.updated)
       .find((x) => x.parentID === undefined)?.id
@@ -517,8 +520,65 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         })
       } else {
         route.navigate({ type: "session", sessionID: match })
+        if (args.resume) setResumeTarget(match)
       }
     }
+  })
+
+  // --resume: once the model store is ready, check whether the continued session was
+  // cut off and, if so, queue the resume prompt automatically (no dialog — this path
+  // is used by the te launcher after a hang/restart, where nobody is there to answer).
+  let resumed = false
+  createEffect(() => {
+    const target = resumeTarget()
+    if (resumed || !target || !sync.ready || !local.model.ready) return
+    resumed = true
+    void (async () => {
+      const state = await Resume.inspect(sdk, target).catch(() => undefined)
+      if (!state) return
+      const model = local.model.current()
+      if (!model) return
+      toast.show({
+        variant: "info",
+        message: `${Resume.describe(state.kind)} Resuming…`,
+        duration: 4000,
+      })
+      await Resume.send(sdk, {
+        sessionID: target,
+        model,
+        agent: local.agent.current()?.name,
+        variant: local.model.variant.current(),
+      }).catch((error) => {
+        toast.show({
+          variant: "error",
+          message: error instanceof Error ? error.message : "Failed to resume session",
+          duration: 5000,
+        })
+      })
+    })()
+  })
+
+  // 🔁 Compact + restart: exit with SENTE_RESTART_EXIT_CODE so the te launcher
+  // relaunches with --resume. Without the launcher we just tell the user how to continue.
+  const epilogue = useEpilogue()
+  const restartExitCode = () => {
+    const code = Number(process.env.SENTE_RESTART_EXIT_CODE)
+    return Number.isInteger(code) && code > 0 && code < 256 ? code : undefined
+  }
+  const restart = () => {
+    const code = restartExitCode()
+    if (code !== undefined) {
+      process.exitCode = code
+    } else {
+      epilogue("Conversation compacted. Continue with: sente --resume")
+    }
+    exit()
+  }
+  const [pendingRestart, setPendingRestart] = createSignal<string | undefined>()
+  event.on("session.idle", (evt) => {
+    if (pendingRestart() !== evt.properties.sessionID) return
+    setPendingRestart(undefined)
+    restart()
   })
 
   // Handle --session with --fork: wait for sync to be fully complete before forking
@@ -590,6 +650,37 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             type: "home",
           })
           dialog.clear()
+        },
+      },
+      {
+        name: "session.restart",
+        title: "Compact and restart Sente",
+        category: "Session",
+        enabled: () => route.data.type === "session",
+        slashName: "restart",
+        slashAliases: ["reboot"],
+        run: async () => {
+          dialog.clear()
+          if (route.data.type !== "session") return
+          const sessionID = route.data.sessionID
+          const model = local.model.current()
+          if (!model) {
+            toast.show({ variant: "warning", message: "Connect a provider to compact this session", duration: 3000 })
+            return
+          }
+          toast.show({ variant: "info", message: "Compacting the conversation, then restarting…", duration: 8000 })
+          const status = sync.data.session_status[sessionID]
+          if (status && status.type !== "idle") await sdk.client.session.abort({ sessionID }).catch(() => {})
+          await sdk.client.session
+            .summarize({ sessionID, providerID: model.providerID, modelID: model.modelID })
+            .catch((error) => {
+              toast.show({
+                variant: "error",
+                message: error instanceof Error ? error.message : "Failed to compact session",
+                duration: 5000,
+              })
+            })
+          restart()
         },
       },
       {
@@ -1020,6 +1111,18 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     const error = evt.properties.error
     if (error && typeof error === "object" && error.name === "MessageAbortedError") return
     const message = errorMessage(error)
+
+    // Server-side rescue of a degraded conversation (see SessionDegrade): not an
+    // error for the user, just a heads-up. On the second rescue the server asks us
+    // to restart the process once the session settles.
+    const ref = error && typeof error === "object" && error.name === "UnknownError" ? error.data.ref : undefined
+    if (ref?.startsWith(Resume.DEGRADED_REF_PREFIX)) {
+      toast.show({ variant: "warning", message, duration: 7000 })
+      if (ref.startsWith(`${Resume.DEGRADED_REF_PREFIX}:restart`) && evt.properties.sessionID) {
+        setPendingRestart(evt.properties.sessionID)
+      }
+      return
+    }
 
     toast.show({
       variant: "error",

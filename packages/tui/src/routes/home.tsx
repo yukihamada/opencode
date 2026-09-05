@@ -12,8 +12,17 @@ import { useEditorContext } from "../context/editor"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTuiConfig } from "../config"
 import { HomeSessionDestinationProvider } from "./home/session-destination"
+import { useRoute } from "../context/route"
+import { useSDK } from "../context/sdk"
+import { useDialog } from "../ui/dialog"
+import { useKV } from "../context/kv"
+import { useToast } from "../ui/toast"
+import { DialogResume } from "../component/dialog-resume"
+import { Resume } from "../util/resume"
 
 let once = false
+// Ask about interrupted work at most once per process (not per visit to Home).
+let resumeAsked = false
 const placeholder = {
   normal: ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"],
   shell: ["ls -la", "git status", "pwd"],
@@ -51,9 +60,65 @@ export function Home() {
     return configured ?? 75
   })
   let sent = false
+  const nav = useRoute()
+  const sdk = useSDK()
+  const dialog = useDialog()
+  const kv = useKV()
+  const toast = useToast()
 
   onMount(() => {
     editor.clearSelection()
+  })
+
+  // ⏸ "Pick up where we left off": when the newest session in this directory was cut
+  // off (process died / timeout / error), offer a one-key resume instead of making the
+  // user hunt through /sessions. Skipped when the user already chose a target (-c/-s/
+  // --resume/--prompt) and remembered per session once dismissed with "Start fresh".
+  createEffect(() => {
+    if (resumeAsked) return
+    if (!sync.ready || !local.model.ready) return
+    if (args.continue || args.resume || args.sessionID || args.prompt || route.prompt) {
+      resumeAsked = true
+      return
+    }
+    const latest = Resume.latestRoot(sync.data.session)
+    if (!latest || kv.get("resume_dismissed") === latest.id) {
+      resumeAsked = true
+      return
+    }
+    resumeAsked = true
+    void (async () => {
+      const state = await Resume.inspect(sdk, latest.id).catch(() => undefined)
+      if (!state) return
+      const title = latest.title?.trim() || "Untitled session"
+      const choice = await DialogResume.show(
+        dialog,
+        "Resume interrupted work?",
+        `${title} (${Resume.ago(state.at)})\n${Resume.describe(state.kind)} Enter resumes; n starts fresh.`,
+      )
+      if (choice !== "resume") {
+        if (choice === "fresh") kv.set("resume_dismissed", latest.id)
+        return
+      }
+      const model = local.model.current()
+      if (!model) {
+        toast.show({ variant: "warning", message: "Connect a provider to resume this session", duration: 4000 })
+        return
+      }
+      nav.navigate({ type: "session", sessionID: latest.id })
+      await Resume.send(sdk, {
+        sessionID: latest.id,
+        model,
+        agent: local.agent.current()?.name,
+        variant: local.model.variant.current(),
+      }).catch((error) => {
+        toast.show({
+          variant: "error",
+          message: error instanceof Error ? error.message : "Failed to resume session",
+          duration: 5000,
+        })
+      })
+    })()
   })
 
   const bind = (r: PromptRef | undefined) => {

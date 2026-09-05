@@ -13,6 +13,7 @@ import { Provider } from "@/provider/provider"
 import { type Tool as AITool, tool, jsonSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
+import { SessionDegrade } from "./degrade"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
@@ -47,6 +48,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Flag } from "@sente-ai/core/flag/flag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@sente-ai/core/database/database"
 import { ModelV2 } from "@sente-ai/core/model"
@@ -1078,6 +1080,9 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    // Rescue budget for conversations that go off the rails (see SessionDegrade).
+    const degradeBudget = new SessionDegrade.Budget()
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1096,6 +1101,45 @@ const layer = Layer.effect(
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+
+          // 🩹 Conversation gone off track (garbage tokens / repeating itself / tool loop)?
+          // Compact with overflow=true so the summary excludes the broken turn and the
+          // user's request is replayed on a clean context. Budgeted per session so a
+          // truly stuck conversation cannot cycle forever; the second rescue also asks
+          // the client to restart the process (SENTE_RESTART_EXIT_CODE in the te launcher).
+          if (tasks.length === 0 && !Flag.SENTE_DISABLE_DEGRADE_RESCUE) {
+            const verdict = SessionDegrade.detect(msgs, lastUser.id)
+            if (verdict) {
+              const decision = degradeBudget.record(sessionID)
+              if (decision !== "ignore") {
+                yield* Effect.logWarning("conversation degraded, compacting", {
+                  "session.id": sessionID,
+                  reason: verdict.reason,
+                  detail: verdict.detail,
+                  decision,
+                })
+                yield* events.publish(Session.Event.Error, {
+                  sessionID,
+                  error: new NamedError.Unknown({
+                    message: SessionDegrade.describe(verdict, decision),
+                    ref: SessionDegrade.ref(decision, verdict.reason),
+                  }).toObject(),
+                })
+                yield* compaction.create({
+                  sessionID,
+                  agent: lastUser.agent,
+                  model: lastUser.model,
+                  auto: true,
+                  overflow: true,
+                })
+                continue
+              }
+              yield* Effect.logWarning("conversation degraded, rescue budget exhausted", {
+                "session.id": sessionID,
+                reason: verdict.reason,
+              })
+            }
+          }
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
