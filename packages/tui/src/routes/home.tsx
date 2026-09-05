@@ -94,7 +94,7 @@ export function Home() {
       const choice = await DialogResume.show(
         dialog,
         "Resume interrupted work?",
-        `${title} (${Resume.ago(state.at)})\n${Resume.describe(state.kind)} Enter resumes; n starts fresh.`,
+        `${title} (${Resume.ago(state.at)})\n${Resume.describe(state.kind)} Press r to resume; Enter starts fresh.`,
       )
       if (choice !== "resume") {
         if (choice === "fresh") kv.set("resume_dismissed", latest.id)

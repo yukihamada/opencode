@@ -20,12 +20,13 @@ const OPTIONS: { key: DialogResumeChoice; label: string }[] = [
 
 /**
  * Shown on startup when the newest session in this directory was cut off.
- * Enter resumes (default); ←/→ or Tab switch; Esc keeps the home screen.
+ * Enter starts fresh (default) so a question typed at startup is never swallowed
+ * as a resume; `r` resumes; ←/→ or Tab switch; Esc keeps the home screen.
  */
 export function DialogResume(props: DialogResumeProps) {
   const dialog = useDialog()
   const { theme } = useTheme()
-  const [store, setStore] = createStore({ active: "resume" as DialogResumeChoice })
+  const [store, setStore] = createStore({ active: "fresh" as DialogResumeChoice })
   const toggle = () => setStore("active", store.active === "resume" ? "fresh" : "resume")
   const choose = (choice: DialogResumeChoice) => {
     props.onChoose(choice)
