@@ -47,6 +47,10 @@ jobs:
 
       - name: Add upstream remote
         run: |
+          # setup-bun's install can touch tracked files (lockfile drift, postinstall);
+          # this checkout is disposable, so start the merge from a clean tree.
+          git status --porcelain
+          git reset --hard -q && git clean -fdq
           git remote add upstream https://github.com/anomalyco/opencode.git
           git config user.name "sente-sync[bot]"
           git config user.email "sente-sync@users.noreply.github.com"
