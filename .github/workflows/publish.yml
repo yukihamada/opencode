@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - ci
-      - dev
       - beta
       - fix/npm-native-binary-install
       - snapshot-*

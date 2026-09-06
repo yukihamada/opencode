@@ -1,0 +1,68 @@
+name: sente-release
+run-name: "sente release (${{ github.ref_name }})"
+
+# Builds the Sente CLI for darwin/linux and publishes it as the fork's *latest*
+# GitHub Release (tag `sente-<version>`). `te update` (teai.io/te installer) and
+# the binary's own updater (packages/sente/src/installation) download
+# `sente-<os>-<arch>.tar.gz` from releases/latest, so every push to the
+# release branch reaches other machines.
+on:
+  push:
+    branches:
+      - headless-model-fallback
+  workflow_dispatch:
+
+concurrency:
+  group: sente-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: github.repository == 'yukihamada/opencode'
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Version
+        id: version
+        run: |
+          echo "version=0.0.0-${{ github.ref_name }}-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+
+      - name: Build CLI (all darwin/linux targets)
+        run: ./packages/sente/script/build.ts --skip-install
+        env:
+          # Channel doubles as the session DB name (sente-<channel>.db); keep it
+          # fixed to the branch so updates never orphan existing sessions.
+          SENTE_CHANNEL: ${{ github.ref_name }}
+          SENTE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Package
+        run: |
+          set -eu
+          mkdir -p out
+          for dir in packages/sente/dist/sente-darwin-* packages/sente/dist/sente-linux-*; do
+            [ -d "$dir/bin" ] || continue
+            name="$(basename "$dir")"
+            tar -czf "out/$name.tar.gz" -C "$dir/bin" .
+          done
+          ls -la out
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: sente-${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          gh release create "$TAG" out/*.tar.gz \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --latest \
+            --title "Sente ${{ steps.version.outputs.version }}" \
+            --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater."
