@@ -36,7 +36,7 @@ jobs:
           echo "version=0.0.0-${{ github.ref_name }}-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
 
       - name: Build CLI (all darwin/linux targets)
-        run: ./packages/sente/script/build.ts --skip-install
+        run: ./packages/sente/script/build.ts
         env:
           # Channel doubles as the session DB name (sente-<channel>.db); keep it
           # fixed to the branch so updates never orphan existing sessions.
