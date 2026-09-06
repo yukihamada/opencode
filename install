@@ -326,6 +326,23 @@ download_and_install() {
         curl -# -L -o "$tmp_dir/$filename" "$url"
     fi
 
+    # Verify against the release's SHA256SUMS.txt when it exists (sente-release.yml
+    # publishes one from 2026-09-07 on); older releases fall through with a warning.
+    sums_url="${url%/*}/SHA256SUMS.txt"
+    if curl -fsSL -m 30 "$sums_url" -o "$tmp_dir/SHA256SUMS.txt" 2>/dev/null; then
+        expected=$(grep " $filename\$" "$tmp_dir/SHA256SUMS.txt" | awk '{print $1}')
+        if command -v shasum >/dev/null 2>&1; then
+            actual=$(shasum -a 256 "$tmp_dir/$filename" | awk '{print $1}')
+        else
+            actual=$(sha256sum "$tmp_dir/$filename" | awk '{print $1}')
+        fi
+        if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            echo -e "${RED}Error: checksum mismatch for $filename (expected ${expected:-none}, got $actual)${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${MUTED}No SHA256SUMS.txt for this release; skipping checksum verification.${NC}"
+    fi
     tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
 
     mv "$tmp_dir/sente" "$INSTALL_DIR"
