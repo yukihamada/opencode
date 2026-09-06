@@ -58,14 +58,13 @@ jobs:
           bun run script/sync-upstream.ts --ref "$UPSTREAM_REF" | tee sync.log
           code=${PIPESTATUS[0]}
           set -e
-          echo "code=$code" >> "$GITHUB_OUTPUT"
           if grep -q "^Already up to date" sync.log; then
             echo "uptodate=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "uptodate=false" >> "$GITHUB_OUTPUT"
           if [ "$code" = "2" ]; then
-            echo "::error::manual conflicts remain — run 'bun run sync-upstream' locally:"
+            echo "::error::manual conflicts remain — run 'bun run sync-upstream' locally to finish"
             sed -n '/still conflicted/,/^next:/p' sync.log
             exit 2
           fi
@@ -79,29 +78,36 @@ jobs:
 
       - name: Commit and open PR
         if: steps.sync.outputs.uptodate == 'false'
+        env:
+          TYPECHECK: ${{ steps.typecheck.outcome }}
         run: |
           set -eu
           UPSTREAM_SHA=$(git rev-parse --short "$UPSTREAM_REF")
           UPSTREAM_VERSION=$(git show "$UPSTREAM_REF:packages/opencode/package.json" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -1)
           COUNT=$(git rev-list --count "HEAD..$UPSTREAM_REF")
-          git commit -q -m "merge: upstream dev v${UPSTREAM_VERSION} → sente (rebrand 維持・sync-upstream 自動)" \
-            -m "$(sed -n '/sync-upstream summary/,/^next:/p' sync.log | sed '$d')"
+          sed -n '/sync-upstream summary/,/^next:/p' sync.log | sed '$d' > summary.txt
+          TITLE="merge: upstream dev v${UPSTREAM_VERSION} → sente (auto)"
+          git commit -q -F - <<MSG
+          merge: upstream dev v${UPSTREAM_VERSION} → sente (rebrand 維持・sync-upstream 自動)
+
+          $(cat summary.txt)
+          MSG
           git push -f origin "HEAD:refs/heads/$PR_BRANCH"
-          TYPECHECK="${{ steps.typecheck.outcome }}"
-          BODY="Automated weekly merge of anomalyco/opencode \`$UPSTREAM_REF\` (@ $UPSTREAM_SHA, v${UPSTREAM_VERSION}, $COUNT commits) via \`script/sync-upstream.ts\`.
+          cat > body.md <<BODY
+          Automated weekly merge of anomalyco/opencode \`$UPSTREAM_REF\` (@ $UPSTREAM_SHA, v${UPSTREAM_VERSION}, $COUNT commits) via \`script/sync-upstream.ts\`.
 
-\`\`\`
-$(sed -n '/sync-upstream summary/,/^next:/p' sync.log | sed '$d')
-\`\`\`
+          \`\`\`
+          $(cat summary.txt)
+          \`\`\`
 
-- typecheck (\`bun typecheck\`): **$TYPECHECK**
-- tests are not run here — before merging: \`cd packages/sente && bun test\` (use \`bun install --force\` if patched-dependency tests fail)
-- merging this PR triggers \`sente-release.yml\` → new latest Release → \`te update\` on each machine"
+          - typecheck (\`bun typecheck\`): **$TYPECHECK**
+          - tests are not run here. Before merging: \`cd packages/sente && bun test\` (\`bun install --force\` first if patched-dependency tests fail)
+          - merging this PR triggers \`sente-release.yml\` → new latest Release → \`te update\` on each machine
+          BODY
           EXISTING=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$PR_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
-            gh pr edit "$EXISTING" --repo "$GITHUB_REPOSITORY" --title "merge: upstream dev v${UPSTREAM_VERSION} → sente (auto)" --body "$BODY"
+            gh pr edit "$EXISTING" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file body.md
             echo "updated PR #$EXISTING"
           else
-            gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" --head "$PR_BRANCH" \
-              --title "merge: upstream dev v${UPSTREAM_VERSION} → sente (auto)" --body "$BODY"
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" --head "$PR_BRANCH" --title "$TITLE" --body-file body.md
           fi
