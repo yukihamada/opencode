@@ -52,6 +52,7 @@ jobs:
             name="$(basename "$dir")"
             tar -czf "out/$name.tar.gz" -C "$dir/bin" .
           done
+          (cd out && shasum -a 256 *.tar.gz > SHA256SUMS.txt)
           ls -la out
 
       - name: Release
@@ -60,9 +61,9 @@ jobs:
           TAG: sente-${{ steps.version.outputs.version }}
         run: |
           set -eu
-          gh release create "$TAG" out/*.tar.gz \
+          gh release create "$TAG" out/*.tar.gz out/SHA256SUMS.txt \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --latest \
             --title "Sente ${{ steps.version.outputs.version }}" \
-            --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater."
+            --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater. Verify with SHA256SUMS.txt."

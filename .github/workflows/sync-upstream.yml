@@ -43,6 +43,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SYNC_UPSTREAM_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: Validate input
+        run: |
+          # The ref reaches git fetch / rev-parse; only allow upstream/<branch-ish>.
+          [[ "$UPSTREAM_REF" =~ ^upstream/[A-Za-z0-9._/-]+$ ]] || { echo "::error::ref must look like upstream/<branch>, got: $UPSTREAM_REF"; exit 1; }
+
       - uses: ./.github/actions/setup-bun
 
       - name: Add upstream remote
