@@ -109,10 +109,8 @@ else
         ;;
     esac
 
-    archive_ext=".zip"
-    if [ "$os" = "linux" ]; then
-      archive_ext=".tar.gz"
-    fi
+    # Fork releases (yukihamada/opencode) ship tar.gz for every darwin/linux target.
+    archive_ext=".tar.gz"
 
     is_musl=false
     if [ "$os" = "linux" ]; then
@@ -168,21 +166,14 @@ else
     filename="$APP-$target$archive_ext"
 
 
-    if [ "$os" = "linux" ]; then
-        if ! command -v tar >/dev/null 2>&1; then
-             echo -e "${RED}Error: 'tar' is required but not installed.${NC}"
-             exit 1
-        fi
-    else
-        if ! command -v unzip >/dev/null 2>&1; then
-            echo -e "${RED}Error: 'unzip' is required but not installed.${NC}"
-            exit 1
-        fi
+    if ! command -v tar >/dev/null 2>&1; then
+         echo -e "${RED}Error: 'tar' is required but not installed.${NC}"
+         exit 1
     fi
 
     if [ -z "$requested_version" ]; then
-        url="https://github.com/anomalyco/sente/releases/latest/download/$filename"
-        specific_version=$(curl -s https://api.github.com/repos/anomalyco/sente/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+        url="https://github.com/yukihamada/opencode/releases/latest/download/$filename"
+        specific_version=$(curl -s https://api.github.com/repos/yukihamada/opencode/releases/latest | sed -n 's/.*"tag_name": *"\(sente-\|v\)\([^"]*\)".*/\2/p')
 
         if [[ $? -ne 0 || -z "$specific_version" ]]; then
             echo -e "${RED}Failed to fetch version information${NC}"
@@ -191,14 +182,15 @@ else
     else
         # Strip leading 'v' if present
         requested_version="${requested_version#v}"
-        url="https://github.com/anomalyco/sente/releases/download/v${requested_version}/$filename"
+        requested_version="${requested_version#sente-}"
+        url="https://github.com/yukihamada/opencode/releases/download/sente-${requested_version}/$filename"
         specific_version=$requested_version
 
         # Verify the release exists before downloading
-        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/anomalyco/sente/releases/tag/v${requested_version}")
+        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/yukihamada/opencode/releases/tag/sente-${requested_version}")
         if [ "$http_status" = "404" ]; then
-            echo -e "${RED}Error: Release v${requested_version} not found${NC}"
-            echo -e "${MUTED}Available releases: https://github.com/anomalyco/sente/releases${NC}"
+            echo -e "${RED}Error: Release sente-${requested_version} not found${NC}"
+            echo -e "${MUTED}Available releases: https://github.com/yukihamada/opencode/releases${NC}"
             exit 1
         fi
     fi
@@ -334,11 +326,7 @@ download_and_install() {
         curl -# -L -o "$tmp_dir/$filename" "$url"
     fi
 
-    if [ "$os" = "linux" ]; then
-        tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
-    else
-        unzip -q "$tmp_dir/$filename" -d "$tmp_dir"
-    fi
+    tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
 
     mv "$tmp_dir/sente" "$INSTALL_DIR"
     chmod 755 "${INSTALL_DIR}/sente"

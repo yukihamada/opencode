@@ -144,14 +144,25 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
 
     const upgradeCurl = Effect.fnUntraced(
       function* (target: string) {
-        const response = yield* httpOk.execute(HttpClientRequest.get("https://teai.io/sente/install"))
+        // Sente binaries installed by the te launcher live in ~/.opencode/bin; the te
+        // installer (teai.io/te) knows how to swap that binary from the fork's GitHub
+        // Releases when TE_FORCE_BINARY_UPDATE=1. Any other curl-style install goes
+        // through the fork's own install script.
+        const viaTe = process.execPath.includes(path.join(".opencode", "bin"))
+        const response = yield* httpOk.execute(
+          HttpClientRequest.get(
+            viaTe
+              ? "https://teai.io/te"
+              : "https://raw.githubusercontent.com/yukihamada/opencode/headless-model-fallback/install",
+          ),
+        )
         const body = yield* response.text
         const bodyBytes = new TextEncoder().encode(body)
         const shell = yield* upgradeScriptShell()
         const result = yield* appProcess.run(
           ChildProcess.make(shell, [], {
             stdin: Stream.make(bodyBytes),
-            env: { VERSION: target },
+            env: viaTe ? { TE_FORCE_BINARY_UPDATE: "1" } : { VERSION: target },
             extendEnv: true,
           }),
         )
@@ -173,6 +184,7 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
       }),
       method: Effect.fn("Installation.method")(function* () {
         if (process.execPath.includes(path.join(".sente", "bin"))) return "curl" as Method
+        if (process.execPath.includes(path.join(".opencode", "bin"))) return "curl" as Method
         if (process.execPath.includes(path.join(".local", "bin"))) return "curl" as Method
         const exec = process.execPath.toLowerCase()
 
@@ -255,12 +267,13 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
         }
 
         const response = yield* httpOk.execute(
-          HttpClientRequest.get("https://api.github.com/repos/anomalyco/sente/releases/latest").pipe(
+          HttpClientRequest.get("https://api.github.com/repos/yukihamada/opencode/releases/latest").pipe(
             HttpClientRequest.acceptJson,
           ),
         )
         const data = yield* HttpClientResponse.schemaBodyJson(GitHubRelease)(response)
-        return data.tag_name.replace(/^v/, "")
+        // Fork releases are tagged `sente-<version>` (see .github/workflows/sente-release.yml).
+        return data.tag_name.replace(/^(sente-|v)/, "")
       }, Effect.orDie),
       upgrade: Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
         let upgradeResult: { code: number; stdout: string; stderr: string } | undefined
