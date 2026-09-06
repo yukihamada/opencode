@@ -1,0 +1,107 @@
+name: sync-upstream
+run-name: "sync upstream → ${{ github.ref_name }}"
+
+# Weekly: merge anomalyco/opencode dev into the release branch with the
+# rebrand-aware resolver (script/sync-upstream.ts). Zero manual conflicts →
+# a PR against headless-model-fallback (merging it triggers sente-release).
+# Conflicts left → the job fails and lists them; run `bun run sync-upstream`
+# locally to finish by hand.
+on:
+  schedule:
+    - cron: "0 0 * * 1" # Monday 09:00 JST
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream ref to merge"
+        required: false
+        default: "upstream/dev"
+        type: string
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: github.repository == 'yukihamada/opencode'
+    env:
+      BASE_BRANCH: headless-model-fallback
+      PR_BRANCH: sync-upstream-auto
+      UPSTREAM_REF: ${{ inputs.ref || 'upstream/dev' }}
+      # A PAT (secrets.SYNC_UPSTREAM_TOKEN) lets CI run on the created PR;
+      # GITHUB_TOKEN-created PRs do not trigger pull_request workflows.
+      GH_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          ref: headless-model-fallback
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_UPSTREAM_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/anomalyco/opencode.git
+          git config user.name "sente-sync[bot]"
+          git config user.email "sente-sync@users.noreply.github.com"
+
+      - name: Merge upstream with the rebrand-aware resolver
+        id: sync
+        run: |
+          set +e
+          bun run script/sync-upstream.ts --ref "$UPSTREAM_REF" | tee sync.log
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if grep -q "^Already up to date" sync.log; then
+            echo "uptodate=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "uptodate=false" >> "$GITHUB_OUTPUT"
+          if [ "$code" = "2" ]; then
+            echo "::error::manual conflicts remain — run 'bun run sync-upstream' locally:"
+            sed -n '/still conflicted/,/^next:/p' sync.log
+            exit 2
+          fi
+          [ "$code" = "0" ]
+
+      - name: Typecheck
+        if: steps.sync.outputs.uptodate == 'false'
+        id: typecheck
+        continue-on-error: true
+        run: bun typecheck
+
+      - name: Commit and open PR
+        if: steps.sync.outputs.uptodate == 'false'
+        run: |
+          set -eu
+          UPSTREAM_SHA=$(git rev-parse --short "$UPSTREAM_REF")
+          UPSTREAM_VERSION=$(git show "$UPSTREAM_REF:packages/opencode/package.json" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -1)
+          COUNT=$(git rev-list --count "HEAD..$UPSTREAM_REF")
+          git commit -q -m "merge: upstream dev v${UPSTREAM_VERSION} → sente (rebrand 維持・sync-upstream 自動)" \
+            -m "$(sed -n '/sync-upstream summary/,/^next:/p' sync.log | sed '$d')"
+          git push -f origin "HEAD:refs/heads/$PR_BRANCH"
+          TYPECHECK="${{ steps.typecheck.outcome }}"
+          BODY="Automated weekly merge of anomalyco/opencode \`$UPSTREAM_REF\` (@ $UPSTREAM_SHA, v${UPSTREAM_VERSION}, $COUNT commits) via \`script/sync-upstream.ts\`.
+
+\`\`\`
+$(sed -n '/sync-upstream summary/,/^next:/p' sync.log | sed '$d')
+\`\`\`
+
+- typecheck (\`bun typecheck\`): **$TYPECHECK**
+- tests are not run here — before merging: \`cd packages/sente && bun test\` (use \`bun install --force\` if patched-dependency tests fail)
+- merging this PR triggers \`sente-release.yml\` → new latest Release → \`te update\` on each machine"
+          EXISTING=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$PR_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --repo "$GITHUB_REPOSITORY" --title "merge: upstream dev v${UPSTREAM_VERSION} → sente (auto)" --body "$BODY"
+            echo "updated PR #$EXISTING"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" --head "$PR_BRANCH" \
+              --title "merge: upstream dev v${UPSTREAM_VERSION} → sente (auto)" --body "$BODY"
+          fi
