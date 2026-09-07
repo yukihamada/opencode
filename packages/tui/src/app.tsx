@@ -59,6 +59,7 @@ import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
 import { Resume } from "./util/resume"
+import { Watashibi } from "./util/watashibi"
 import { useEpilogue } from "./context/epilogue"
 import { ToastProvider, useToast } from "./ui/toast"
 import { isDefaultTitle } from "./util/session"
@@ -581,6 +582,36 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     restart()
   })
 
+  // 🔥 渡し火 (Watashibi): once the old session has written its ember note and gone idle,
+  // ignite a fresh session (empty context) that reads only that note and continues.
+  const [pendingWatashibi, setPendingWatashibi] = createSignal<string | undefined>()
+  event.on("session.idle", (evt) => {
+    const old = pendingWatashibi()
+    if (old !== evt.properties.sessionID) return
+    setPendingWatashibi(undefined)
+    const model = local.model.current()
+    if (!model) return
+    const prev = sync.data.session.find((s) => s.id === old)
+    void Watashibi.ignite(sdk, {
+      model,
+      agent: local.agent.current()?.name,
+      variant: local.model.variant.current(),
+      directory: prev?.directory,
+      workspace: prev?.workspaceID,
+    })
+      .then((sessionID) => {
+        route.navigate({ type: "session", sessionID })
+        toast.show({ variant: "success", message: "渡し火: 新しいセッションで続きを始めました (.sente/watashibi/latest.md)", duration: 6000 })
+      })
+      .catch((error) => {
+        toast.show({
+          variant: "error",
+          message: error instanceof Error ? error.message : "渡し火に失敗しました",
+          duration: 6000,
+        })
+      })
+  })
+
   // Handle --session with --fork: wait for sync to be fully complete before forking
   // (session list loads in non-blocking phase for --session, so we must wait for "complete"
   // to avoid a race where reconcile overwrites the newly forked session)
@@ -681,6 +712,41 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
               })
             })
           restart()
+        },
+      },
+      {
+        name: "session.watashibi",
+        title: "渡し火: hand off to a fresh session (write embers, start clean)",
+        category: "Session",
+        enabled: () => route.data.type === "session",
+        slashName: "watashibi",
+        slashAliases: ["handoff", "hikitsugi"],
+        run: async () => {
+          dialog.clear()
+          if (route.data.type !== "session") return
+          const sessionID = route.data.sessionID
+          const model = local.model.current()
+          if (!model) {
+            toast.show({ variant: "warning", message: "Connect a provider to hand off this session", duration: 3000 })
+            return
+          }
+          const status = sync.data.session_status[sessionID]
+          if (status && status.type !== "idle") await sdk.client.session.abort({ sessionID }).catch(() => {})
+          toast.show({ variant: "info", message: "渡し火: 種火(引き継ぎ書)を書いています…", duration: 8000 })
+          setPendingWatashibi(sessionID)
+          await Watashibi.requestNote(sdk, {
+            sessionID,
+            model,
+            agent: local.agent.current()?.name,
+            variant: local.model.variant.current(),
+          }).catch((error) => {
+            setPendingWatashibi(undefined)
+            toast.show({
+              variant: "error",
+              message: error instanceof Error ? error.message : "Failed to write the handoff note",
+              duration: 5000,
+            })
+          })
         },
       },
       {
