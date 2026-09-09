@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@kobalte/core": "catalog:",
-    "@sente-ai/client": "file:../app/vendor/opencode-ai-client-1.17.13-v2.tgz",
+    "@sente-ai/client": "file:../app/vendor/sente-ai-client-1.17.13-v2.tgz",
     "@sente-ai/core": "workspace:*",
     "@sente-ai/sdk": "workspace:*",
     "@sente-ai/ui": "workspace:*",

@@ -29,7 +29,7 @@ test("starts every configured WSL server on initialization", () => {
 test("rejects an update that did not install the desktop version", () => {
   expect(() => expectOpencodeVersion("1.16.2", "1.16.2")).not.toThrow()
   expect(() => expectOpencodeVersion("1.14.35", "1.16.2")).toThrow(
-    "OpenCode update finished but Debian still reports 1.14.35; expected 1.16.2",
+    "Sente update finished but Debian still reports 1.14.35; expected 1.16.2",
   )
 })
 
@@ -64,7 +64,7 @@ test("clears cached distro probes when removing a WSL server", () => {
       },
       "Debian",
     ),
-  ).toEqual({ distroProbes: {}, opencodeChecks: {} })
+  ).toEqual({ distroProbes: {}, senteChecks: {} })
 })
 
 test("opens terminals for distro names containing spaces", () => {
@@ -128,7 +128,7 @@ test("ignores stale background OpenCode checks after removing a WSL server", asy
   await new Promise((resolve) => setTimeout(resolve, 0))
 
   expect(controller.getState().servers).toEqual([])
-  expect(controller.getState().opencodeChecks).toEqual({})
+  expect(controller.getState().senteChecks).toEqual({})
 })
 
 test("ignores stale startup OpenCode checks after removing a WSL server", async () => {
@@ -147,7 +147,7 @@ test("ignores stale startup OpenCode checks after removing a WSL server", async 
   await new Promise((resolve) => setTimeout(resolve, 0))
 
   expect(controller.getState().servers).toEqual([])
-  expect(controller.getState().opencodeChecks).toEqual({})
+  expect(controller.getState().senteChecks).toEqual({})
 })
 
 test("probes addable distros in parallel before checking OpenCode", async () => {
@@ -178,7 +178,7 @@ test("probes addable distros in parallel before checking OpenCode", async () => 
 
   expect(Object.keys(controller.getState().distroProbes)).toEqual(["Debian", "Ubuntu"])
   expect(opencode).toEqual(["Debian", "Ubuntu"])
-  expect(Object.keys(controller.getState().opencodeChecks)).toEqual(["Debian", "Ubuntu"])
+  expect(Object.keys(controller.getState().senteChecks)).toEqual(["Debian", "Ubuntu"])
 })
 
 test("does not check OpenCode in addable distros that cannot execute commands", async () => {
@@ -203,7 +203,7 @@ test("does not check OpenCode in addable distros that cannot execute commands", 
 
   expect(Object.keys(controller.getState().distroProbes)).toEqual(["Debian", "Ubuntu"])
   expect(opencode).toEqual(["Debian"])
-  expect(Object.keys(controller.getState().opencodeChecks)).toEqual(["Debian"])
+  expect(Object.keys(controller.getState().senteChecks)).toEqual(["Debian"])
 })
 
 async function waitFor(check: () => boolean) {

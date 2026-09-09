@@ -8,7 +8,7 @@ import { Integration } from "@sente-ai/core/integration"
 import { ModelV2 } from "@sente-ai/core/model"
 import { PluginV2 } from "@sente-ai/core/plugin"
 import { PluginHost } from "@sente-ai/core/plugin/host"
-import { OpencodePlugin } from "@sente-ai/core/plugin/provider/sente"
+import { SentePlugin } from "@sente-ai/core/plugin/provider/sente"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
@@ -21,7 +21,7 @@ const addPlugin = Effect.fn(function* (http?: HttpClient.HttpClient) {
   const events = yield* EventV2.Service
   const integration = yield* Integration.Service
   const client = yield* HttpClient.HttpClient
-  yield* OpencodePlugin.effect(host).pipe(
+  yield* SentePlugin.effect(host).pipe(
     Effect.provideService(EventV2.Service, events),
     Effect.provideService(Integration.Service, integration),
     Effect.provideService(HttpClient.HttpClient, http ?? client),
@@ -70,7 +70,7 @@ function withEnv<A, E, R>(vars: Record<string, string | undefined>, effect: () =
 
 const cost = (input: number, output = 0) => [{ input, output, cache: { read: 0, write: 0 } }]
 
-describe("OpencodePlugin", () => {
+describe("SentePlugin", () => {
   it.effect("registers account and service account methods", () =>
     Effect.gen(function* () {
       yield* addPlugin()
@@ -94,7 +94,7 @@ describe("OpencodePlugin", () => {
             Response.json({
               device_code: "device",
               user_code: "user",
-              verification_uri_complete: "/console/device?user_code=user&client_id=sente-cli",
+              verification_uri_complete: "/sente/console/device?user_code=user&client_id=sente-cli",
               expires_in: 60,
               interval: 60,
             }),

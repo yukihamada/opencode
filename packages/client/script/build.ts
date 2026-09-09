@@ -13,8 +13,8 @@ await Effect.runPromise(
         emitPromise(contract, {
           outputTypes: {
             "events.subscribe": {
-              name: "OpenCodeEventEncoded",
-              import: 'import type { OpenCodeEventEncoded } from "@sente-ai/protocol/groups/event"',
+              name: "SenteEventEncoded",
+              import: 'import type { SenteEventEncoded } from "@sente-ai/protocol/groups/event"',
             },
           },
         }),

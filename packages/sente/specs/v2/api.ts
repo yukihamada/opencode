@@ -1,9 +1,9 @@
 // @ts-nocheck
 
-import { OpenCode } from "@sente-ai/core"
+import { Sente } from "@sente-ai/core"
 import { ReadTool } from "@sente-ai/core/tools"
 
-const opencode = OpenCode.make({})
+const opencode = Sente.make({})
 
 opencode.tool.add(ReadTool)
 

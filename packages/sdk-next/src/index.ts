@@ -1,4 +1,4 @@
-export * as OpenCode from "./opencode"
+export * as Sente from "./opencode"
 export * as Tool from "./tool"
 
 export { ClientError } from "@sente-ai/client/effect"
@@ -14,4 +14,4 @@ export {
   SessionInput,
   SessionMessage,
 } from "@sente-ai/client/effect"
-export type { OpenCodeEvent } from "@sente-ai/client/effect"
+export type { SenteEvent } from "@sente-ai/client/effect"
