@@ -20,6 +20,10 @@ const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
+// Precompile JS to JSC bytecode inside the single-file binary. Skips parse/compile of the
+// ~100MB bundle on every launch (measured: TUI first draw ~1.1s -> lower). Opt-in while we
+// validate it across platforms; bytecode is ESM-compatible in bun >= 1.3.
+const bytecodeFlag = process.argv.includes("--bytecode")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
 
@@ -169,6 +173,7 @@ for (const item of targets) {
     minify: true,
     sourcemap: sourcemapsFlag ? "linked" : "none",
     splitting: true,
+    bytecode: bytecodeFlag,
     compile: {
       autoloadBunfig: false,
       autoloadDotenv: false,

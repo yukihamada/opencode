@@ -26,7 +26,7 @@ import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TuiEvent } from "@/server/tui-event"
-import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Context, Schema, Scope, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -162,6 +162,10 @@ export interface McpTool {
 }
 
 export interface Interface {
+  // Fire-and-forget: start connecting configured servers into the instance scope so the
+  // handshake (remote: TLS + initialize, ~0.5s+) overlaps with user input instead of
+  // blocking the first prompt's tool resolution. Idempotent via InstanceState.
+  readonly init: () => Effect.Effect<void>
   readonly status: () => Effect.Effect<Record<string, Status>>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
@@ -208,6 +212,7 @@ const layer = Layer.effect(
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
     const browser = yield* McpBrowser.Service
+    const scope = yield* Scope.Scope
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -607,6 +612,10 @@ const layer = Layer.effect(
       return result
     })
 
+    const init = Effect.fn("MCP.init")(function* () {
+      yield* InstanceState.get(state).pipe(Effect.ignoreCause, Effect.forkIn(scope))
+    })
+
     const clients = Effect.fn("MCP.clients")(function* () {
       const s = yield* InstanceState.get(state)
       return s.clients
@@ -970,6 +979,7 @@ const layer = Layer.effect(
     })
 
     return Service.of({
+      init,
       status,
       clients,
       instructions,
