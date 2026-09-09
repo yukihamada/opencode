@@ -191,7 +191,7 @@ describe("HttpApi UI fallback", () => {
       const response = yield* uiApp({
         disableEmbeddedWebUi: true,
         client: httpClient(
-          new Response("<html>opencode</html>", { headers: { "content-type": "text/html" } }),
+          new Response("<html>sente</html>", { headers: { "content-type": "text/html" } }),
           (request) => {
             proxiedUrl = request.url
           },
@@ -200,7 +200,7 @@ describe("HttpApi UI fallback", () => {
 
       expect(response.status).toBe(200)
       expect(response.headers.get("content-type")).toContain("text/html")
-      expect(yield* responseText(response)).toBe("<html>opencode</html>")
+      expect(yield* responseText(response)).toBe("<html>sente</html>")
       expect(proxiedUrl).toBe("https://teai.io/sente/app/")
     }),
   )
@@ -278,7 +278,7 @@ describe("HttpApi UI fallback", () => {
                 Effect.succeed(
                   HttpClientResponse.fromWeb(
                     request,
-                    new Response("<html>opencode</html>", {
+                    new Response("<html>sente</html>", {
                       headers: {
                         "transfer-encoding": "chunked",
                         "content-type": "text/html",
@@ -295,7 +295,7 @@ describe("HttpApi UI fallback", () => {
 
       expect(response.status).toBe(200)
       expect(response.headers.get("transfer-encoding")).toBeNull()
-      expect(yield* responseText(response)).toBe("<html>opencode</html>")
+      expect(yield* responseText(response)).toBe("<html>sente</html>")
     }),
   )
 
@@ -385,11 +385,11 @@ describe("HttpApi UI fallback", () => {
         password: "secret",
         username: "sente",
         disableEmbeddedWebUi: true,
-        client: httpClient(new Response("<html>opencode</html>", { headers: { "content-type": "text/html" } })),
-      }).request(`/?auth_token=${btoa("opencode:secret")}`)
+        client: httpClient(new Response("<html>sente</html>", { headers: { "content-type": "text/html" } })),
+      }).request(`/?auth_token=${btoa("sente:secret")}`)
 
       expect(response.status).toBe(200)
-      expect(yield* responseText(response)).toBe("<html>opencode</html>")
+      expect(yield* responseText(response)).toBe("<html>sente</html>")
     }),
   )
 
@@ -400,7 +400,7 @@ describe("HttpApi UI fallback", () => {
         username: "sente",
         disableEmbeddedWebUi: true,
       }).request("/", {
-        headers: { authorization: `Basic ${btoa("opencode:secret")}` },
+        headers: { authorization: `Basic ${btoa("sente:secret")}` },
       })
 
       expect(response.status).toBe(200)
@@ -414,7 +414,7 @@ describe("HttpApi UI fallback", () => {
         username: "sente",
         disableEmbeddedWebUi: true,
       }).request("/", {
-        headers: { authorization: `Basic ${btoa("opencode:sec:ret")}` },
+        headers: { authorization: `Basic ${btoa("sente:sec:ret")}` },
       })
 
       expect(response.status).toBe(200)

@@ -7,15 +7,15 @@ import type {
   WorkspaceAdapter as PluginWorkspaceAdapter,
 } from "@sente-ai/plugin"
 import { Config } from "@/config/config"
-import { createOpencodeClient } from "@sente-ai/sdk"
+import { createSenteClient } from "@sente-ai/sdk"
 import { ServerAuth } from "@/server/auth"
 import { CodexAuthPlugin } from "./openai/codex"
 import { Session } from "@/session/session"
 import { NamedError } from "@sente-ai/core/util/error"
 import { CopilotAuthPlugin } from "./github-copilot/copilot"
 import { ModalPlugin } from "./modal/modal"
-import { gitlabAuthPlugin as GitlabAuthPlugin } from "sente-gitlab-auth"
-import { PoeAuthPlugin } from "sente-poe-auth"
+import { gitlabAuthPlugin as GitlabAuthPlugin } from "opencode-gitlab-auth"
+import { PoeAuthPlugin } from "opencode-poe-auth"
 import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cloudflare"
 import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
@@ -73,8 +73,8 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
       }),
     CopilotAuthPlugin,
     ModalPlugin,
-    GitlabAuthPlugin,
-    PoeAuthPlugin,
+    GitlabAuthPlugin as unknown as PluginInstance,
+    PoeAuthPlugin as unknown as PluginInstance,
     CloudflareWorkersAuthPlugin,
     CloudflareAIGatewayAuthPlugin,
     AzureAuthPlugin,
@@ -143,7 +143,7 @@ const layer = Layer.effect(
         const { Server } = yield* Effect.promise(() => import("../server/server"))
 
         const serverUrl = Server.url
-        const client = createOpencodeClient({
+        const client = createSenteClient({
           baseUrl: serverUrl?.toString() ?? "http://localhost:4096",
           directory: ctx.directory,
           headers: ServerAuth.headers(),

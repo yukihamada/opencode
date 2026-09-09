@@ -54,6 +54,8 @@ export function logo(pad?: string) {
       result.push(row)
       result.push(EOL)
     }
+    if (pad) result.push(pad)
+    result.push("  先手")
     return result.join("").trimEnd()
   }
 
@@ -101,6 +103,8 @@ export function logo(pad?: string) {
     result.push(draw(other, right.fg, right.shadow, right.bg))
     result.push(EOL)
   })
+  if (pad) result.push(pad)
+  result.push(Style.TEXT_DIM, "  先手", reset)
   return result.join("").trimEnd()
 }
 

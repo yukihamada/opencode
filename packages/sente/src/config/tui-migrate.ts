@@ -27,8 +27,8 @@ interface MigrateInput {
  * skips only locations where a tui.json already exists.
  */
 export async function migrateTuiConfig(input: MigrateInput) {
-  const opencode = await opencodeFiles(input)
-  for (const file of opencode) {
+  const sente = await senteFiles(input)
+  for (const file of sente) {
     const source = await Filesystem.readText(file).catch(() => undefined)
     if (!source) continue
     const errors: JsoncParseError[] = []
@@ -112,7 +112,7 @@ async function backupAndStripLegacy(file: string, source: string) {
     .catch(() => false)
 }
 
-async function opencodeFiles(input: { directories: string[]; cwd: string }) {
+async function senteFiles(input: { directories: string[]; cwd: string }) {
   const files = [
     ...ConfigPaths.fileInDirectory(Global.Path.config, "sente"),
     ...(await Filesystem.findUp(["sente.json", "sente.jsonc"], input.cwd, undefined, { rootFirst: true })),

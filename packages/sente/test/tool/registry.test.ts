@@ -124,7 +124,7 @@ describe("tool.registry", () => {
       const agents = yield* Agent.Service
       const ids = yield* registry.ids()
       const tools = yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
+        providerID: ProviderV2.ID.sente,
         modelID: ModelV2.ID.make("test"),
         agent: yield* agents.defaultInfo(),
       })
@@ -141,7 +141,7 @@ describe("tool.registry", () => {
       const registry = yield* ToolRegistry.Service
       const agents = yield* Agent.Service
       const tools = yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
+        providerID: ProviderV2.ID.sente,
         modelID: ModelV2.ID.make("test"),
         agent: yield* agents.defaultInfo(),
       })
@@ -157,7 +157,7 @@ describe("tool.registry", () => {
       const build = yield* agent.get("build")
       if (!build) throw new Error("build agent not found")
       const task = (yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
+        providerID: ProviderV2.ID.sente,
         modelID: ModelV2.ID.make("test"),
         agent: build,
       })).find((tool) => tool.id === "task")
@@ -167,11 +167,11 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("loads tools from .opencode/tool (singular)", () =>
+  it.instance("loads tools from .sente/tool (singular)", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      const opencode = path.join(test.directory, ".sente")
-      const tool = path.join(opencode, "tool")
+      const sente = path.join(test.directory, ".sente")
+      const tool = path.join(sente, "tool")
       yield* Effect.promise(() => fs.mkdir(tool, { recursive: true }))
       yield* Effect.promise(() =>
         Bun.write(
@@ -194,7 +194,7 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("ignores non-tool exports in .opencode/tool files", () =>
+  it.instance("ignores non-tool exports in .sente/tool files", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const tool = path.join(test.directory, ".sente", "tool")
@@ -258,7 +258,7 @@ describe("tool.registry", () => {
   )
 
   // Same regression, plugin entry point. The original reports (#27451, #27630)
-  // came in through `plugin.list()` — `oh-my-opencode` was registering a tool
+  // came in through `plugin.list()` — `oh-my-sente` was registering a tool
   // with `args: undefined` and crashing every message submit. The file-scan
   // and plugin-list loops both funnel through `fromPlugin`, but covering both
   // entry points means a future refactor that splits them won't silently lose
@@ -272,11 +272,11 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("loads tools from .opencode/tools (plural)", () =>
+  it.instance("loads tools from .sente/tools (plural)", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      const opencode = path.join(test.directory, ".sente")
-      const tools = path.join(opencode, "tools")
+      const sente = path.join(test.directory, ".sente")
+      const tools = path.join(sente, "tools")
       yield* Effect.promise(() => fs.mkdir(tools, { recursive: true }))
       yield* Effect.promise(() =>
         Bun.write(
@@ -335,7 +335,7 @@ describe("tool.registry", () => {
 
       const agents = yield* Agent.Service
       const promptTools = yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
+        providerID: ProviderV2.ID.sente,
         modelID: ModelV2.ID.make("test"),
         agent: yield* agents.defaultInfo(),
       })
@@ -355,13 +355,13 @@ describe("tool.registry", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const opencode = path.join(test.directory, ".sente")
-        const customTools = path.join(opencode, "tools")
-        const plugin = path.join(opencode, "node_modules", "@sente-ai", "plugin")
+        const sente = path.join(test.directory, ".sente")
+        const customTools = path.join(sente, "tools")
+        const plugin = path.join(sente, "node_modules", "@sente-ai", "plugin")
         yield* Effect.promise(() => fs.mkdir(path.join(plugin, "dist"), { recursive: true }))
         yield* Effect.promise(() => fs.mkdir(customTools, { recursive: true }))
         yield* Effect.promise(() =>
-          fs.cp(path.dirname(fileURLToPath(import.meta.resolve("zod"))), path.join(opencode, "node_modules", "zod"), {
+          fs.cp(path.dirname(fileURLToPath(import.meta.resolve("zod"))), path.join(sente, "node_modules", "zod"), {
             dereference: true,
             recursive: true,
           }),
@@ -497,12 +497,12 @@ describe("tool.registry", () => {
   it.instance("loads tools with external dependencies without crashing", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      const opencode = path.join(test.directory, ".sente")
-      const tools = path.join(opencode, "tools")
+      const sente = path.join(test.directory, ".sente")
+      const tools = path.join(sente, "tools")
       yield* Effect.promise(() => fs.mkdir(tools, { recursive: true }))
       yield* Effect.promise(() =>
         Bun.write(
-          path.join(opencode, "package.json"),
+          path.join(sente, "package.json"),
           JSON.stringify({
             name: "custom-tools",
             dependencies: {
@@ -514,7 +514,7 @@ describe("tool.registry", () => {
       )
       yield* Effect.promise(() =>
         Bun.write(
-          path.join(opencode, "package-lock.json"),
+          path.join(sente, "package-lock.json"),
           JSON.stringify({
             name: "custom-tools",
             lockfileVersion: 3,
@@ -530,7 +530,7 @@ describe("tool.registry", () => {
         ),
       )
 
-      const cowsay = path.join(opencode, "node_modules", "cowsay")
+      const cowsay = path.join(sente, "node_modules", "cowsay")
       yield* Effect.promise(() => fs.mkdir(cowsay, { recursive: true }))
       yield* Effect.promise(() =>
         Bun.write(

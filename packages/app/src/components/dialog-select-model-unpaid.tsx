@@ -1,10 +1,10 @@
-import { Button } from "@opencode-ai/ui/button"
-import { useDialog } from "@opencode-ai/ui/context/dialog"
-import { Dialog } from "@opencode-ai/ui/dialog"
-import { List, type ListRef } from "@opencode-ai/ui/list"
-import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
-import { Tag } from "@opencode-ai/ui/tag"
-import { Tooltip } from "@opencode-ai/ui/tooltip"
+import { Button } from "@sente-ai/ui/button"
+import { useDialog } from "@sente-ai/ui/context/dialog"
+import { Dialog } from "@sente-ai/ui/dialog"
+import { List, type ListRef } from "@sente-ai/ui/list"
+import { ProviderIcon } from "@sente-ai/ui/provider-icon"
+import { Tag } from "@sente-ai/ui/tag"
+import { Tooltip } from "@sente-ai/ui/tooltip"
 import { type Component, Show } from "solid-js"
 import { useLocal } from "@/context/local"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
@@ -61,7 +61,7 @@ export const DialogSelectModelUnpaid: Component<{ model?: ModelState }> = (props
                 <ModelTooltip
                   model={item}
                   latest={item.latest}
-                  free={item.provider.id === "opencode" && (!item.cost || item.cost.input === 0)}
+                  free={item.provider.id === "sente" && (!item.cost || item.cost.input === 0)}
                 />
               }
             >
@@ -110,16 +110,16 @@ export const DialogSelectModelUnpaid: Component<{ model?: ModelState }> = (props
                   <div class="w-full flex items-center gap-x-3">
                     <ProviderIcon data-slot="list-item-extra-icon" id={i.id} />
                     <span>{i.name}</span>
-                    <Show when={i.id === "opencode"}>
-                      <div class="text-14-regular text-text-weak">{language.t("dialog.provider.opencode.tagline")}</div>
+                    <Show when={i.id === "sente"}>
+                      <div class="text-14-regular text-text-weak">{language.t("dialog.provider.sente.tagline")}</div>
                     </Show>
-                    <Show when={i.id === "opencode"}>
+                    <Show when={i.id === "sente"}>
                       <Tag>{language.t("dialog.provider.tag.recommended")}</Tag>
                     </Show>
-                    <Show when={i.id === "opencode-go"}>
+                    <Show when={i.id === "sente-go"}>
                       <>
                         <div class="text-14-regular text-text-weak">
-                          {language.t("dialog.provider.opencodeGo.tagline")}
+                          {language.t("dialog.provider.senteGo.tagline")}
                         </div>
                         <Tag>{language.t("dialog.provider.tag.recommended")}</Tag>
                       </>

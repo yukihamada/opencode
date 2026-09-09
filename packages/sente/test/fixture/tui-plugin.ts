@@ -1,4 +1,4 @@
-import { createOpencodeClient } from "@sente-ai/sdk/v2"
+import { createSenteClient } from "@sente-ai/sdk/v2"
 import { RGBA, type CliRenderer } from "@opentui/core"
 import type { HostPluginApi } from "@sente-ai/tui/plugin/slots"
 import { createTuiResolvedConfig } from "./tui-runtime"
@@ -127,7 +127,7 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
   const kv: Record<string, unknown> = {}
   const count = opts.count
   const ctrl = new AbortController()
-  const own = createOpencodeClient({
+  const own = createSenteClient({
     baseUrl: "http://localhost:4096",
   })
   const fallback = () => own
@@ -197,7 +197,7 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
       soundboard: {
         registerPack: (pack) => opts.attention?.soundboard?.registerPack?.(pack) ?? (() => {}),
         activate: (id, options) => opts.attention?.soundboard?.activate?.(id, options) ?? false,
-        current: () => opts.attention?.soundboard?.current?.() ?? "opencode.default",
+        current: () => opts.attention?.soundboard?.current?.() ?? "sente.default",
         list: () => opts.attention?.soundboard?.list?.() ?? [],
       },
     },

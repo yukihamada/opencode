@@ -58,7 +58,7 @@ await createClient({
     },
     {
       name: "@hey-api/sdk",
-      instance: "OpencodeClient",
+      instance: "SenteClient",
       exportFromIndex: false,
       auth: false,
       paramsStructure: "flat",

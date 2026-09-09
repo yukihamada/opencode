@@ -1,4 +1,4 @@
-// End-to-end regression tests for opencode#24432 and opencode#32051/#32052.
+// End-to-end regression tests for sente#24432 and sente#32051/#32052.
 //
 // Routes through the actual ai-gateway-provider chain that provider.ts builds at
 // runtime, with only the network boundary stubbed:

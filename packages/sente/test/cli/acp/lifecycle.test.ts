@@ -10,12 +10,12 @@ import { cliIt } from "../../lib/cli-process"
 import { expectOk, selectConfigOption } from "./acp-test-client"
 import { createAcpClient, initialize, newSession, verifierConfig } from "./helpers"
 
-describe("opencode acp lifecycle subprocess", () => {
+describe("sente acp lifecycle subprocess", () => {
   cliIt.live(
     "stdin EOF exits cleanly",
-    ({ opencode }) =>
+    ({ sente }) =>
       Effect.gen(function* () {
-        const acp = yield* opencode.acp()
+        const acp = yield* sente.acp()
         acp.close()
 
         const code = yield* Effect.promise(() => acp.exited).pipe(Effect.timeout(Duration.seconds(5)))
@@ -26,10 +26,10 @@ describe("opencode acp lifecycle subprocess", () => {
 
   cliIt.live(
     "close capability and close request",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, sente }) =>
       Effect.gen(function* () {
         const acp = yield* createAcpClient(
-          { opencode },
+          { sente },
           { SENTE_CONFIG_CONTENT: JSON.stringify(verifierConfig(llm.url)) },
         )
         const initialized = yield* initialize(acp)
@@ -43,10 +43,10 @@ describe("opencode acp lifecycle subprocess", () => {
 
   cliIt.live(
     "loadSession capability and load request return session config options",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, sente }) =>
       Effect.gen(function* () {
         const acp = yield* createAcpClient(
-          { opencode },
+          { sente },
           { SENTE_CONFIG_CONTENT: JSON.stringify(verifierConfig(llm.url)) },
         )
         const initialized = yield* initialize(acp)
@@ -67,10 +67,10 @@ describe("opencode acp lifecycle subprocess", () => {
 
   cliIt.live(
     "list request includes a live ACP-created session",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, sente }) =>
       Effect.gen(function* () {
         const acp = yield* createAcpClient(
-          { opencode },
+          { sente },
           { SENTE_CONFIG_CONTENT: JSON.stringify(verifierConfig(llm.url)) },
         )
         yield* initialize(acp)
@@ -84,9 +84,9 @@ describe("opencode acp lifecycle subprocess", () => {
 
   cliIt.live(
     "resume capability advertisement",
-    ({ opencode }) =>
+    ({ sente }) =>
       Effect.gen(function* () {
-        const initialized = yield* initialize(yield* createAcpClient({ opencode }))
+        const initialized = yield* initialize(yield* createAcpClient({ sente }))
 
         expect(initialized.agentCapabilities?.sessionCapabilities?.resume).toEqual({})
       }),
@@ -95,10 +95,10 @@ describe("opencode acp lifecycle subprocess", () => {
 
   cliIt.live(
     "resume request returns session config options",
-    ({ home, llm, opencode }) =>
+    ({ home, llm, sente }) =>
       Effect.gen(function* () {
         const acp = yield* createAcpClient(
-          { opencode },
+          { sente },
           { SENTE_CONFIG_CONTENT: JSON.stringify(verifierConfig(llm.url)) },
         )
         yield* initialize(acp)

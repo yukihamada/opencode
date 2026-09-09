@@ -69,14 +69,14 @@ it.instance("build agent has correct default properties", () =>
   }),
 )
 
-it.instance("plan agent denies edits except .opencode/plans/*", () =>
+it.instance("plan agent denies edits except .sente/plans/*", () =>
   Effect.gen(function* () {
     const plan = yield* load((svc) => svc.get("plan"))
     expect(plan).toBeDefined()
     // Wildcard is denied
     expect(evalPerm(plan, "edit")).toBe("deny")
     // But specific path is allowed
-    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+    expect(Permission.evaluate("edit", ".sente/plans/foo.md", plan!.permission).action).toBe("allow")
   }),
 )
 

@@ -5,7 +5,7 @@ import path from "path"
 const preserveExerciseGlobalRoot = !!process.env.SENTE_HTTPAPI_EXERCISE_GLOBAL
 export const exerciseGlobalRoot =
   process.env.SENTE_HTTPAPI_EXERCISE_GLOBAL ??
-  path.join(process.env.TMPDIR ?? "/tmp", `opencode-httpapi-global-${process.pid}`)
+  path.join(process.env.TMPDIR ?? "/tmp", `sente-httpapi-global-${process.pid}`)
 process.env.XDG_DATA_HOME = path.join(exerciseGlobalRoot, "data")
 process.env.XDG_CONFIG_HOME = path.join(exerciseGlobalRoot, "config")
 process.env.XDG_STATE_HOME = path.join(exerciseGlobalRoot, "state")
@@ -17,7 +17,7 @@ export const exerciseDataDirectory = path.join(exerciseGlobalRoot, "data", "sent
 const preserveExerciseDatabase = !!process.env.SENTE_HTTPAPI_EXERCISE_DB
 export const exerciseDatabasePath =
   process.env.SENTE_HTTPAPI_EXERCISE_DB ??
-  path.join(process.env.TMPDIR ?? "/tmp", `opencode-httpapi-exercise-${process.pid}.db`)
+  path.join(process.env.TMPDIR ?? "/tmp", `sente-httpapi-exercise-${process.pid}.db`)
 process.env.SENTE_DB = exerciseDatabasePath
 Flag.SENTE_DB = exerciseDatabasePath
 

@@ -120,8 +120,8 @@ describe("Project.fromDirectory", () => {
       expect(result.project.vcs).toBe("git")
       expect(result.project.worktree).toBe(tmp)
 
-      const opencodeFile = path.join(tmp, ".git", "sente")
-      expect(yield* Effect.promise(() => Bun.file(opencodeFile).exists())).toBe(false)
+      const senteFile = path.join(tmp, ".git", "sente")
+      expect(yield* Effect.promise(() => Bun.file(senteFile).exists())).toBe(false)
     }),
   )
 

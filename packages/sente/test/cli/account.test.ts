@@ -4,7 +4,7 @@ import stripAnsi from "strip-ansi"
 import { defaultConsoleUrl, formatAccountLabel, formatOrgLine } from "../../src/cli/cmd/account"
 
 describe("console account display", () => {
-  test("uses opencode.ai/console as the default login URL", () => {
+  test("uses sente.ai/console as the default login URL", () => {
     expect(defaultConsoleUrl).toBe("https://teai.io/sente/console")
   })
 

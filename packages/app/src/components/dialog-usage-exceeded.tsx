@@ -1,8 +1,8 @@
 import { usePlatform } from "@/context/platform"
 import { useLanguage } from "@/context/language"
-import { Button } from "@opencode-ai/ui/button"
-import { useDialog } from "@opencode-ai/ui/context/dialog"
-import { Dialog } from "@opencode-ai/ui/dialog"
+import { Button } from "@sente-ai/ui/button"
+import { useDialog } from "@sente-ai/ui/context/dialog"
+import { Dialog } from "@sente-ai/ui/dialog"
 import { JSX } from "solid-js"
 
 export type DialogGoUpsellProps = {

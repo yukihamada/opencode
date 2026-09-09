@@ -18,7 +18,7 @@ import { useTuiConfig } from "./config"
 import { TuiKeybind } from "./config/keybind"
 
 export const LEADER_TOKEN = "leader"
-export const OPENCODE_BASE_MODE = "base"
+export const SENTE_BASE_MODE = "base"
 export const COMMAND_PALETTE_COMMAND = "command.palette.show"
 
 const SENTE_MODE_KEY = "sente.mode"
@@ -51,7 +51,7 @@ function isVisiblePaletteCommand(command: Command) {
 }
 
 export function createOpencodeModeStack(keymap: OpenTuiKeymap) {
-  keymap.setData(SENTE_MODE_KEY, OPENCODE_BASE_MODE)
+  keymap.setData(SENTE_MODE_KEY, SENTE_BASE_MODE)
 
   const offFields = keymap.registerLayerFields({
     mode(value, ctx) {
@@ -63,12 +63,12 @@ export function createOpencodeModeStack(keymap: OpenTuiKeymap) {
   let disposed = false
 
   const update = () => {
-    keymap.setData(SENTE_MODE_KEY, stack.at(-1)?.mode ?? OPENCODE_BASE_MODE)
+    keymap.setData(SENTE_MODE_KEY, stack.at(-1)?.mode ?? SENTE_BASE_MODE)
   }
 
   const stackApi = {
     current() {
-      return stack.at(-1)?.mode ?? OPENCODE_BASE_MODE
+      return stack.at(-1)?.mode ?? SENTE_BASE_MODE
     },
     push(mode: string) {
       if (disposed) return () => {}

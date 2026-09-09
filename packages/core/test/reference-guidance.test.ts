@@ -1,10 +1,10 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { Reference } from "@opencode-ai/core/reference"
-import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
-import { SystemContext } from "@opencode-ai/core/system-context/index"
+import { AppNodeBuilder } from "@sente-ai/core/effect/app-node-builder"
+import { AbsolutePath } from "@sente-ai/core/schema"
+import { Reference } from "@sente-ai/core/reference"
+import { ReferenceGuidance } from "@sente-ai/core/reference/guidance"
+import { SystemContext } from "@sente-ai/core/system-context/index"
 import { it } from "./lib/effect"
 
 const guidanceLayer = (referenceLayer: Layer.Layer<Reference.Service>) =>

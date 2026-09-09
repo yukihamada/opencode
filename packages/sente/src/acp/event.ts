@@ -3,7 +3,7 @@ import type {
   Event,
   EventMessagePartDelta,
   EventMessagePartUpdated,
-  OpencodeClient,
+  SenteClient,
   Part,
   SessionMessageResponse,
   ToolPart,
@@ -30,7 +30,7 @@ type GlobalEventStream = {
   stream: AsyncIterable<GlobalEventEnvelope>
 }
 
-export function start(input: { sdk: OpencodeClient; connection: Connection; session: ACPSession.Interface }) {
+export function start(input: { sdk: SenteClient; connection: Connection; session: ACPSession.Interface }) {
   const subscription = new Subscription(input)
   subscription.start()
   return subscription
@@ -48,7 +48,7 @@ export class Subscription {
 
   constructor(
     private readonly input: {
-      sdk: OpencodeClient
+      sdk: SenteClient
       connection: Connection
       session: ACPSession.Interface
     },

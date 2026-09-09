@@ -35,7 +35,7 @@ function tauriAppId() {
 // `opencode.settings.dat` is special: it maps to the `opencode.settings` store
 // (the electron-store name without the `.dat` extension). All other .dat files
 // keep their full filename as the electron-store name so they match what the
-// renderer already passes via IPC (e.g. `"default.dat"`, `"opencode.global.dat"`).
+// renderer already passes via IPC (e.g. `"default.dat"`, `"sente.global.dat"`).
 function migrateFile(datPath: string, filename: string) {
   let data: Record<string, unknown>
   try {
@@ -47,7 +47,7 @@ function migrateFile(datPath: string, filename: string) {
 
   // opencode.settings.dat → the electron settings store ("opencode.settings").
   // All other .dat files keep their full filename as the store name so they match
-  // what the renderer passes via IPC (e.g. "default.dat", "opencode.global.dat").
+  // what the renderer passes via IPC (e.g. "default.dat", "sente.global.dat").
   const storeName = filename === "opencode.settings.dat" ? "opencode.settings" : filename
   const target = getStore(storeName)
   const migrated: string[] = []

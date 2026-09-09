@@ -175,7 +175,7 @@ describe("session.list", () => {
 
         if (process.platform === "win32") {
           const windowsPathIDs = (yield* SessionNs.Service.use((session) =>
-            session.list({ path: "packages\\opencode\\src" }),
+            session.list({ path: "packages\\sente\\src" }),
           )).map((session) => session.id)
           expect(windowsPathIDs).toContain(current.id)
           expect(windowsPathIDs).toContain(deeper.id)

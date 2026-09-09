@@ -72,7 +72,7 @@ function remoteConfigClient(input: {
   seen: { wellKnown?: string; remote?: string; authorization?: string }
 }) {
   return HttpClient.make((request) => {
-    if (request.url.includes(".well-known/opencode")) {
+    if (request.url.includes(".well-known/sente")) {
       input.seen.wellKnown = request.url
       return Effect.succeed(json(request, input.wellKnown))
     }
@@ -448,7 +448,7 @@ for (const input of globalInputs) {
     withGlobalConfig({}, ({ dir }) =>
       Effect.gen(function* () {
         const fs = yield* FSUtil.Service
-        const file = path.join(dir, `opencode${extension}`)
+        const file = path.join(dir, `sente${extension}`)
         yield* fs.writeFileString(file, yield* fs.readFileString(path.join(updateFixtures, input)))
         const patch = ConfigParse.schema(ConfigV1.Info, yield* fs.readJson(`${prefix}-patch.json`), input)
         const updated = yield* Config.use.updateGlobal(patch)
@@ -575,7 +575,7 @@ it.effect("rejects native project permissions even with inherited V1 rules", () 
           data: {
             path: expect.stringContaining(path.join("project", "sente.json")),
             issues: [
-              { path: ["permissions"], message: expect.stringContaining('Use V1 "permission" rules or run opencode2') },
+              { path: ["permissions"], message: expect.stringContaining('Use V1 "permission" rules or run sente2') },
               { path: ["agents", "reviewer", "permissions"], message: expect.stringContaining("not supported") },
             ],
           },
@@ -619,7 +619,7 @@ test("loads project config from Cygwin paths on Windows", async () => {
   })
 })
 
-it.instance("ignores legacy tui keys in opencode config", () =>
+it.instance("ignores legacy tui keys in sente config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeConfigEffect(test.directory, {
@@ -770,7 +770,7 @@ const accountTokenIt = configIt({
     config: () =>
       Effect.succeed(
         Option.some({
-          provider: { opencode: { options: { apiKey: "{env:SENTE_CONSOLE_TOKEN}" } } },
+          provider: { sente: { options: { apiKey: "{env:SENTE_CONSOLE_TOKEN}" } } },
         }),
       ),
     token: () => Effect.succeed(Option.some(AccessToken.make("st_test_token"))),
@@ -931,7 +931,7 @@ it.instance("accepts the deprecated reference field", () =>
   }),
 )
 
-it.instance("loads config from .opencode directory", () =>
+it.instance("loads config from .sente directory", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
@@ -972,7 +972,7 @@ Ordered permissions`,
   }),
 )
 
-it.instance("loads agents from .opencode/agents (plural)", () =>
+it.instance("loads agents from .sente/agents (plural)", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
@@ -1011,7 +1011,7 @@ Nested agent prompt`,
   }),
 )
 
-it.instance("loads commands from .opencode/command (singular)", () =>
+it.instance("loads commands from .sente/command (singular)", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
@@ -1044,7 +1044,7 @@ Nested command template`,
   }),
 )
 
-it.instance("loads commands from .opencode/commands (plural)", () =>
+it.instance("loads commands from .sente/commands (plural)", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
@@ -1630,7 +1630,7 @@ it.instance("MCP config deep merges preserving base config properties", () =>
   }),
 )
 
-it.instance("local .opencode config can override MCP from project config", () =>
+it.instance("local .sente config can override MCP from project config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* writeConfigEffect(test.directory, {
@@ -1862,7 +1862,7 @@ describe("resolvePluginSpec", () => {
   test("keeps package specs unchanged", async () => {
     await using tmp = await tmpdir()
     const file = path.join(tmp.path, "sente.json")
-    expect(await ConfigPlugin.resolvePluginSpec("oh-my-opencode@2.4.3", file)).toBe("oh-my-opencode@2.4.3")
+    expect(await ConfigPlugin.resolvePluginSpec("oh-my-sente@2.4.3", file)).toBe("oh-my-sente@2.4.3")
     expect(await ConfigPlugin.resolvePluginSpec("@scope/pkg", file)).toBe("@scope/pkg")
   })
 
@@ -1951,7 +1951,7 @@ describe("deduplicatePluginOrigins", () => {
   })
 
   test("keeps path plugins separate from package plugins", () => {
-    const plugins = ["oh-my-opencode@2.4.3", "file:///project/.opencode/plugin/oh-my-opencode.js"]
+    const plugins = ["oh-my-sente@2.4.3", "file:///project/.sente/plugin/oh-my-sente.js"]
 
     const result = dedupe(plugins)
 
@@ -1959,11 +1959,11 @@ describe("deduplicatePluginOrigins", () => {
   })
 
   test("deduplicates direct path plugins by exact spec", () => {
-    const plugins = ["file:///project/.opencode/plugin/demo.ts", "file:///project/.opencode/plugin/demo.ts"]
+    const plugins = ["file:///project/.sente/plugin/demo.ts", "file:///project/.sente/plugin/demo.ts"]
 
     const result = dedupe(plugins)
 
-    expect(result).toEqual(["file:///project/.opencode/plugin/demo.ts"])
+    expect(result).toEqual(["file:///project/.sente/plugin/demo.ts"])
   })
 
   test("preserves order of remaining plugins", () => {
@@ -2008,7 +2008,7 @@ describe("SENTE_DISABLE_PROJECT_CONFIG", () => {
     { config: { model: "project/model", username: "project-user" } },
   )
 
-  it.instance("skips project .opencode/ directories when flag is set", () =>
+  it.instance("skips project .sente/ directories when flag is set", () =>
     withProcessEnv(
       "SENTE_DISABLE_PROJECT_CONFIG",
       "true",

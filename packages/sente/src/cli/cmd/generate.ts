@@ -18,9 +18,9 @@ export const GenerateCommand = {
           {
             lang: "js",
             source: [
-              `import { createOpencodeClient } from "@sente-ai/sdk`,
+              `import { createSenteClient } from "@sente-ai/sdk`,
               ``,
-              `const client = createOpencodeClient()`,
+              `const client = createSenteClient()`,
               `await client.${operation.operationId}({`,
               `  ...`,
               `})`,

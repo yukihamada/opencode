@@ -10,7 +10,7 @@ import { LayerNode } from "@sente-ai/core/effect/layer-node"
 import { FSUtil } from "@sente-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@sente-ai/core/cross-spawn-spawner"
 import { Flag } from "@sente-ai/core/flag/flag"
-import { createOpencodeClient } from "@sente-ai/sdk/v2"
+import { createSenteClient } from "@sente-ai/sdk/v2"
 import { validateSession } from "../../src/cli/tui/validate-session"
 import { InstanceBootstrap } from "../../src/project/bootstrap"
 import { InstanceStore } from "../../src/project/instance-store"
@@ -44,7 +44,7 @@ const original = {
 }
 
 type ServerPath = "default" | "raw"
-type Sdk = ReturnType<typeof createOpencodeClient>
+type Sdk = ReturnType<typeof createSenteClient>
 type SdkResult = { response: Response; data?: unknown; error?: unknown }
 type Captured = { status: number; data?: unknown; error?: unknown }
 type ProjectFixture = { sdk: Sdk; directory: string }
@@ -70,7 +70,7 @@ function client(
 ) {
   return serverFetch(serverPath, input).pipe(
     Effect.map((fetch) =>
-      createOpencodeClient({
+      createSenteClient({
         baseUrl: "http://localhost",
         directory,
         experimental_workspaceID: input?.workspaceID,

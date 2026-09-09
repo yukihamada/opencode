@@ -28,7 +28,7 @@ import { LayerNodePlatform } from "@sente-ai/core/effect/app-node-platform"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "../fixtures/recordings")
 
-const zenURL = (connection: string) => `https://console.opencode.ai/proxy/connections/${connection}/v1`
+const zenURL = (connection: string) => `https://console.sente.ai/proxy/connections/${connection}/v1`
 
 const replayOpenAIOAuth = {
   type: "oauth",
@@ -161,7 +161,7 @@ const RECORDED_SCENARIOS = [
   {
     id: "sente-proxy",
     name: "OpenCode proxy",
-    providerID: ProviderV2.ID.opencode,
+    providerID: ProviderV2.ID.sente,
     modelID: "gpt-5.2-codex",
     cassette: "session/native-zen-tool-loop",
     protocol: "openai-responses",
@@ -169,7 +169,7 @@ const RECORDED_SCENARIOS = [
     canRecord: () => Boolean(process.env.SENTE_RECORD_CONSOLE_TOKEN && process.env.SENTE_RECORD_ZEN_ORG_ID),
     config: (model) =>
       providerConfig({
-        providerID: ProviderV2.ID.opencode,
+        providerID: ProviderV2.ID.sente,
         name: "OpenCode Zen",
         env: ["SENTE_CONSOLE_TOKEN"],
         npm: "@ai-sdk/openai-compatible",
@@ -261,7 +261,7 @@ const modelsFixture = Filesystem.readJson<Record<string, ModelsDev.Provider>>(
 
 function recordedNativeLLMLayer(scenario: RecordedScenario) {
   const auth = authLayer(scenario)
-  // Only the HTTP client is recorded; RequestExecutor and the opencode LLM stack remain real.
+  // Only the HTTP client is recorded; RequestExecutor and the sente LLM stack remain real.
   const metadata = {
     provider: scenario.providerID,
     protocol: scenario.protocol,

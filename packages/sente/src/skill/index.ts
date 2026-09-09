@@ -24,15 +24,15 @@ const EXTERNAL_SKILL_PATTERN = "skills/**/SKILL.md"
 const SENTE_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
 const SKILL_PATTERN = "**/SKILL.md"
 
-// Built-in skill that ships with opencode. The model's intuition for what an
-// sente.json should look like is often wrong, and opencode hard-fails on
+// Built-in skill that ships with sente. The model's intuition for what an
+// sente.json should look like is often wrong, and sente hard-fails on
 // invalid config, so users hit cryptic startup errors. Loading this skill
-// when the model is asked to touch opencode's own config files gives it the
+// when the model is asked to touch sente's own config files gives it the
 // actual schemas instead of guesses.
 const CUSTOMIZE_SENTE_SKILL_NAME = "customize-sente"
 const CUSTOMIZE_SENTE_SKILL_DESCRIPTION =
   "Use ONLY when the user is editing or creating sente's own configuration: sente.json, sente.jsonc, files under .sente/, or files under ~/.config/sente/. Also use when creating or fixing sente agents, subagents, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring sente itself."
-const CUSTOMIZE_SENTE_SKILL_BODY = SkillPlugin.CustomizeOpencodeContent
+const CUSTOMIZE_SENTE_SKILL_BODY = SkillPlugin.CustomizeSenteContent
 
 export const Info = Schema.Struct({
   name: Schema.String,

@@ -152,7 +152,7 @@ it.instance("resolves attention config defaults and overrides", () =>
         notifications: true,
         sound: true,
         volume: 0.4,
-        sound_pack: "opencode.default",
+        sound_pack: "sente.default",
         sounds: {},
       })
 
@@ -723,7 +723,7 @@ it.instance("applies file substitutions when first identical token is in a comme
   ),
 )
 
-it.instance("loads .opencode/tui.json", () =>
+it.instance("loads .sente/tui.json", () =>
   withCleanState(
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service

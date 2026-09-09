@@ -1193,7 +1193,7 @@ it.instance("ModelNotFoundError suggests catalog models for unloaded providers",
   Effect.gen(function* () {
     yield* remove("SENTE_API_KEY")
     const error = yield* Provider.use
-      .getModel(ProviderV2.ID.opencode, ModelV2.ID.make("claude-haiku-fake-model"))
+      .getModel(ProviderV2.ID.sente, ModelV2.ID.make("claude-haiku-fake-model"))
       .pipe(Effect.flip)
     if (!Provider.ModelNotFoundError.isInstance(error)) throw error
     expect(error.suggestions ?? []).toContain("claude-haiku-4-5")
@@ -2064,11 +2064,11 @@ it.instance(
   }),
 )
 
-it.effect("opencode loader keeps paid models when config apiKey is present", () =>
+it.effect("sente loader keeps paid models when config apiKey is present", () =>
   Effect.gen(function* () {
     const noneDir = yield* tmpdirScoped()
     const keyedDir = yield* tmpdirScoped({
-      config: { provider: { opencode: { options: { apiKey: "test-key" } } } },
+      config: { provider: { sente: { options: { apiKey: "test-key" } } } },
     })
 
     const listIn = (directory: string) =>
@@ -2085,7 +2085,7 @@ it.effect("opencode loader keeps paid models when config apiKey is present", () 
   }).pipe(provideMultiInstance),
 )
 
-it.effect("opencode loader keeps paid models when auth exists", () =>
+it.effect("sente loader keeps paid models when auth exists", () =>
   Effect.gen(function* () {
     const noneDir = yield* tmpdirScoped()
     const keyedDir = yield* tmpdirScoped()
@@ -2102,7 +2102,7 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
     const original = yield* Effect.promise(() => Filesystem.readText(authPath).catch(() => undefined))
 
     yield* Effect.acquireRelease(
-      Effect.promise(() => Filesystem.write(authPath, JSON.stringify({ opencode: { type: "api", key: "test-key" } }))),
+      Effect.promise(() => Filesystem.write(authPath, JSON.stringify({ sente: { type: "api", key: "test-key" } }))),
       () =>
         Effect.promise(async () => {
           if (original !== undefined) await Filesystem.write(authPath, original)

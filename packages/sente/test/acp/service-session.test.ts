@@ -10,7 +10,7 @@ import type {
   SessionConfigSelectOption,
   SetSessionConfigOptionResponse,
 } from "@agentclientprotocol/sdk"
-import type { AssistantMessage, Event, OpencodeClient } from "@sente-ai/sdk/v2"
+import type { AssistantMessage, Event, SenteClient } from "@sente-ai/sdk/v2"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { ModelV2 } from "@sente-ai/core/model"
 import { Effect } from "effect"
@@ -301,7 +301,7 @@ describe("ACP service sessions", () => {
           return Promise.resolve({ data: {} })
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const connection = {
       sessionUpdate: (update: SessionNotification) => {
         updates.push(update)
@@ -600,7 +600,7 @@ describe("ACP service sessions", () => {
         command: {
           list: () => Promise.resolve({ data: [] }),
         },
-      } as unknown as OpencodeClient,
+      } as unknown as SenteClient,
     })
     const error = await Effect.runPromise(
       service
@@ -638,7 +638,7 @@ describe("ACP service sessions", () => {
       mcp: {
         add: () => Promise.resolve({ data: {} }),
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const service = ACPService.make({ sdk })
 
     const first = await Effect.runPromise(
@@ -681,7 +681,7 @@ describe("ACP service sessions", () => {
           return Promise.resolve({ data: {} })
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const service = ACPService.make({ sdk })
 
     await Effect.runPromise(
@@ -722,7 +722,7 @@ describe("ACP service sessions", () => {
       mcp: {
         add: () => Promise.resolve({ data: {} }),
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const service = ACPService.make({ sdk })
 
     const result = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
@@ -761,7 +761,7 @@ describe("ACP service sessions", () => {
       mcp: {
         add: () => Promise.resolve({ data: {} }),
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const service = ACPService.make({ sdk })
 
     const result = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
@@ -878,7 +878,7 @@ describe("ACP service sessions", () => {
           return Promise.resolve({ data: {} })
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const service = ACPService.make({ sdk })
     const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
 
@@ -933,7 +933,7 @@ describe("ACP service sessions", () => {
       mcp: {
         add: () => Promise.resolve({ data: {} }),
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const service = ACPService.make({ sdk })
     const session = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
     const updated = await Effect.runPromise(
@@ -1003,7 +1003,7 @@ describe("ACP service sessions", () => {
       mcp: {
         add: () => Promise.resolve({ data: {} }),
       },
-    } as unknown as OpencodeClient
+    } as unknown as SenteClient
     const service = ACPService.make({ sdk })
 
     const first = await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
@@ -1321,7 +1321,7 @@ describe("ACP service sessions", () => {
         mcp: {
           add: () => Promise.resolve({ data: {} }),
         },
-      } as unknown as OpencodeClient,
+      } as unknown as SenteClient,
       usage: UsageService.Service.of({
         buildUsage: UsageService.buildUsage,
         latestAssistantMessage: UsageService.latestAssistantMessage,

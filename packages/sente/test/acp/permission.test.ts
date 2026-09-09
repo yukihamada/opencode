@@ -5,7 +5,7 @@ import type {
   RequestPermissionResponse,
   SessionUpdate,
 } from "@agentclientprotocol/sdk"
-import type { Event, OpencodeClient } from "@sente-ai/sdk/v2"
+import type { Event, SenteClient } from "@sente-ai/sdk/v2"
 import { LayerNode } from "@sente-ai/core/effect/layer-node"
 import { createTwoFilesPatch } from "diff"
 import { Effect, ManagedRuntime } from "effect"
@@ -16,7 +16,7 @@ import { ACPEvent } from "@/acp/event"
 import { ACPSession } from "@/acp/session"
 
 type PermissionEvent = Extract<Event, { type: "permission.asked" }>
-type PermissionReplyParams = Parameters<OpencodeClient["permission"]["reply"]>[0]
+type PermissionReplyParams = Parameters<SenteClient["permission"]["reply"]>[0]
 type SessionUpdateParams = Parameters<AgentSideConnection["sessionUpdate"]>[0]
 const cleanupDirs: string[] = []
 
@@ -61,7 +61,7 @@ function createHarness(
     session: {
       message: () => Promise.resolve({ data: undefined }),
     },
-  } as unknown as OpencodeClient
+  } as unknown as SenteClient
   const connection = {
     requestPermission: (params: RequestPermissionRequest) => {
       requests.push(params)

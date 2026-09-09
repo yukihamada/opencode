@@ -91,7 +91,7 @@ describe("skill", () => {
     }),
   )
 
-  it.live("discovers skills from .opencode/skill/ directory", () =>
+  it.live("discovers skills from .sente/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
         Effect.gen(function* () {
@@ -151,7 +151,7 @@ description: Skill for dirs test.
     ),
   )
 
-  it.live("discovers multiple skills from .opencode/skill/ directory", () =>
+  it.live("discovers multiple skills from .sente/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
         Effect.gen(function* () {
@@ -509,8 +509,8 @@ description: A skill in the .agents/skills directory.
               Bun.write(
                 path.join(dir, ".sente", "skill", "sente-skill", "SKILL.md"),
                 `---
-name: opencode-skill
-description: A skill in the .opencode/skill directory.
+name: sente-skill
+description: A skill in the .sente/skill directory.
 ---
 
 # OpenCode Skill
@@ -556,8 +556,8 @@ description: A skill in the .agents/skills directory.
               Bun.write(
                 path.join(dir, ".sente", "skill", "agent-skill", "SKILL.md"),
                 `---
-name: opencode-skill
-description: A skill in the .opencode/skill directory.
+name: sente-skill
+description: A skill in the .sente/skill directory.
 ---
 
 # OpenCode Skill
@@ -566,8 +566,8 @@ description: A skill in the .opencode/skill directory.
               Bun.write(
                 path.join(dir, ".sente", "skills", "agent-skill", "SKILL.md"),
                 `---
-name: opencode-skill
-description: A skill in the .opencode/skills directory.
+name: sente-skill
+description: A skill in the .sente/skills directory.
 ---
 
 # OpenCode Skill

@@ -79,8 +79,8 @@ function installShortcuts() {
 function clearHighlightFind() {
   const api = (globalThis as { CSS?: { highlights?: { delete: (name: string) => void } } }).CSS?.highlights
   if (!api) return
-  api.delete("opencode-find")
-  api.delete("opencode-find-current")
+  api.delete("sente-find")
+  api.delete("sente-find-current")
 }
 
 function supportsHighlights() {
@@ -296,8 +296,8 @@ export function createFileFind(opts: CreateFileFindOptions) {
     const Highlight = (globalThis as unknown as { Highlight?: any }).Highlight
     if (!api || typeof Highlight !== "function") return false
 
-    api.delete("opencode-find")
-    api.delete("opencode-find-current")
+    api.delete("sente-find")
+    api.delete("sente-find-current")
 
     const active = ranges[currentIndex]
     if (active) api.set("opencode-find-current", new Highlight(active))
