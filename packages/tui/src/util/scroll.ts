@@ -23,5 +23,5 @@ export function getScrollAcceleration(tuiConfig?: ScrollConfig): ScrollAccelerat
     return new CustomSpeedScroll(tuiConfig.scroll_speed)
   }
 
-  return new CustomSpeedScroll(3)
+  return new MacOSScrollAccel()
 }
