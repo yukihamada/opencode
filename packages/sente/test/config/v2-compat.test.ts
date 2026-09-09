@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Npm } from "@opencode-ai/core/npm"
+import { ConfigV1 } from "@sente-ai/core/v1/config/config"
+import { LayerNode } from "@sente-ai/core/effect/layer-node"
+import { httpClient } from "@sente-ai/core/effect/app-node-platform"
+import { FSUtil } from "@sente-ai/core/fs-util"
+import { CrossSpawnSpawner } from "@sente-ai/core/cross-spawn-spawner"
+import { Npm } from "@sente-ai/core/npm"
 import { Effect, Layer, Logger } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import path from "path"
@@ -288,9 +288,9 @@ describe("V2 configuration loading", () => {
     Effect.gen(function* () {
       const instance = yield* TestInstance
       const fs = yield* FSUtil.Service
-      const file = path.join(instance.directory, "opencode.jsonc")
+      const file = path.join(instance.directory, "sente.jsonc")
       const text =
-        '{\n  // Retain this comment\n  "$schema": "https://opencode.ai/config.json",\n  "plugins": ["native-only"]\n}\n'
+        '{\n  // Retain this comment\n  "$schema": "https://teai.io/sente/config.json",\n  "plugins": ["native-only"]\n}\n'
       yield* fs.writeWithDirs(file, text)
       const messages: unknown[] = []
       const config = yield* Config.use.get().pipe(
@@ -317,9 +317,9 @@ describe("V2 configuration loading", () => {
       const instance = yield* TestInstance
       const fs = yield* FSUtil.Service
       yield* fs.writeWithDirs(
-        path.join(instance.directory, "opencode.json"),
+        path.join(instance.directory, "sente.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://teai.io/sente/config.json",
           model: { providerID: "anthropic", model: "claude-sonnet", variant: "fast" },
           snapshots: false,
           skills: ["./skills", "https://example.com/skills"],
@@ -373,9 +373,9 @@ describe("V2 configuration loading", () => {
       const instance = yield* TestInstance
       const fs = yield* FSUtil.Service
       yield* fs.writeWithDirs(
-        path.join(instance.directory, "opencode.json"),
+        path.join(instance.directory, "sente.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://teai.io/sente/config.json",
           model: { providerID: "openai", model: "gpt-4.1" },
           theme: "legacy",
           keybinds: { leader: "ctrl+x" },

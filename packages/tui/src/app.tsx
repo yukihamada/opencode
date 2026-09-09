@@ -118,8 +118,8 @@ const appBindingCommands = [
   "variant.list",
   "provider.connect",
   "console.org.switch",
-  "opencode.status",
-  "opencode.debug",
+  "sente.status",
+  "sente.debug",
   "theme.switch",
   "theme.switch_mode",
   "theme.mode.lock",
@@ -761,7 +761,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           ]
         : []),
       {
-        name: "opencode.status",
+        name: "sente.status",
         title: "View status",
         slashName: "status",
         run: () => {
@@ -770,7 +770,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         category: "System",
       },
       {
-        name: "opencode.debug",
+        name: "sente.debug",
         title: "View debug info",
         slashName: "debug",
         run: () => {

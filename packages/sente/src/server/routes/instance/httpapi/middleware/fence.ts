@@ -1,5 +1,5 @@
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { Database } from "@opencode-ai/core/database/database"
+import { Flag } from "@sente-ai/core/flag/flag"
+import { Database } from "@sente-ai/core/database/database"
 import { Effect } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import * as Fence from "@/server/shared/fence"
@@ -12,7 +12,7 @@ export const fenceLayer = HttpRouter.middleware<{ requires: Database.Service; ha
     return (effect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        if (!Flag.OPENCODE_WORKSPACE_ID || ignoredMethods.has(request.method)) return yield* effect
+        if (!Flag.SENTE_WORKSPACE_ID || ignoredMethods.has(request.method)) return yield* effect
 
         const previous = yield* Fence.load(db)
         const response = yield* effect

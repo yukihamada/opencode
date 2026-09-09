@@ -1,5 +1,5 @@
-import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { MoveSession } from "@sente-ai/core/control-plane/move-session"
+import { SessionV2 } from "@sente-ai/core/session"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { RootHttpApi } from "../api"

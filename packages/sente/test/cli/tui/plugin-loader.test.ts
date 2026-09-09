@@ -3,16 +3,16 @@ import fs from "fs/promises"
 import path from "path"
 import { pathToFileURL } from "url"
 import { createTestKeymap } from "@opentui/keymap/testing"
-import type { TuiAttentionSoundPack } from "@opencode-ai/plugin/tui"
+import type { TuiAttentionSoundPack } from "@sente-ai/plugin/tui"
 import { tmpdir } from "../../fixture/fixture"
 import { createTuiPluginApi } from "../../fixture/tui-plugin"
 import { createTuiResolvedConfig, mockTuiRuntime } from "../../fixture/tui-runtime"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@sente-ai/core/global"
 import { TuiConfig } from "../../../src/config/tui"
 import { Filesystem } from "@/util/filesystem"
 import { PluginLoader } from "../../../src/plugin/loader"
 
-const { allThemes, addTheme } = await import("@opencode-ai/tui/context/theme")
+const { allThemes, addTheme } = await import("@sente-ai/tui/context/theme")
 const { TuiPluginRuntime } = await import("../../../src/plugin/tui/runtime")
 
 type Row = Record<string, unknown>
@@ -168,9 +168,9 @@ async function load(): Promise<Data> {
       const invalidThemePath = path.join(dir, invalidThemeFile)
       const globalThemePath = path.join(dir, globalThemeFile)
       const preloadedThemePath = path.join(dir, preloadedThemeFile)
-      const localDest = path.join(dir, ".opencode", "themes", localThemeFile)
+      const localDest = path.join(dir, ".sente", "themes", localThemeFile)
       const globalDest = path.join(Global.Path.config, "themes", globalThemeFile)
-      const preloadedDest = path.join(dir, ".opencode", "themes", preloadedThemeFile)
+      const preloadedDest = path.join(dir, ".sente", "themes", preloadedThemeFile)
       const fnMarker = path.join(dir, "function-called.txt")
       const localMarker = path.join(dir, "local-called.json")
       const invalidMarker = path.join(dir, "invalid-called.json")
@@ -549,7 +549,7 @@ export default {
       .then(() => true)
       .catch(() => false)
     const leaked_global_to_local = await fs
-      .stat(path.join(tmp.path, ".opencode", "themes", tmp.extra.globalThemeFile))
+      .stat(path.join(tmp.path, ".sente", "themes", tmp.extra.globalThemeFile))
       .then(() => true)
       .catch(() => false)
 
@@ -624,7 +624,7 @@ test("continues loading when a plugin is missing config metadata", async () => {
     },
   })
 
-  process.env.OPENCODE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
+  process.env.SENTE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
   const config = createTuiResolvedConfig({
     plugin: [
       [tmp.extra.badSpec, { marker: path.join(tmp.path, "bad.txt") }],
@@ -659,7 +659,7 @@ test("continues loading when a plugin is missing config metadata", async () => {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
     wait.mockRestore()
-    delete process.env.OPENCODE_PLUGIN_META_FILE
+    delete process.env.SENTE_PLUGIN_META_FILE
   }
 })
 
@@ -696,7 +696,7 @@ test("does not wait on permanent tui plugin startup failures", async () => {
     },
   })
 
-  process.env.OPENCODE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
+  process.env.SENTE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
   const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
 
@@ -724,7 +724,7 @@ test("does not wait on permanent tui plugin startup failures", async () => {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
     wait.mockRestore()
-    delete process.env.OPENCODE_PLUGIN_META_FILE
+    delete process.env.SENTE_PLUGIN_META_FILE
   }
 })
 
@@ -781,7 +781,7 @@ export default {
     },
   })
 
-  process.env.OPENCODE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
+  process.env.SENTE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
 
   try {
@@ -802,7 +802,7 @@ export default {
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
-    delete process.env.OPENCODE_PLUGIN_META_FILE
+    delete process.env.SENTE_PLUGIN_META_FILE
 
     if (backupJson === undefined) {
       await fs.rm(globalJson, { force: true }).catch(() => {})
@@ -832,7 +832,7 @@ test("does not bootstrap server plugins while initializing tui plugins", async (
           "",
         ].join("\n"),
       )
-      await Bun.write(path.join(dir, "opencode.json"), JSON.stringify({ plugin: [pathToFileURL(plugin).href] }))
+      await Bun.write(path.join(dir, "sente.json"), JSON.stringify({ plugin: [pathToFileURL(plugin).href] }))
       return { marker }
     },
   })
@@ -1231,7 +1231,7 @@ test("updates installed theme when plugin metadata changes", async () => {
       const spec = pathToFileURL(pluginPath).href
       const themeFile = "theme-update.json"
       const themePath = path.join(dir, themeFile)
-      const dest = path.join(dir, ".opencode", "themes", themeFile)
+      const dest = path.join(dir, ".sente", "themes", themeFile)
       const themeName = themeFile.replace(/\.json$/, "")
       const configPath = path.join(dir, "tui.json")
 
@@ -1268,7 +1268,7 @@ test("updates installed theme when plugin metadata changes", async () => {
     },
   })
 
-  process.env.OPENCODE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
+  process.env.SENTE_PLUGIN_META_FILE = path.join(tmp.path, "plugin-meta.json")
   const cwd = spyOn(process, "cwd").mockImplementation(() => tmp.path)
   const wait = spyOn(TuiConfig, "waitForDependencies").mockResolvedValue()
 
@@ -1320,13 +1320,13 @@ test("updates installed theme when plugin metadata changes", async () => {
     expect(text).toContain("#222222")
     expect(text).not.toContain("#111111")
     const list = await Filesystem.readJson<Record<string, { themes?: Record<string, { dest: string }> }>>(
-      process.env.OPENCODE_PLUGIN_META_FILE!,
+      process.env.SENTE_PLUGIN_META_FILE!,
     )
     expect(list["demo.theme-update"]?.themes?.[tmp.extra.themeName]?.dest).toBe(tmp.extra.dest)
   } finally {
     await TuiPluginRuntime.dispose()
     cwd.mockRestore()
     wait.mockRestore()
-    delete process.env.OPENCODE_PLUGIN_META_FILE
+    delete process.env.SENTE_PLUGIN_META_FILE
   }
 })

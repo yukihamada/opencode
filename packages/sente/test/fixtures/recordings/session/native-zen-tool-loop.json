@@ -3,10 +3,10 @@
   "metadata": {
     "name": "session/native-zen-tool-loop",
     "recordedAt": "2026-05-23T20:57:56.543Z",
-    "provider": "opencode",
+    "provider": "sente",
     "protocol": "openai-responses",
     "route": "openai-responses",
-    "tags": ["opencode", "zen", "native", "tool-loop"]
+    "tags": ["sente", "zen", "native", "tool-loop"]
   },
   "interactions": [
     {

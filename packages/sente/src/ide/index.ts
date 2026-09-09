@@ -1,7 +1,7 @@
 import { Schema } from "effect"
-import { NamedError } from "@opencode-ai/core/util/error"
+import { NamedError } from "@sente-ai/core/util/error"
 import { Process } from "@/util/process"
-import { IdeEvent } from "@opencode-ai/schema/ide-event"
+import { IdeEvent } from "@sente-ai/schema/ide-event"
 
 const SUPPORTED_IDES = [
   { name: "Windsurf" as const, cmd: "windsurf" },
@@ -30,7 +30,7 @@ export function ide() {
 }
 
 export function alreadyInstalled() {
-  return process.env["OPENCODE_CALLER"] === "vscode" || process.env["OPENCODE_CALLER"] === "vscode-insiders"
+  return process.env["SENTE_CALLER"] === "vscode" || process.env["SENTE_CALLER"] === "vscode-insiders"
 }
 
 export async function install(ide: (typeof SUPPORTED_IDES)[number]["name"]) {

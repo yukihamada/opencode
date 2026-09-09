@@ -5,7 +5,7 @@ server moved to the Effect HttpApi backend.
 
 ## Current State
 
-- The server still lives in `packages/opencode`.
+- The server still lives in `packages/sente`.
 - The runtime and app layer are centralized in `src/effect/app-runtime.ts` and
   `src/effect/run-service.ts`.
 - The route tree lives under `src/server/routes/instance/httpapi` and is hosted
@@ -29,13 +29,13 @@ Target package layout:
 
 Do not create a package cycle.
 
-Until enough shared service code lives outside `packages/opencode`, a future
+Until enough shared service code lives outside `packages/sente`, a future
 `packages/server` should either:
 
 - own pure HttpApi contracts only, or
-- accept host-provided services/layers/callbacks from `packages/opencode`
+- accept host-provided services/layers/callbacks from `packages/sente`
 
-It should not import `packages/opencode` services while `packages/opencode`
+It should not import `packages/sente` services while `packages/sente`
 imports it to host routes.
 
 ## Suggested PR Sequence
@@ -44,7 +44,7 @@ imports it to host routes.
 2. Move stable domain schemas into shared packages only when they no longer
    depend on opencode-local runtime modules.
 3. Extract pure HttpApi contract modules into `packages/server` once the contract
-   can compile without importing `packages/opencode` implementation details.
+   can compile without importing `packages/sente` implementation details.
 4. Extract handler factories after their service dependencies can be supplied by
    a host layer instead of imported directly.
 5. Move server hosting last, after package ownership is clear.

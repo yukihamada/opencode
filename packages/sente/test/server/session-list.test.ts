@@ -1,14 +1,14 @@
 import { afterEach, describe, expect } from "bun:test"
 import { Effect } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Database } from "@opencode-ai/core/database/database"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { AppNodeBuilder } from "@sente-ai/core/effect/app-node-builder"
+import { LayerNode } from "@sente-ai/core/effect/layer-node"
+import { Database } from "@sente-ai/core/database/database"
+import { SessionProjector } from "@sente-ai/core/session/projector"
 import { Session as SessionNs } from "@/session/session"
 import { disposeAllInstances, provideInstance, TestInstance } from "../fixture/fixture"
 import { mkdir } from "fs/promises"
 import path from "path"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionTable } from "@sente-ai/core/session/sql"
 import { eq } from "drizzle-orm"
 import { testEffect } from "../lib/effect"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -35,7 +35,7 @@ describe("session.list", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "opencode"), { recursive: true }))
+        yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "sente"), { recursive: true }))
         yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "app"), { recursive: true }))
 
         const root = yield* withSession({ title: "root" })
@@ -43,7 +43,7 @@ describe("session.list", () => {
           provideInstance(path.join(test.directory, "packages")),
         )
         const current = yield* withSession({ title: "current" }).pipe(
-          provideInstance(path.join(test.directory, "packages", "opencode")),
+          provideInstance(path.join(test.directory, "packages", "sente")),
         )
         const sibling = yield* withSession({ title: "sibling" }).pipe(
           provideInstance(path.join(test.directory, "packages", "app")),
@@ -63,7 +63,7 @@ describe("session.list", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "opencode"), { recursive: true }))
+        yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "sente"), { recursive: true }))
         yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "app"), { recursive: true }))
 
         const root = yield* withSession({ title: "root" })
@@ -71,14 +71,14 @@ describe("session.list", () => {
           provideInstance(path.join(test.directory, "packages")),
         )
         const current = yield* withSession({ title: "current" }).pipe(
-          provideInstance(path.join(test.directory, "packages", "opencode")),
+          provideInstance(path.join(test.directory, "packages", "sente")),
         )
         const sibling = yield* withSession({ title: "sibling" }).pipe(
           provideInstance(path.join(test.directory, "packages", "app")),
         )
 
         const ids = (yield* SessionNs.Service.use((session) =>
-          session.list({ directory: path.join(test.directory, "packages", "opencode") }),
+          session.list({ directory: path.join(test.directory, "packages", "sente") }),
         )).map((session) => session.id)
         expect(ids).not.toContain(root.id)
         expect(ids).not.toContain(parent.id)
@@ -93,18 +93,18 @@ describe("session.list", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "opencode"), { recursive: true }))
+        yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "sente"), { recursive: true }))
         yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "app"), { recursive: true }))
 
         const current = yield* withSession({ title: "current" }).pipe(
-          provideInstance(path.join(test.directory, "packages", "opencode")),
+          provideInstance(path.join(test.directory, "packages", "sente")),
         )
         const sibling = yield* withSession({ title: "sibling" }).pipe(
           provideInstance(path.join(test.directory, "packages", "app")),
         )
 
         const ids = (yield* SessionNs.Service.use((session) =>
-          session.list({ directory: path.join(test.directory, "packages", "opencode") }),
+          session.list({ directory: path.join(test.directory, "packages", "sente") }),
         )).map((session) => session.id)
         expect(ids).toContain(current.id)
         expect(ids).not.toContain(sibling.id)
@@ -118,7 +118,7 @@ describe("session.list", () => {
       Effect.gen(function* () {
         if (process.platform !== "win32") return
         const test = yield* TestInstance
-        const dir = path.join(test.directory, "packages", "opencode")
+        const dir = path.join(test.directory, "packages", "sente")
         yield* Effect.promise(() => mkdir(dir, { recursive: true }))
 
         const created = yield* withSession({ title: "separator" }).pipe(provideInstance(dir))
@@ -145,18 +145,18 @@ describe("session.list", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         yield* Effect.promise(() =>
-          mkdir(path.join(test.directory, "packages", "opencode", "src", "deep"), { recursive: true }),
+          mkdir(path.join(test.directory, "packages", "sente", "src", "deep"), { recursive: true }),
         )
         yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "app"), { recursive: true }))
 
         const parent = yield* withSession({ title: "parent" }).pipe(
-          provideInstance(path.join(test.directory, "packages", "opencode")),
+          provideInstance(path.join(test.directory, "packages", "sente")),
         )
         const current = yield* withSession({ title: "current" }).pipe(
-          provideInstance(path.join(test.directory, "packages", "opencode", "src")),
+          provideInstance(path.join(test.directory, "packages", "sente", "src")),
         )
         const deeper = yield* withSession({ title: "deeper" }).pipe(
-          provideInstance(path.join(test.directory, "packages", "opencode", "src", "deep")),
+          provideInstance(path.join(test.directory, "packages", "sente", "src", "deep")),
         )
         const sibling = yield* withSession({ title: "sibling" }).pipe(
           provideInstance(path.join(test.directory, "packages", "app")),
@@ -165,7 +165,7 @@ describe("session.list", () => {
         const pathIDs = (yield* SessionNs.Service.use((session) =>
           session.list({
             directory: path.join(test.directory, "packages", "app"),
-            path: "packages/opencode/src",
+            path: "packages/sente/src",
           }),
         )).map((session) => session.id)
         expect(pathIDs).not.toContain(parent.id)
@@ -190,12 +190,12 @@ describe("session.list", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         yield* Effect.promise(() =>
-          mkdir(path.join(test.directory, "packages", "opencode", "src"), { recursive: true }),
+          mkdir(path.join(test.directory, "packages", "sente", "src"), { recursive: true }),
         )
         yield* Effect.promise(() => mkdir(path.join(test.directory, "packages", "app"), { recursive: true }))
 
         const current = yield* withSession({ title: "legacy-current" }).pipe(
-          provideInstance(path.join(test.directory, "packages", "opencode", "src")),
+          provideInstance(path.join(test.directory, "packages", "sente", "src")),
         )
         const sibling = yield* withSession({ title: "legacy-sibling" }).pipe(
           provideInstance(path.join(test.directory, "packages", "app")),
@@ -217,8 +217,8 @@ describe("session.list", () => {
 
         const pathIDs = (yield* SessionNs.Service.use((session) =>
           session.list({
-            directory: path.join(test.directory, "packages", "opencode", "src"),
-            path: "packages/opencode/src",
+            directory: path.join(test.directory, "packages", "sente", "src"),
+            path: "packages/sente/src",
           }),
         )).map((session) => session.id)
         expect(pathIDs).toContain(current.id)

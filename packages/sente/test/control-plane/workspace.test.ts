@@ -9,33 +9,33 @@ import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { eq } from "drizzle-orm"
 import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { Project } from "@/project/project"
-import { Database } from "@opencode-ai/core/database/database"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Database } from "@sente-ai/core/database/database"
+import { ProjectV2 } from "@sente-ai/core/project"
+import { ProjectTable } from "@sente-ai/core/project/sql"
+import { AbsolutePath } from "@sente-ai/core/schema"
 import { Session as SessionNs } from "@/session/session"
 import { SessionID } from "@/session/schema"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { EventSequenceTable } from "@opencode-ai/core/event/sql"
+import { SessionTable } from "@sente-ai/core/session/sql"
+import { SessionProjector } from "@sente-ai/core/session/projector"
+import { EventSequenceTable } from "@sente-ai/core/event/sql"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideTmpdirInstance, requireInstance, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { registerAdapter } from "../../src/control-plane/adapters"
-import { WorkspaceV2 } from "@opencode-ai/core/workspace"
-import { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
+import { WorkspaceV2 } from "@sente-ai/core/workspace"
+import { WorkspaceTable } from "@sente-ai/core/control-plane/workspace.sql"
 import type { Target, WorkspaceAdapter, WorkspaceInfo } from "../../src/control-plane/types"
 import * as Workspace from "../../src/control-plane/workspace"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Ripgrep } from "@sente-ai/core/ripgrep"
+import { AppNodeBuilder } from "@sente-ai/core/effect/app-node-builder"
+import { LayerNode } from "@sente-ai/core/effect/layer-node"
 
 const originalEnv = {
-  OPENCODE_AUTH_CONTENT: process.env.OPENCODE_AUTH_CONTENT,
-  OPENCODE_EXPERIMENTAL_WORKSPACES: process.env.OPENCODE_EXPERIMENTAL_WORKSPACES,
+  SENTE_AUTH_CONTENT: process.env.SENTE_AUTH_CONTENT,
+  SENTE_EXPERIMENTAL_WORKSPACES: process.env.SENTE_EXPERIMENTAL_WORKSPACES,
   OTEL_EXPORTER_OTLP_HEADERS: process.env.OTEL_EXPORTER_OTLP_HEADERS,
   OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
   OTEL_RESOURCE_ATTRIBUTES: process.env.OTEL_RESOURCE_ATTRIBUTES,
@@ -107,7 +107,7 @@ function restoreEnv() {
 
 beforeEach(() => {
   restoreEnv()
-  process.env.OPENCODE_EXPERIMENTAL_WORKSPACES = "true"
+  process.env.SENTE_EXPERIMENTAL_WORKSPACES = "true"
 })
 
 afterEach(async () => {
@@ -439,7 +439,7 @@ describe("workspace CRUD", () => {
       Effect.gen(function* () {
         const instance = yield* requireInstance
         const workspace = yield* Workspace.Service
-        process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ test: { type: "api", key: "secret" } })
+        process.env.SENTE_AUTH_CONTENT = JSON.stringify({ test: { type: "api", key: "secret" } })
         process.env.OTEL_EXPORTER_OTLP_HEADERS = "authorization=otel"
         process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "https://otel.test"
         process.env.OTEL_RESOURCE_ATTRIBUTES = "service.name=opencode-test"
@@ -498,11 +498,11 @@ describe("workspace CRUD", () => {
           extra: { configured: true },
           projectID: instance.project.id,
         })
-        expect(JSON.parse(recorded.calls.create[0].env.OPENCODE_AUTH_CONTENT ?? "{}")).toEqual({
+        expect(JSON.parse(recorded.calls.create[0].env.SENTE_AUTH_CONTENT ?? "{}")).toEqual({
           test: { type: "api", key: "secret" },
         })
-        expect(recorded.calls.create[0].env.OPENCODE_WORKSPACE_ID).toBe(workspaceID)
-        expect(recorded.calls.create[0].env.OPENCODE_EXPERIMENTAL_WORKSPACES).toBe("true")
+        expect(recorded.calls.create[0].env.SENTE_WORKSPACE_ID).toBe(workspaceID)
+        expect(recorded.calls.create[0].env.SENTE_EXPERIMENTAL_WORKSPACES).toBe("true")
         expect(recorded.calls.create[0].env.OTEL_EXPORTER_OTLP_HEADERS).toBe("authorization=otel")
         expect(recorded.calls.create[0].env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe("https://otel.test")
         expect(recorded.calls.create[0].env.OTEL_RESOURCE_ATTRIBUTES).toBe("service.name=opencode-test")

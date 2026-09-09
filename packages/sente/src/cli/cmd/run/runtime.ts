@@ -12,8 +12,8 @@
 //   3. starts the stream transport (SDK event subscription), lazily for fresh
 //      local sessions,
 //   4. runs the prompt queue until the footer closes.
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { createOpencodeClient } from "@sente-ai/sdk/v2"
+import { Flag } from "@sente-ai/core/flag/flag"
 import { MessageID } from "@/session/schema"
 import { createRunDemo } from "./demo"
 import { resolveModelInfo, resolveRunTuiConfig, resolveSessionInfo } from "./runtime.boot"
@@ -404,7 +404,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
     .then(loadCatalog)
     .catch(() => {})
 
-  if (Flag.OPENCODE_SHOW_TTFD) {
+  if (Flag.SENTE_SHOW_TTFD) {
     footer.append({
       kind: "system",
       text: `startup ${Math.max(0, Math.round(performance.now() - start))}ms`,

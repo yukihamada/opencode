@@ -1,6 +1,6 @@
 # Effect Guide
 
-How we write Effect code in `packages/opencode`. The companion roadmap is
+How we write Effect code in `packages/sente`. The companion roadmap is
 [`todo.md`](./todo.md).
 
 This guide describes the preferred shape for new work and migrations. If a
@@ -16,7 +16,7 @@ export interface Interface {
   readonly get: (id: FooID) => Effect.Effect<FooInfo, FooError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Foo") {}
+export class Service extends Context.Service<Service, Interface>()("@sente/Foo") {}
 
 export const layer = Layer.effect(
   Service,
@@ -237,7 +237,7 @@ Rules:
 
 ## Verification
 
-From `packages/opencode`:
+From `packages/sente`:
 
 ```bash
 bun run typecheck

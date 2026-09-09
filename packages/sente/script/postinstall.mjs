@@ -25,8 +25,8 @@ const archMap = {
 const platform = platformMap[os.platform()] ?? os.platform()
 const arch = archMap[os.arch()] ?? os.arch()
 const base = `opencode-${platform}-${arch}`
-const sourceBinary = platform === "windows" ? "opencode.exe" : "opencode"
-const targetBinary = path.join(__dirname, "bin", "opencode.exe")
+const sourceBinary = platform === "windows" ? "sente.exe" : "sente"
+const targetBinary = path.join(__dirname, "bin", "sente.exe")
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -127,7 +127,7 @@ function installPackage(name) {
   const version = packageJson.optionalDependencies?.[name]
   if (!version) return
 
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-install-"))
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "sente-install-"))
   try {
     const result = childProcess.spawnSync(
       "npm",

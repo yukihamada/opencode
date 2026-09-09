@@ -19,7 +19,7 @@ test("example", async () => {
 ### Options
 
 - `git?: boolean` - Initialize a git repo with a root commit
-- `config?: Partial<Config.Info>` - Write an `opencode.json` config file
+- `config?: Partial<Config.Info>` - Write an `sente.json` config file
 - `init?: (dir: string) => Promise<T>` - Custom setup function, returns value accessible as `tmp.extra`
 - `dispose?: (dir: string) => Promise<T>` - Custom cleanup function
 
@@ -128,7 +128,7 @@ import { TestInstance } from "../fixture/fixture"
 it.instance("uses the temp directory", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    expect(test.directory).toContain("opencode-test-")
+    expect(test.directory).toContain("sente-test-")
   }),
 )
 ```

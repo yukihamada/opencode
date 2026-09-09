@@ -11,7 +11,7 @@ import {
   type AcpClient,
 } from "./acp-test-client"
 
-export function createAcpClient(input: Pick<CliFixture, "opencode">, env?: Record<string, string>) {
+export function createAcpClient(input: Pick<CliFixture, "sente">, env?: Record<string, string>) {
   return Effect.gen(function* () {
     return createJsonRpcAcpClient(yield* input.opencode.acp(env ? { env } : undefined))
   })
@@ -23,7 +23,7 @@ export function initialize(acp: AcpClient) {
       yield* acp.request<InitializeResponse>("initialize", {
         protocolVersion: 1,
         clientCapabilities: { _meta: { "terminal-auth": true } },
-        clientInfo: { name: "opencode-local-acp", version: "0.1.0" },
+        clientInfo: { name: "sente-local-acp", version: "0.1.0" },
       }),
     )
   })

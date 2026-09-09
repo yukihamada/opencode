@@ -52,7 +52,7 @@ const SettingsProvidersContent: Component<{ onBack?: () => void }> = (props) => 
   const connected = createMemo(() => {
     return providers
       .connected()
-      .filter((p) => p.id !== "opencode" || Object.values(p.models).find((m) => m.cost?.input))
+      .filter((p) => p.id !== "sente" || Object.values(p.models).find((m) => m.cost?.input))
   })
 
   const popular = createMemo(() => {

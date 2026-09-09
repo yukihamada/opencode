@@ -1,6 +1,6 @@
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { PermissionV1 } from "@sente-ai/core/v1/permission"
 import type { Auth } from "@/auth"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@sente-ai/core/v1/session"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceState } from "@/effect/instance-state"
 import { Permission } from "@/permission"
@@ -9,13 +9,13 @@ import type { MessageV2 } from "../message-v2"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { InstallationVersion } from "@sente-ai/core/installation/version"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import type { Plugin } from "@/plugin"
 import { mergeDeep } from "remeda"
 
-const USER_AGENT = `opencode/${InstallationVersion}`
+const USER_AGENT = `sente/${InstallationVersion}`
 
 type PrepareInput = {
   readonly user: SessionV1.User
@@ -174,7 +174,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     })
   }
 
-  const opencodeProjectID = input.model.providerID.startsWith("opencode")
+  const opencodeProjectID = input.model.providerID.startsWith("sente")
     ? (yield* InstanceState.context).project.id
     : undefined
 
@@ -185,12 +185,12 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     params,
     messageTransformOptions: options,
     headers: {
-      ...(input.model.providerID.startsWith("opencode")
+      ...(input.model.providerID.startsWith("sente")
         ? {
-            ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
-            "x-opencode-session": input.sessionID,
-            "x-opencode-request": input.user.id,
-            "x-opencode-client": input.flags.client,
+            ...(opencodeProjectID ? { "x-sente-project": opencodeProjectID } : {}),
+            "x-sente-session": input.sessionID,
+            "x-sente-request": input.user.id,
+            "x-sente-client": input.flags.client,
             "User-Agent": USER_AGENT,
           }
         : {

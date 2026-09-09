@@ -7,7 +7,7 @@ import * as Socket from "effect/unstable/socket/Socket"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { registerAdapter } from "../../src/control-plane/adapters"
-import { WorkspaceV2 } from "@opencode-ai/core/workspace"
+import { WorkspaceV2 } from "@sente-ai/core/workspace"
 import type { WorkspaceAdapter } from "../../src/control-plane/types"
 import { Workspace } from "../../src/control-plane/workspace"
 import { InstanceRef, WorkspaceRef } from "../../src/effect/instance-ref"
@@ -202,7 +202,7 @@ describe("HttpApi instance context middleware", () => {
       yield* serveProbe()
 
       const response = yield* HttpClientRequest.get(`/session?workspace=${workspace.id}`).pipe(
-        HttpClientRequest.setHeader("x-opencode-directory", dir),
+        HttpClientRequest.setHeader("x-sente-directory", dir),
         HttpClient.execute,
       )
 
@@ -227,7 +227,7 @@ describe("HttpApi instance context middleware", () => {
       yield* serveProbe()
 
       const response = yield* HttpClientRequest.get(`/probe?workspace=${workspace.id}`).pipe(
-        HttpClientRequest.setHeader("x-opencode-directory", dir),
+        HttpClientRequest.setHeader("x-sente-directory", dir),
         HttpClient.execute,
       )
 
@@ -255,7 +255,7 @@ describe("HttpApi instance context middleware", () => {
       yield* serveProbe()
 
       const response = yield* HttpClientRequest.get(`/probe?workspace=${workspace.id}`).pipe(
-        HttpClientRequest.setHeader("x-opencode-directory", dir),
+        HttpClientRequest.setHeader("x-sente-directory", dir),
         HttpClient.execute,
       )
 
@@ -283,7 +283,7 @@ describe("HttpApi instance context middleware", () => {
       // workspace id.
       const unknownWorkspaceID = WorkspaceV2.ID.ascending()
       const response = yield* HttpClientRequest.get(`/probe?workspace=${unknownWorkspaceID}`).pipe(
-        HttpClientRequest.setHeader("x-opencode-directory", dir),
+        HttpClientRequest.setHeader("x-sente-directory", dir),
         HttpClient.execute,
       )
 
@@ -315,7 +315,7 @@ describe("HttpApi instance context middleware", () => {
       yield* serveProbe()
 
       const response = yield* HttpClientRequest.get(`/session?workspace=${workspace.id}`).pipe(
-        HttpClientRequest.setHeader("x-opencode-directory", dir),
+        HttpClientRequest.setHeader("x-sente-directory", dir),
         HttpClient.execute,
       )
 

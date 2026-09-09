@@ -1,10 +1,10 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@sente-ai/core/effect/layer-node"
 import { eq } from "drizzle-orm"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { serviceUse } from "@sente-ai/core/effect/service-use"
 import { Effect, Layer, Option, Schema, Context } from "effect"
 
-import { Database } from "@opencode-ai/core/database/database"
-import { AccountStateTable, AccountTable } from "@opencode-ai/core/account/sql"
+import { Database } from "@sente-ai/core/database/database"
+import { AccountStateTable, AccountTable } from "@sente-ai/core/account/sql"
 import { AccessToken, AccountID, AccountRepoError, Info, OrgID, RefreshToken } from "./schema"
 import { normalizeServerUrl } from "./url"
 
@@ -35,7 +35,7 @@ export interface Interface {
   }) => Effect.Effect<void, AccountRepoError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/AccountRepo") {}
+export class Service extends Context.Service<Service, Interface>()("@sente/AccountRepo") {}
 
 export const use = serviceUse(Service)
 

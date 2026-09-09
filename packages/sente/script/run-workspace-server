@@ -5,11 +5,11 @@
 // debugger easier
 //
 // *Important*: make sure you add the debug workspace plugin first.
-// In `.opencode/opencode.jsonc` in the root of this project add:
+// In `.opencode/sente.jsonc` in the root of this project add:
 //
-// "plugin": ["../packages/opencode/src/control-plane/dev/debug-workspace-plugin.ts"]
+// "plugin": ["../packages/sente/src/control-plane/dev/debug-workspace-plugin.ts"]
 //
-// Afterwards, run `./packages/opencode/script/run-workspace-server`
+// Afterwards, run `./packages/sente/script/run-workspace-server`
 
 import { stat } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"

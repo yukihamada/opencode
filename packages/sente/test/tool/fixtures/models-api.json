@@ -33603,13 +33603,13 @@
       }
     }
   },
-  "opencode-go": {
-    "id": "opencode-go",
-    "env": ["OPENCODE_API_KEY"],
+  "sente-go": {
+    "id": "sente-go",
+    "env": ["SENTE_API_KEY"],
     "npm": "@ai-sdk/openai-compatible",
-    "api": "https://opencode.ai/zen/go/v1",
+    "api": "https://teai.io/sente/zen/go/v1",
     "name": "OpenCode Go",
-    "doc": "https://opencode.ai/docs/zen",
+    "doc": "https://teai.io/sente/docs/zen",
     "models": {
       "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
@@ -90319,13 +90319,13 @@
       }
     }
   },
-  "opencode": {
-    "id": "opencode",
-    "env": ["OPENCODE_API_KEY"],
+  "sente": {
+    "id": "sente",
+    "env": ["SENTE_API_KEY"],
     "npm": "@ai-sdk/openai-compatible",
-    "api": "https://opencode.ai/zen/v1",
+    "api": "https://teai.io/sente/zen/v1",
     "name": "OpenCode Zen",
-    "doc": "https://opencode.ai/docs/zen",
+    "doc": "https://teai.io/sente/docs/zen",
     "models": {
       "ring-2.6-1t-free": {
         "id": "ring-2.6-1t-free",

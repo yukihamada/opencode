@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { ProviderTransform } from "@/provider/transform"
 import { LLMRequestPrep } from "@/session/llm/request"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { ProviderV2 } from "@sente-ai/core/provider"
+import { ModelV2 } from "@sente-ai/core/model"
+import { ModelsDev } from "@sente-ai/core/models-dev"
 import { generateText, jsonSchema, type ModelMessage } from "ai"
 import { createAmazonBedrock, type AmazonBedrockLanguageModelOptions } from "@ai-sdk/amazon-bedrock"
 import { createAnthropic } from "@ai-sdk/anthropic"
@@ -1967,7 +1967,7 @@ describe("ProviderTransform.schema - openai supported schema subset", () => {
   })
 
   test.each([
-    ["opencode", "@ai-sdk/openai"],
+    ["sente", "@ai-sdk/openai"],
     ["custom-openai-compatible", "@ai-sdk/openai"],
     ["azure", "@ai-sdk/azure"],
   ])("sanitizes %s models using %s", (providerID, npm) => {
@@ -3220,9 +3220,9 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
   test("preserves metadata using providerID key when store is false", () => {
     const opencodeModel = {
       ...openaiModel,
-      providerID: "opencode",
+      providerID: "sente",
       api: {
-        id: "opencode-test",
+        id: "sente-test",
         url: "https://api.opencode.ai",
         npm: "@ai-sdk/openai-compatible",
       },
@@ -3254,9 +3254,9 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
   test("preserves itemId across all providerOptions keys", () => {
     const opencodeModel = {
       ...openaiModel,
-      providerID: "opencode",
+      providerID: "sente",
       api: {
-        id: "opencode-test",
+        id: "sente-test",
         url: "https://api.opencode.ai",
         npm: "@ai-sdk/openai-compatible",
       },
@@ -3775,8 +3775,8 @@ describe("ProviderTransform sampling defaults - DeepSeek", () => {
 
   test.each([
     ["deepseek", "deepseek-v4-flash"],
-    ["opencode", "deepseek-v4-flash"],
-    ["opencode-go", "deepseek-v4-flash"],
+    ["sente", "deepseek-v4-flash"],
+    ["sente-go", "deepseek-v4-flash"],
     ["openrouter", "deepseek/deepseek-v4-flash-0731"],
     ["ollama-cloud", "deepseek-v4-flash:0731"],
   ])("defaults top_p for %s/%s", (providerID, id) => {

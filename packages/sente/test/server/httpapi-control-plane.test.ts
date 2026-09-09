@@ -3,9 +3,9 @@ import { describe, expect } from "bun:test"
 import { Context, Effect, Layer, Option, Ref } from "effect"
 import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { MoveSession } from "@sente-ai/core/control-plane/move-session"
+import { AbsolutePath } from "@sente-ai/core/schema"
+import { SessionV2 } from "@sente-ai/core/session"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
@@ -44,7 +44,7 @@ const apiLayer = HttpRouter.serve(
       moveSession: (value) => Ref.set(called, value),
     }),
   ),
-  Layer.provide(ServerAuth.Config.configLayer({ password: Option.none(), username: "opencode" })),
+  Layer.provide(ServerAuth.Config.configLayer({ password: Option.none(), username: "sente" })),
 )
 const it = testEffect(apiLayer)
 
