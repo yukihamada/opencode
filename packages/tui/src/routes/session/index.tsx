@@ -342,6 +342,10 @@ export function Session() {
 
   let seeded = false
   let scroll: ScrollBoxRenderable
+  // Manual wheel scrolling releases the bottom-sticky lock; new output then keeps
+  // the viewport instead of yanking the reader back to the latest message.
+  // Re-engages once the reader returns to the bottom (see bindScroll).
+  let userScrolledAway = false
   let prompt: PromptRef | undefined
   const bind = (r: PromptRef | undefined) => {
     prompt = r
@@ -425,6 +429,35 @@ export function Session() {
       if (!scroll || scroll.isDestroyed) return
       scroll.scrollTo(scroll.scrollHeight)
     }, 50)
+  }
+
+  // Track whether the reader is parked at the bottom (following new output) or
+  // has scrolled up to read history. While away, stickyScroll is switched off so
+  // incoming messages never move the viewport. The wheel listener sits on the
+  // inner content box because ScrollBox swallows scroll events without
+  // propagating them to parents, and a raw scrollTop setter skips OpenTUI's
+  // manual-scroll bookkeeping.
+  function bindScroll(r: ScrollBoxRenderable) {
+    scroll = r
+    userScrolledAway = false
+    const syncSticky = () => {
+      if (scroll.isDestroyed) return
+      const atBottom = scroll.scrollTop >= Math.max(0, scroll.scrollHeight - scroll.viewport.height - 1)
+      userScrolledAway = !atBottom
+      scroll.stickyScroll = atBottom
+    }
+    scroll.content.onMouseScroll = () => {
+      queueMicrotask(() => {
+        if (!scroll || scroll.isDestroyed) return
+        const atBottom = scroll.scrollTop >= Math.max(0, scroll.scrollHeight - scroll.viewport.height - 1)
+        userScrolledAway = !atBottom
+        scroll.stickyScroll = atBottom
+      })
+    }
+    scroll.verticalScrollBar.on("change", () => {
+      if (userScrolledAway) return
+      syncSticky()
+    })
   }
 
   const local = useLocal()
@@ -1178,7 +1211,7 @@ export function Session() {
           <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
             <Show when={session()}>
               <scrollbox
-                ref={(r) => (scroll = r)}
+                ref={bindScroll}
                 viewportOptions={{
                   paddingRight: showScrollbar() ? 1 : 0,
                 }}
