@@ -144,6 +144,9 @@ const layer = Layer.effect(
       if (!canWrite) return
 
       const add = input?.add.map((pkg) => [pkg.name, pkg.version].filter(Boolean).join("@")) ?? []
+      // Nothing to add and no package.json to reconcile: skip arborist entirely.
+      // Loading @npmcli/arborist + reify costs ~100ms per config dir on every boot.
+      if (add.length === 0 && !(yield* afs.existsSafe(path.join(dir, "package.json")))) return
       if (
         yield* Effect.gen(function* () {
           const nodeModulesExists = yield* afs.existsSafe(path.join(dir, "node_modules"))
