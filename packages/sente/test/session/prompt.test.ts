@@ -113,6 +113,7 @@ function makeMcp(instructions: MCP.ServerInstructions[] = []) {
   return Layer.succeed(
     MCP.Service,
     MCP.Service.of({
+      init: () => Effect.void,
       status: () => Effect.succeed({}),
       clients: () => Effect.succeed({}),
       instructions: () => Effect.succeed(instructions),

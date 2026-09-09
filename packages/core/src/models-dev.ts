@@ -157,12 +157,17 @@ const layer = Layer.effect(
       ),
     )
 
-    const source = Flag.SENTE_MODELS_URL || "https://models.sente.ai"
+    // models.sente.ai was a rename artifact with no DNS record: every launch paid a failed
+    // lookup + 2 retries and logged "Failed to fetch models.dev". Use the canonical catalog.
+    const source = Flag.SENTE_MODELS_URL || "https://models.dev"
     const filepath = path.join(
       Global.Path.cache,
-      source === "https://models.sente.ai" ? "models.json" : `models-${Hash.fast(source)}.json`,
+      source === "https://models.dev" ? "models.json" : `models-${Hash.fast(source)}.json`,
     )
-    const ttl = Duration.minutes(5)
+    // Catalog is 4.5MB; refetching it every launch past 5 minutes competes with the first
+    // LLM stream for bandwidth. The 60-minute background repeat below still keeps long
+    // sessions current, and `refresh(true)` bypasses this.
+    const ttl = Duration.hours(6)
     const lockKey = `models-dev:${filepath}`
 
     const fresh = Effect.fnUntraced(function* () {

@@ -3,6 +3,7 @@ import { Plugin } from "../plugin"
 import { Format } from "../format"
 import { LSP } from "@/lsp/lsp"
 import { Snapshot } from "../snapshot"
+import { MCP } from "../mcp"
 import * as Project from "./project"
 import * as Vcs from "./vcs"
 import { InstanceState } from "@/effect/instance-state"
@@ -23,6 +24,7 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const format = yield* Format.Service
     const lsp = yield* LSP.Service
+    const mcp = yield* MCP.Service
     const plugin = yield* Plugin.Service
     const project = yield* Project.Service
     const shareNext = yield* ShareNext.Service
@@ -38,8 +40,10 @@ const layer = Layer.effect(
       yield* plugin.init()
       // Each service self-manages its own slow work via Effect.forkScoped against
       // its per-instance state scope. We just await materialization here.
+      // MCP is included so remote server handshakes (TLS + initialize, ~0.5s each on teai.io)
+      // start at instance boot instead of on the first prompt's SessionTools.resolve.
       yield* Effect.forEach(
-        [lsp, shareNext, format, vcs, snapshot, project],
+        [lsp, shareNext, format, vcs, snapshot, project, mcp],
         (s) => s.init().pipe(Effect.catchCause((cause) => Effect.logWarning("init failed", { cause }))),
         { concurrency: "unbounded", discard: true },
       ).pipe(Effect.withSpan("InstanceBootstrap.init"))
@@ -52,7 +56,17 @@ const layer = Layer.effect(
 export const node = makeGlobalNode({
   service: Service,
   layer: layer,
-  deps: [Config.node, Format.node, LSP.node, Plugin.node, Project.node, ShareNext.node, Snapshot.node, Vcs.node],
+  deps: [
+    Config.node,
+    Format.node,
+    LSP.node,
+    MCP.node,
+    Plugin.node,
+    Project.node,
+    ShareNext.node,
+    Snapshot.node,
+    Vcs.node,
+  ],
 })
 
 export * as InstanceBootstrap from "./bootstrap"
