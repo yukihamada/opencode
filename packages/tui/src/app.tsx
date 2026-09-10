@@ -200,6 +200,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
               autoFocus: false,
               openConsoleOnError: false,
               useMouse: !Flag.SENTE_DISABLE_MOUSE && input.config.mouse,
+              // Terminal.app leaks raw escape sequences for pointer-motion reports,
+              // so the launcher sets SENTE_DISABLE_MOUSE_MOTION there. Wheel/click
+              // stay enabled so scrolling still works; only motion tracking is off.
+              enableMouseMovement: !Flag.SENTE_DISABLE_MOUSE_MOTION,
               consoleOptions: {
                 keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
               },
