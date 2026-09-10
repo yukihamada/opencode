@@ -36,7 +36,9 @@ jobs:
           echo "version=0.0.0-${{ github.ref_name }}-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
 
       - name: Build CLI (all darwin/linux targets)
-        run: ./packages/sente/script/build.ts
+        # --bytecode: precompile JS to JSC bytecode so launches skip parsing the ~100MB
+        # bundle (TUI first draw 1.1s -> 0.5s measured on M-series). Binary grows ~2x.
+        run: ./packages/sente/script/build.ts --bytecode
         env:
           # Channel doubles as the session DB name (sente-<channel>.db); keep it
           # fixed to the branch so updates never orphan existing sessions.
