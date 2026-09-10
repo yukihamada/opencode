@@ -173,7 +173,13 @@ for (const item of targets) {
     minify: true,
     sourcemap: sourcemapsFlag ? "linked" : "none",
     splitting: true,
-    bytecode: bytecodeFlag,
+    // 🪤 --bytecode (JSC precompiled) crashes the Windows binary: bun 1.4.0
+    // compiled for bun-windows-x64 segfaults immediately (measured 2026-09-10
+    // on Server 2022: `sente.exe --version` → "Segmentation fault at 0xE78",
+    // while upstream opencode-windows-x64 without bytecode runs on the same
+    // host). darwin/linux keep bytecode (it is the launch-speed win there).
+    // Override with SENTE_BYTECODE_WINDOWS=1 to re-test on newer bun.
+    bytecode: bytecodeFlag && !(item.os === "win32" && process.env.SENTE_BYTECODE_WINDOWS !== "1"),
     compile: {
       autoloadBunfig: false,
       autoloadDotenv: false,
