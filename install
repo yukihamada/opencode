@@ -101,7 +101,7 @@ else
 
     combo="$os-$arch"
     case "$combo" in
-      linux-x64|linux-arm64|darwin-x64|darwin-arm64|windows-x64)
+      linux-x64|linux-arm64|darwin-x64|darwin-arm64|windows-x64|windows-arm64)
         ;;
       *)
         echo -e "${RED}Unsupported OS/Arch: $os/$arch${NC}"
@@ -109,8 +109,13 @@ else
         ;;
     esac
 
-    # Fork releases (yukihamada/opencode) ship tar.gz for every darwin/linux target.
-    archive_ext=".tar.gz"
+    # Fork releases (yukihamada/opencode) ship tar.gz for darwin/linux and zip
+    # for windows (sente.exe). See .github/workflows/sente-release.yml.
+    if [ "$os" = "windows" ]; then
+      archive_ext=".zip"
+    else
+      archive_ext=".tar.gz"
+    fi
 
     is_musl=false
     if [ "$os" = "linux" ]; then
@@ -343,10 +348,20 @@ download_and_install() {
     else
         echo -e "${MUTED}No SHA256SUMS.txt for this release; skipping checksum verification.${NC}"
     fi
-    tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
-
-    mv "$tmp_dir/sente" "$INSTALL_DIR"
-    chmod 755 "${INSTALL_DIR}/sente"
+    if [ "$os" = "windows" ]; then
+        if command -v unzip >/dev/null 2>&1; then
+            unzip -oq "$tmp_dir/$filename" -d "$tmp_dir"
+        else
+            echo -e "${RED}Error: 'unzip' is required to install on Windows.${NC}"
+            exit 1
+        fi
+        mv "$tmp_dir/sente.exe" "${INSTALL_DIR}/sente.exe"
+        chmod 755 "${INSTALL_DIR}/sente.exe"
+    else
+        tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
+        mv "$tmp_dir/sente" "$INSTALL_DIR"
+        chmod 755 "${INSTALL_DIR}/sente"
+    fi
     rm -rf "$tmp_dir"
 }
 

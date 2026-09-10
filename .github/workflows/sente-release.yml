@@ -1,11 +1,12 @@
 name: sente-release
 run-name: "sente release (${{ github.ref_name }})"
 
-# Builds the Sente CLI for darwin/linux and publishes it as the fork's *latest*
-# GitHub Release (tag `sente-<version>`). `te update` (teai.io/te installer) and
-# the binary's own updater (packages/sente/src/installation) download
-# `sente-<os>-<arch>.tar.gz` from releases/latest, so every push to the
-# release branch reaches other machines.
+# Builds the Sente CLI for darwin/linux/windows and publishes it as the fork's
+# *latest* GitHub Release (tag `sente-<version>`). `te update` (teai.io/te
+# installer) and the binary's own updater (packages/sente/src/installation)
+# download `sente-<os>-<arch>.tar.gz` from releases/latest, so every push to the
+# release branch reaches other machines. Windows ships as `.zip` (sente.exe),
+# installed by teai.io/te.ps1.
 on:
   push:
     branches:
@@ -44,7 +45,7 @@ jobs:
         with:
           bun-version: "1.4.0"
 
-      - name: Build CLI (all darwin/linux targets)
+      - name: Build CLI (all darwin/linux/windows targets)
         # --bytecode: precompile JS to JSC bytecode so launches skip parsing the ~100MB
         # bundle. Binary grows ~2x.
         run: bun --version && ./packages/sente/script/build.ts --bytecode
@@ -58,12 +59,19 @@ jobs:
         run: |
           set -eu
           mkdir -p out
+          # darwin/linux: tar.gz (teai.io/te installer + in-app updater expect this).
           for dir in packages/sente/dist/sente-darwin-* packages/sente/dist/sente-linux-*; do
             [ -d "$dir/bin" ] || continue
             name="$(basename "$dir")"
             tar -czf "out/$name.tar.gz" -C "$dir/bin" .
           done
-          (cd out && shasum -a 256 *.tar.gz > SHA256SUMS.txt)
+          # windows: zip (sente.exe). teai.io/te.ps1 downloads sente-windows-<arch>.zip.
+          for dir in packages/sente/dist/sente-windows-*; do
+            [ -d "$dir/bin" ] || continue
+            name="$(basename "$dir")"
+            (cd "$dir/bin" && zip -qr "$OLDPWD/out/$name.zip" .)
+          done
+          (cd out && shasum -a 256 *.tar.gz *.zip > SHA256SUMS.txt)
           ls -la out
 
       - name: Release
@@ -72,9 +80,9 @@ jobs:
           TAG: sente-${{ steps.version.outputs.version }}
         run: |
           set -eu
-          gh release create "$TAG" out/*.tar.gz out/SHA256SUMS.txt \
+          gh release create "$TAG" out/*.tar.gz out/*.zip out/SHA256SUMS.txt \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --latest \
             --title "Sente ${{ steps.version.outputs.version }}" \
-            --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater. Verify with SHA256SUMS.txt."
+            --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater. Windows: \`irm https://teai.io/te.ps1 | iex\`. Verify with SHA256SUMS.txt."
