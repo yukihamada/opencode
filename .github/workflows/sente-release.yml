@@ -1,0 +1,88 @@
+name: sente-release
+run-name: "sente release (${{ github.ref_name }})"
+
+# Builds the Sente CLI for darwin/linux/windows and publishes it as the fork's
+# *latest* GitHub Release (tag `sente-<version>`). `te update` (teai.io/te
+# installer) and the binary's own updater (packages/sente/src/installation)
+# download `sente-<os>-<arch>.tar.gz` from releases/latest, so every push to the
+# release branch reaches other machines. Windows ships as `.zip` (sente.exe),
+# installed by teai.io/te.ps1.
+on:
+  push:
+    branches:
+      - headless-model-fallback
+  workflow_dispatch:
+
+concurrency:
+  group: sente-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: github.repository == 'yukihamada/opencode'
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Version
+        id: version
+        run: |
+          echo "version=0.0.0-${{ github.ref_name }}-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+
+      # Deps are installed with the repo's pinned bun (package.json packageManager) above.
+      # The compile step itself uses a newer bun: measured TUI first draw on M-series,
+      # same source with --bytecode, bun 1.3.14 = 790ms vs bun 1.4.0 = 480ms (no bytecode
+      # = 1030ms). packages/script accepts ^1.3.14 so 1.4.0 passes its version guard.
+      - name: Setup Bun for compile
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.0"
+
+      - name: Build CLI (all darwin/linux/windows targets)
+        # --bytecode: precompile JS to JSC bytecode so launches skip parsing the ~100MB
+        # bundle. Binary grows ~2x.
+        run: bun --version && ./packages/sente/script/build.ts --bytecode
+        env:
+          # Channel doubles as the session DB name (sente-<channel>.db); keep it
+          # fixed to the branch so updates never orphan existing sessions.
+          SENTE_CHANNEL: ${{ github.ref_name }}
+          SENTE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Package
+        run: |
+          set -eu
+          mkdir -p out
+          # darwin/linux: tar.gz (teai.io/te installer + in-app updater expect this).
+          for dir in packages/sente/dist/sente-darwin-* packages/sente/dist/sente-linux-*; do
+            [ -d "$dir/bin" ] || continue
+            name="$(basename "$dir")"
+            tar -czf "out/$name.tar.gz" -C "$dir/bin" .
+          done
+          # windows: zip (sente.exe). teai.io/te.ps1 downloads sente-windows-<arch>.zip.
+          for dir in packages/sente/dist/sente-windows-*; do
+            [ -d "$dir/bin" ] || continue
+            name="$(basename "$dir")"
+            (cd "$dir/bin" && zip -qr "$OLDPWD/out/$name.zip" .)
+          done
+          (cd out && shasum -a 256 *.tar.gz *.zip > SHA256SUMS.txt)
+          ls -la out
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: sente-${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          gh release create "$TAG" out/*.tar.gz out/*.zip out/SHA256SUMS.txt \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --latest \
+            --title "Sente ${{ steps.version.outputs.version }}" \
+            --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater. Windows: \`irm https://teai.io/te.ps1 | iex\`. Verify with SHA256SUMS.txt."
