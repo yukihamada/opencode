@@ -35,10 +35,19 @@ jobs:
         run: |
           echo "version=0.0.0-${{ github.ref_name }}-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
 
+      # Deps are installed with the repo's pinned bun (package.json packageManager) above.
+      # The compile step itself uses a newer bun: measured TUI first draw on M-series,
+      # same source with --bytecode, bun 1.3.14 = 790ms vs bun 1.4.0 = 480ms (no bytecode
+      # = 1030ms). packages/script accepts ^1.3.14 so 1.4.0 passes its version guard.
+      - name: Setup Bun for compile
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.0"
+
       - name: Build CLI (all darwin/linux targets)
         # --bytecode: precompile JS to JSC bytecode so launches skip parsing the ~100MB
-        # bundle (TUI first draw 1.1s -> 0.5s measured on M-series). Binary grows ~2x.
-        run: ./packages/sente/script/build.ts --bytecode
+        # bundle. Binary grows ~2x.
+        run: bun --version && ./packages/sente/script/build.ts --bytecode
         env:
           # Channel doubles as the session DB name (sente-<channel>.db); keep it
           # fixed to the branch so updates never orphan existing sessions.
