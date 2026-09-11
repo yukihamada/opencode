@@ -45,7 +45,9 @@ jobs:
           bun-version: "1.4.0"
 
       - name: Build CLI (all darwin/linux/windows targets)
-        run: bun --version && ./packages/sente/script/build.ts
+        # --skip-embed-web-ui: don't bundle the browser UI; serve proxies teai.io/sente/app.
+        # 142MB -> 107MB. Fallback: serve still works via upstream proxy.
+        run: bun --version && ./packages/sente/script/build.ts --skip-embed-web-ui
         env:
           # Channel doubles as the session DB name (sente-<channel>.db); keep it
           # fixed to the branch so updates never orphan existing sessions.
