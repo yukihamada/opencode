@@ -6,6 +6,7 @@ import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "ef
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
+import { DataPolicy } from "@/config/data-policy"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
@@ -44,7 +45,7 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
-  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result, InstanceType<typeof DataPolicy.BlockedError>>
 }
 
 type Input = {

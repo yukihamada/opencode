@@ -10,6 +10,7 @@ import { SessionProcessor } from "./processor"
 import { Agent } from "@/agent/agent"
 import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
+import { DataPolicy } from "@/config/data-policy"
 import { NotFoundError } from "@/storage/storage"
 
 import { Effect, Layer, Context } from "effect"
@@ -422,30 +423,42 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
-      const result = yield* processor.process({
-        user: userMessage,
-        agent,
-        sessionID: input.sessionID,
-        tools: {},
-        system: [],
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: [
-                  nextPrompt,
-                  ...(compacting.prompt ? ["The following is the conversation history:", conversation] : []),
-                ]
-                  .filter(Boolean)
-                  .join("\n\n"),
-              },
-            ],
-          },
-        ],
-        model,
-      })
+      const result = yield* processor
+        .process({
+          user: userMessage,
+          agent,
+          sessionID: input.sessionID,
+          tools: {},
+          system: [],
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    nextPrompt,
+                    ...(compacting.prompt ? ["The following is the conversation history:", conversation] : []),
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n"),
+                },
+              ],
+            },
+          ],
+          model,
+        })
+        .pipe(
+          Effect.catchIf(DataPolicy.BlockedError.isInstance, (e) =>
+            Effect.gen(function* () {
+              processor.message.error = e.toObject()
+              processor.message.finish = "error"
+              yield* session.updateMessage(processor.message)
+              yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: processor.message.error })
+              return "stop" as const
+            }),
+          ),
+        )
 
       if (result === "compact") {
         processor.message.error = new SessionV1.ContextOverflowError({

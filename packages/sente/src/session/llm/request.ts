@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@sente-ai/core/v1/permission"
+import type { ConfigV1 } from "@sente-ai/core/v1/config/config"
 import type { Auth } from "@/auth"
 import { SessionV1 } from "@sente-ai/core/v1/session"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
@@ -9,6 +10,7 @@ import type { MessageV2 } from "../message-v2"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
+import { DataPolicy } from "@/config/data-policy"
 import { InstallationVersion } from "@sente-ai/core/installation/version"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
@@ -33,6 +35,7 @@ type PrepareInput = {
   readonly plugin: Plugin.Interface
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
+  readonly dataPolicy?: ConfigV1.Info["dataPolicy"]
 }
 
 export type Prepared = {
@@ -98,7 +101,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 
-  const messages =
+  let messages =
     isOpenaiOauth || input.isWorkflow
       ? input.messages
       : [
@@ -110,6 +113,25 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
           ),
           ...input.messages,
         ]
+
+  if (input.dataPolicy && (input.dataPolicy.mode ?? "off") !== "off") {
+    const result = DataPolicy.messages(messages, input.dataPolicy)
+    if (result.warnings.length > 0) {
+      yield* Effect.logWarning("data policy matched outbound prompt", {
+        "session.id": input.sessionID,
+        warnings: result.warnings,
+      })
+    }
+    if (result.blocked) {
+      return yield* Effect.fail(
+        new DataPolicy.BlockedError({
+          message: `Request blocked by dataPolicy: outbound prompt matched ${result.warnings.length} deny pattern(s)`,
+          patterns: result.warnings,
+        }),
+      )
+    }
+    messages = result.messages
+  }
 
   const params = yield* input.plugin.trigger(
     "chat.params",
