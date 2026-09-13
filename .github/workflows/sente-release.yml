@@ -35,6 +35,7 @@ jobs:
         id: version
         run: |
           echo "version=0.0.0-${{ github.ref_name }}-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+          echo "title=Sente $(date -u '+%Y.%m.%d · %H:%M UTC')" >> "$GITHUB_OUTPUT"
 
       # Deps are installed with the repo's pinned bun (package.json packageManager) above.
       # Bytecode is OFF: measured on M-series it only shaves ~160ms (1550ms -> 1390ms) on TUI
@@ -83,5 +84,5 @@ jobs:
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --latest \
-            --title "Sente ${{ steps.version.outputs.version }}" \
+            --title "${{ steps.version.outputs.title }}" \
             --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater. Windows: \`irm https://teai.io/te.ps1 | iex\`. Verify with SHA256SUMS.txt."
