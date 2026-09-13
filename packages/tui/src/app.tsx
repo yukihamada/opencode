@@ -58,7 +58,7 @@ import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
-import { ToastProvider, useToast } from "./ui/toast"
+import { ToastProvider, useToast, type ToastContext } from "./ui/toast"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
@@ -86,6 +86,7 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
+import { setVoiceMuted, stopSpeaking, voiceLabel, voiceState } from "./util/voice"
 
 registerOpencodeSpinner()
 
@@ -105,6 +106,7 @@ const appGlobalBindingCommands = [
 
 const appBindingCommands = [
   "command.palette.show",
+  "koe.toggle",
   "model.list",
   "model.cycle_recent",
   "model.cycle_recent_reverse",
@@ -181,6 +183,29 @@ function isVersionGreater(left: string, right: string) {
   if (!a.prerelease) return true
   if (!b.prerelease) return false
   return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true }) > 0
+}
+
+// F1 / `/voice` で声を on/off する。`~/.config/teai/mute` を `te voice on/off` と
+// 同じ場所で触るので、CLI・Sente.app・声での指示と状態が食い違わない。
+// 環境変数(AGENT_KOE=0 / NO_KOE)で無効化されている時は、ファイルを消しても
+// 鳴らないため「環境変数で OFF」と明示する。
+function toggleVoice(toast: ToastContext) {
+  const next = !voiceState().muted
+  setVoiceMuted(next)
+  if (next) stopSpeaking()
+  const state = voiceState()
+  toast.show({
+    message: next ? `🔇 声を OFF にしました(F1 で元に戻せます)` : `🔊 声を ON にしました(F1 で消せます)`,
+    variant: "info",
+    duration: 4000,
+  })
+  if (state.envOff) {
+    toast.show({
+      message: `⚠ この端末は環境変数(AGENT_KOE=0 または NO_KOE)で声が無効です。unset しないと鳴りません`,
+      variant: "warning",
+      duration: 6000,
+    })
+  }
 }
 
 export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
@@ -630,6 +655,16 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           local.session.quickSwitch(i + 1)
         },
       })),
+      {
+        name: "koe.toggle",
+        title: "Toggle voice (KOE)",
+        slashName: "voice",
+        slashAliases: ["koe", "mute"],
+        category: "System",
+        run: () => {
+          void toggleVoice(toast)
+        },
+      },
       {
         name: "model.list",
         title: "Switch model",
