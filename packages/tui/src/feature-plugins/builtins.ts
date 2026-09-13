@@ -11,6 +11,7 @@ import DiffViewer from "./system/diff-viewer"
 import Notifications from "./system/notifications"
 import PluginManager from "./system/plugins"
 import WhichKey from "./system/which-key"
+import StatusLine from "./system/status-line"
 
 export type BuiltinTuiPlugin = Omit<TuiPluginModule, "id"> & {
   id: string
@@ -31,6 +32,7 @@ export function createBuiltinPlugins(options: { experimentalEventSystem: boolean
     Notifications,
     PluginManager,
     WhichKey,
+    StatusLine,
     DiffViewer,
   ]
 }

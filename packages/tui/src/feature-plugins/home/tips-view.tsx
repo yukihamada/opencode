@@ -19,6 +19,7 @@ type Shortcuts = {
   inputNewline: TipShortcut
   inputPaste: TipShortcut
   inputUndo: TipShortcut
+  koeToggle: TipShortcut
   leader: TipShortcut
   messagesCopy: TipShortcut
   messagesFirst: TipShortcut
@@ -116,6 +117,7 @@ export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
     messagesPageDown: configShortcut(props.api, "session.page.down"),
     messagesPageUp: configShortcut(props.api, "session.page.up"),
     messagesToggleConceal: configShortcut(props.api, "session.toggle.conceal"),
+    koeToggle: useCommandShortcut("koe.toggle"),
     modelCycleRecent: useCommandShortcut("model.cycle_recent"),
     modelList: useCommandShortcut("model.list"),
     sessionExport: configShortcut(props.api, "session.export"),
@@ -188,6 +190,8 @@ const TIPS: Tip[] = [
   "Run {highlight}/connect{/highlight} to add API keys for 75+ supported LLM providers",
   (shortcuts) => `The leader key is ${shortcutText(shortcuts.leader())}; combine with other keys for quick actions`,
   (shortcuts) => press(shortcuts.modelCycleRecent(), "to quickly switch between recently used models"),
+  (shortcuts) => press(shortcuts.koeToggle(), "to turn Sente's voice (KOE) on or off"),
+  (shortcuts) => press(shortcuts.helpShow(), "to see the main keyboard shortcuts"),
   (shortcuts) => press(shortcuts.sessionSidebarToggle(), "in a session to show or hide the sidebar panel"),
   (shortcuts) =>
     shortcuts.messagesPageUp() && shortcuts.messagesPageDown()
