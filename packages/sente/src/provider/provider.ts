@@ -34,6 +34,34 @@ import { ProviderError } from "./error"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
+/// teai.io が返すルーティング情報を拾って state に退避する。
+///
+/// `teai/auto` は「どの実モデルが答えたか」を応答本文の model 欄でしか返さず、
+/// ストリーミングでは本文が流れ切るまで分からない。teai 側は解決先を
+/// `x-teai-auto-model`(実モデル名)・`x-teai-auto-reason`(理由コード)・
+/// `x-teai-credits-remaining`(課金後残高)ヘッダで返すので、ここで受け取って
+/// `last-route.json` に書く。Sente のプラグイン(ターン終了時)がこれを読み、
+/// 「🔀 auto → moonshotai/kimi-k3 · 残高 12,345cr」を1行で出す。
+///
+/// 失敗しても本処理(チャット)は絶対に止めない — 表示のための情報なので
+/// 例外は握りつぶす。BYOK/非teaiプロバイダではヘッダが無いので何もしない。
+function captureTeaiRoute(res: Response) {
+  try {
+    const autoModel = res.headers.get("x-teai-auto-model")
+    const autoReason = res.headers.get("x-teai-auto-reason")
+    const credits = res.headers.get("x-teai-credits-remaining")
+    if (!autoModel && !autoReason && !credits) return
+    const file = path.join(Global.Path.state, "last-route.json")
+    const payload = JSON.stringify({
+      at: Date.now(),
+      auto_model: autoModel ?? null,
+      auto_reason: autoReason ?? null,
+      credits_remaining: credits ?? null,
+    })
+    void import("fs/promises").then((fs) => fs.writeFile(file, payload).catch(() => {}))
+  } catch {}
+}
+
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
   if (!res.body) return res
@@ -1823,6 +1851,8 @@ const layer = Layer.effect(
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
           }).finally(() => headerTimeoutCtl?.clear())
+
+          captureTeaiRoute(res)
 
           if (!chunkAbortCtl) return res
           return wrapSSE(res, chunkTimeout, chunkAbortCtl)
