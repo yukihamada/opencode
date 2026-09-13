@@ -46,6 +46,8 @@ import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
+import { DialogOnboarding } from "./ui/dialog-onboarding"
+import { ONBOARDING_KEY, shouldShowOnboarding } from "./onboarding"
 import { DialogAgent } from "./component/dialog-agent"
 import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
@@ -525,6 +527,16 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         })
       }
     })
+  })
+
+  // 🌱 初回起動のチュートリアル: プラグイン読み込み完了 + KV 読み込み完了を待ってから
+  // 出す(KV は非同期なので ready を見ないと「初回なのに出ない/毎回出る」が起きる)。
+  // 一度見たら KV に印を残し、二度と出さない。
+  let onboarded = false
+  createEffect(() => {
+    if (onboarded || !ready() || !shouldShowOnboarding(kv)) return
+    onboarded = true
+    dialog.replace(() => <DialogOnboarding />)
   })
 
   let continued = false
