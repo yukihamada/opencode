@@ -1,4 +1,4 @@
-import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { registerOpencodeSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
@@ -89,6 +89,7 @@ import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-wi
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { setVoiceMuted, stopSpeaking, voiceLabel, voiceState } from "./util/voice"
+import { DialogVoiceStyle } from "./component/dialog-voice-style"
 
 registerOpencodeSpinner()
 
@@ -415,6 +416,10 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
+  useKeyboard((event) => {
+    // Leave existing dialog/input Escape handling intact; stopping output never mutes.
+    if (event.name === "escape") stopSpeaking()
+  })
 
   const api = createTuiApi(
     createTuiApiAdapters({
@@ -676,6 +681,13 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         run: () => {
           void toggleVoice(toast)
         },
+      },
+      {
+        name: "koe.style",
+        title: "Speaking style / 話し方",
+        slashName: "voice-style",
+        category: "System",
+        run: () => dialog.replace(() => <DialogVoiceStyle />),
       },
       {
         name: "model.list",
