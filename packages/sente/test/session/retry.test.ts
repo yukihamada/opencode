@@ -232,6 +232,29 @@ describe("session.retry.retryable", () => {
     })
   })
 
+  test.each([
+    "Generation did not complete. Retry shortly.",
+    "Generation did not complete: All 4 stream providers failed: timeout. Retry shortly.",
+    "Concurrent generation limit reached. Retry after 2 seconds with jitter.",
+  ])("retries teai stream generation failures: %s", (message) => {
+    expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({ message })
+  })
+
+  test("normalizes a teai stream failure carrying an upstream 503", () => {
+    // 5xx を含む本文は既存の語彙に正規化される(「再送で直る」判定自体は変わらない)。
+    const message = "Generation did not complete: API error (503): upstream unavailable. Retry shortly."
+    expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({
+      message: "Provider is overloaded",
+    })
+  })
+
+  test("retries serialized teai generation_failed codes", () => {
+    const message = JSON.stringify({
+      error: { type: "upstream_error", code: "generation_failed", message: "Generation did not complete" },
+    })
+    expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({ message })
+  })
+
   test("matches retryable API response bodies", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({
