@@ -20,9 +20,13 @@ export async function appendText(filePath: string, content: string) {
 }
 
 export async function writeJsonAtomic(filePath: string, value: unknown) {
+  return writeTextAtomic(filePath, JSON.stringify(value))
+}
+
+export async function writeTextAtomic(filePath: string, content: string) {
   await mkdir(path.dirname(filePath), { recursive: true })
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
-  await Bun.write(temporary, JSON.stringify(value)).catch(async (error) => {
+  await Bun.write(temporary, content).catch(async (error) => {
     await rm(temporary, { force: true }).catch(() => undefined)
     throw error
   })

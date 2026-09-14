@@ -157,6 +157,7 @@ export const Definitions = {
   prompt_stash: keybind("none", "Stash prompt"),
   prompt_stash_pop: keybind("none", "Pop stashed prompt"),
   prompt_stash_list: keybind("none", "List stashed prompts"),
+  "prompt.recover": keybind("alt+r", "Restore input after a submission failure"),
   workspace_set: keybind("none", "Set workspace"),
 
   input_clear: keybind("ctrl+c", "Clear input field"),
