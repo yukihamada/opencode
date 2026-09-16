@@ -25,6 +25,7 @@ import { Filesystem } from "@/util/filesystem"
 import { createSenteClient, type SenteClient, type ToolPart } from "@sente-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { ExitCode, diagnostic, exitCodeForError } from "../exit-code"
 
 type ModelInput = Parameters<SenteClient["session"]["prompt"]>[0]["model"]
 
@@ -273,9 +274,19 @@ export const RunCommand = effectCmd({
       const interactive = args.mini
       const auto = args.auto || args.yolo || args["dangerously-skip-permissions"]
       const thinking = interactive ? (args.thinking ?? true) : (args.thinking ?? false)
-      const die = (message: string): never => {
-        UI.error(message)
-        process.exit(1)
+      // Usage errors are the one class of failure that can fire before a session
+      // exists. Under `--format json` they still go to stderr — stdout must stay
+      // a pure event stream — but as a structured record so a caller can read
+      // the reason without scraping ANSI off the terminal.
+      function die(message: string, code: ExitCode = ExitCode.User): never {
+        if (args.format === "json") {
+          process.stderr.write(
+            JSON.stringify({ type: "error", level: "fatal", timestamp: Date.now(), exitCode: code, message }) + EOL,
+          )
+        } else {
+          UI.error(message)
+        }
+        return process.exit(code)
       }
       const dieInteractive = (error: unknown): never => {
         if (error instanceof Error && error.message === INTERACTIVE_INPUT_ERROR) {
@@ -339,8 +350,7 @@ export const RunCommand = effectCmd({
           process.chdir(path.isAbsolute(args.dir) ? args.dir : path.join(root, args.dir))
           return process.cwd()
         } catch {
-          UI.error("Failed to change directory to " + args.dir)
-          process.exit(1)
+          die("Failed to change directory to " + args.dir)
         }
       })()
       const attachHeaders = args.attach
@@ -361,15 +371,13 @@ export const RunCommand = effectCmd({
         for (const filePath of list) {
           const resolvedPath = path.resolve(args.attach ? root : (directory ?? root), filePath)
           if (!(await Filesystem.exists(resolvedPath))) {
-            UI.error(`File not found: ${filePath}`)
-            process.exit(1)
+            die(`File not found: ${filePath}`)
           }
 
           const stat = Filesystem.stat(resolvedPath)
           const isDirectory = stat?.isDirectory() ?? false
           if (args.attach && isDirectory) {
-            UI.error(`Cannot attach local directory without a shared filesystem: ${filePath}`)
-            process.exit(1)
+            die(`Cannot attach local directory without a shared filesystem: ${filePath}`)
           }
 
           const content = await (async () => {
@@ -378,8 +386,7 @@ export const RunCommand = effectCmd({
             try {
               const opened = await handle.stat()
               if (!opened.isFile() || Number(opened.size) > ATTACH_FILE_MAX_BYTES) {
-                UI.error(`Cannot attach local file larger than 10 MiB or a special file: ${filePath}`)
-                process.exit(1)
+                die(`Cannot attach local file larger than 10 MiB or a special file: ${filePath}`)
               }
               if (opened.size === 0) return Buffer.alloc(0)
               const buffer = Buffer.alloc(Number(opened.size))
@@ -418,13 +425,11 @@ export const RunCommand = effectCmd({
       const initialInput = resolveRunInput(rawMessage, piped)
 
       if (message.trim().length === 0 && !args.command && !interactive) {
-        UI.error("You must provide a message or a command")
-        process.exit(1)
+        die("You must provide a message or a command")
       }
 
       if (args.fork && !args.continue && !args.session) {
-        UI.error("--fork requires --continue or --session")
-        process.exit(1)
+        die("--fork requires --continue or --session")
       }
 
       const rules: PermissionV1.Ruleset = interactive
@@ -462,8 +467,7 @@ export const RunCommand = effectCmd({
             .catch(() => undefined)
 
           if (!current?.data) {
-            UI.error("Session not found")
-            process.exit(1)
+            die("Session not found")
           }
 
           if (args.fork) {
@@ -538,12 +542,12 @@ export const RunCommand = effectCmd({
         if (cfg.data.share !== "auto" && !flags.autoShare && !args.share) return
         const res = await sdk.session.share({ sessionID }).catch((error) => {
           if (error instanceof Error && error.message.includes("disabled")) {
-            UI.println(UI.Style.TEXT_DANGER_BOLD + "!  " + error.message)
+            diag("warn", error.message)
           }
           return { error }
         })
         if (!res.error && "data" in res && res.data?.share?.url) {
-          UI.println(UI.Style.TEXT_INFO_BOLD + "~  " + res.data.share.url)
+          diag("info", res.data.share.url, { url: res.data.share.url })
         }
       }
 
@@ -588,9 +592,26 @@ export const RunCommand = effectCmd({
           return next
         }
 
-        UI.error("Failed to resolve remote directory")
-        process.exit(1)
+        die("Failed to resolve remote directory")
       }
+
+      // Diagnostics (warnings, share URLs, permission notices) go to stderr in
+      // both formats. Under `--format json` they become structured records so a
+      // machine consumer never has to scrape ANSI-styled prose off stderr:
+      // stdout stays a pure event stream, stderr stays a pure diagnostic stream.
+      //
+      // Declared on the outer scope because agent/fallback warnings fire before
+      // a session is resolved; `sessionID` is simply omitted for those.
+      function diag(level: "warn" | "info", message: string, data?: Record<string, unknown>) {
+        if (args.format === "json") {
+          process.stderr.write(JSON.stringify(diagnostic(level, message, { sessionID, data })) + EOL)
+          return
+        }
+        const style = level === "warn" ? UI.Style.TEXT_WARNING_BOLD : UI.Style.TEXT_INFO_BOLD
+        UI.println(style + (level === "warn" ? "!  " : "~  ") + UI.Style.TEXT_NORMAL + message)
+      }
+
+      let sessionID: string | undefined
 
       async function localAgent() {
         if (!args.agent) return undefined
@@ -600,19 +621,13 @@ export const RunCommand = effectCmd({
           agentSvc.get(name).pipe(Effect.provideService(InstanceRef, localInstance)),
         )
         if (!entry) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" not found. Falling back to default agent`,
-          )
+          diag("warn", `agent "${name}" not found. Falling back to default agent`, { agent: name })
           return undefined
         }
         if (entry.mode === "subagent") {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`,
-          )
+          diag("warn", `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`, {
+            agent: name,
+          })
           return undefined
         }
         return name
@@ -628,30 +643,22 @@ export const RunCommand = effectCmd({
           .catch(() => undefined)
 
         if (!modes) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `failed to list agents from ${args.attach}. Falling back to default agent`,
-          )
+          diag("warn", `failed to list agents from ${args.attach}. Falling back to default agent`, {
+            relay: args.attach,
+          })
           return undefined
         }
 
         const agent = modes.find((a) => a.name === name)
         if (!agent) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" not found. Falling back to default agent`,
-          )
+          diag("warn", `agent "${name}" not found. Falling back to default agent`, { agent: name })
           return undefined
         }
 
         if (agent.mode === "subagent") {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`,
-          )
+          diag("warn", `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`, {
+            agent: name,
+          })
           return undefined
         }
 
@@ -670,10 +677,9 @@ export const RunCommand = effectCmd({
       async function execute(sdk: SenteClient) {
         const sess = await session(sdk)
         if (!sess?.id) {
-          UI.error("Session not found")
-          process.exit(1)
+          die("Session not found")
         }
-        const sessionID = sess.id
+        sessionID = sess.id
 
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
@@ -698,6 +704,10 @@ export const RunCommand = effectCmd({
           const toggles = new Map<string, boolean>()
           const sessions = new Set([sessionID])
           let error: string | undefined
+          // Raw error objects are kept so the process can exit with a code the
+          // caller can branch on. The first fatal error wins — later ones are
+          // still printed, but they don't downgrade the classification.
+          let code: ExitCode | undefined
 
           for await (const event of events.stream) {
             if (event.type === "session.created" && event.properties.info.parentID) {
@@ -786,7 +796,8 @@ export const RunCommand = effectCmd({
                 err = String(props.error.data.message)
               }
               error = error ? error + EOL + err : err
-              if (emit("error", { error: props.error })) continue
+              code = code ?? exitCodeForError(props.error)
+              if (emit("error", { error: props.error, exitCode: exitCodeForError(props.error) })) continue
               UI.error(err)
             }
 
@@ -808,10 +819,10 @@ export const RunCommand = effectCmd({
                   reply: "once",
                 })
               } else {
-                UI.println(
-                  UI.Style.TEXT_WARNING_BOLD + "!",
-                  UI.Style.TEXT_NORMAL +
-                    `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-rejecting`,
+                diag(
+                  "warn",
+                  `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-rejecting`,
+                  { permission: permission.permission, patterns: permission.patterns },
                 )
                 await client.permission.reply({
                   requestID: permission.id,
@@ -820,7 +831,7 @@ export const RunCommand = effectCmd({
               }
             }
           }
-          return error
+          return { error, code }
         }
         const cwd = args.attach ? (directory ?? sess.directory ?? (await current(sdk))) : (directory ?? root)
         const client = args.attach ? attachSDK(cwd) : sdk
@@ -834,12 +845,12 @@ export const RunCommand = effectCmd({
           const events = await client.event.subscribe()
           const completed = loop(client, events).catch((e) => {
             console.error(e)
-            process.exitCode = 1
+            return { error: String(e), code: ExitCode.Other as ExitCode }
           })
           async function finish() {
             if (args.attach) return
-            const error = await completed
-            if (error) process.exitCode = 1
+            const result = await completed
+            if (result?.error) process.exitCode = result.code ?? ExitCode.Other
           }
 
           if (args.command) {
@@ -852,8 +863,9 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
-              if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
-              process.exitCode = 1
+              const code = exitCodeForError(result.error)
+              if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
+              process.exitCode = code
               return
             }
             await finish()
@@ -869,8 +881,9 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
-            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
-            process.exitCode = 1
+            const code = exitCodeForError(result.error)
+            if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
+            process.exitCode = code
             return
           }
           await finish()

@@ -157,6 +157,7 @@ describe("sente run (non-interactive subprocess)", () => {
           type: "error",
           timestamp: expect.any(Number),
           sessionID: expect.any(String),
+          exitCode: expect.any(Number),
           error: expect.any(Object),
         })
         expect(result.stdout.split("\n").filter(Boolean)).toHaveLength(1)
