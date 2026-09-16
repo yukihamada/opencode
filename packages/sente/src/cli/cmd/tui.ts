@@ -14,6 +14,7 @@ import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@sente-ai/tui/terminal-win32"
+import { ExitCode } from "@/cli/exit-code"
 
 declare global {
   const SENTE_WORKER_PATH: string
@@ -144,7 +145,7 @@ export const TuiThreadCommand = cmd({
   handler: async (args) => {
     if (args.replay === true) {
       UI.error("--replay is not supported; replay is enabled by default")
-      process.exitCode = 1
+      process.exitCode = ExitCode.User
       return
     }
     const noReplay = args.replay === false || args.noReplay === true
@@ -155,7 +156,7 @@ export const TuiThreadCommand = cmd({
       )
       if (network) {
         UI.error(`${network} cannot be used with --mini`)
-        process.exitCode = 1
+        process.exitCode = ExitCode.User
         return
       }
 
@@ -182,7 +183,7 @@ export const TuiThreadCommand = cmd({
     ].find((entry) => entry[1])?.[0]
     if (unsupported) {
       UI.error(`${unsupported} requires --mini`)
-      process.exitCode = 1
+      process.exitCode = ExitCode.User
       return
     }
 
@@ -191,7 +192,7 @@ export const TuiThreadCommand = cmd({
       const { TuiConfig } = await import("@/config/tui")
       if (args.fork && !args.continue && !args.session) {
         UI.error("--fork requires --continue or --session")
-        process.exitCode = 1
+        process.exitCode = ExitCode.User
         return
       }
 
@@ -258,7 +259,7 @@ export const TuiThreadCommand = cmd({
         })
       } catch (error) {
         UI.error(errorMessage(error))
-        process.exitCode = 1
+        process.exitCode = ExitCode.User
         return
       }
 
