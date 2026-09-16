@@ -22,9 +22,37 @@ export const ExitCode = {
   Other: 4,
   /** The request was well-formed but the target state changed (write conflict). */
   Conflict: 5,
+  /**
+   * The TUI asks to be relaunched with --resume (after a compaction).
+   *
+   * Deliberately outside 0-5 and matches `SENTE_RESTART_EXIT_CODE` in the
+   * launcher (te-install.sh), which is the only thing that consumes it. A
+   * supervisor must treat this as "restart once, with --resume", never as a
+   * plain failure — and must cap the number of restarts.
+   */
+  Restart: 75,
 } as const
 
 export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode]
+
+/**
+ * Whether a supervisor (launchd, cron, CI, a shell loop) should start sente
+ * again after this exit code.
+ *
+ * The dangerous case is `KeepAlive=true`: launchd restarts on *any* exit, so a
+ * permanent failure (bad flags, expired credentials) becomes an infinite loop.
+ * This is not hypothetical — it burned ~4.3M credits in 3 days once. Every
+ * supervisor must consult this before restarting.
+ */
+export function shouldRestart(code: number): boolean {
+  // Restart only means "resume the same session" — bounded, and only the
+  // launcher's watchdog should act on it.
+  if (code === ExitCode.Restart) return true
+  // Transient: waiting may fix it, but the caller still owes a retry cap.
+  if (code === ExitCode.Network || code === ExitCode.Other) return true
+  // Permanent: restarting changes nothing.
+  return false
+}
 
 /**
  * Map a thrown/returned error onto the exit code contract.

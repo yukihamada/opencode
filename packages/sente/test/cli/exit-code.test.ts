@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ExitCode, diagnostic, exitCodeForError } from "../../src/cli/exit-code"
+import { ExitCode, diagnostic, exitCodeForError, shouldRestart } from "../../src/cli/exit-code"
 
 describe("cli.exit-code", () => {
   test("exposes the agent-first exit code contract", () => {
@@ -10,6 +10,7 @@ describe("cli.exit-code", () => {
       Auth: 3,
       Other: 4,
       Conflict: 5,
+      Restart: 75,
     })
   })
 
@@ -85,5 +86,37 @@ describe("cli.diagnostic", () => {
     const line = JSON.stringify(diagnostic("warn", "boom", { sessionID: "ses_2", data: { n: 1 } }))
     expect(line).not.toContain("\n")
     expect(JSON.parse(line)).toMatchObject({ type: "diagnostic", level: "warn", sessionID: "ses_2", n: 1 })
+  })
+})
+
+describe("cli.shouldRestart", () => {
+  test("never restarts on a permanent failure", () => {
+    for (const code of [ExitCode.User, ExitCode.Auth, ExitCode.Conflict]) {
+      expect(shouldRestart(code)).toBe(false)
+    }
+  })
+
+  test("allows a restart for transient failures and the resume request", () => {
+    for (const code of [ExitCode.Network, ExitCode.Other, ExitCode.Restart]) {
+      expect(shouldRestart(code)).toBe(true)
+    }
+  })
+
+  test("does not restart on success", () => {
+    expect(shouldRestart(ExitCode.Success)).toBe(false)
+  })
+
+  // launchd KeepAlive restarts on any exit. A bad flag must not become an
+  // infinite loop — that burned ~4.3M credits over 3 days in 2026-09.
+  test("classifies the codes a KeepAlive supervisor sees most often", () => {
+    expect(shouldRestart(1)).toBe(false)
+    expect(shouldRestart(3)).toBe(false)
+    expect(shouldRestart(2)).toBe(true)
+  })
+
+  test("75 stays outside the 0-5 range so it cannot collide", () => {
+    const range = [ExitCode.Success, ExitCode.User, ExitCode.Network, ExitCode.Auth, ExitCode.Other, ExitCode.Conflict]
+    expect(range).not.toContain(ExitCode.Restart)
+    expect(ExitCode.Restart).toBe(75)
   })
 })
