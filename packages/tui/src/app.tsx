@@ -27,6 +27,7 @@ import {
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
+import { DialogTeaiLogin } from "./component/dialog-teai-login"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
@@ -149,6 +150,8 @@ export type TuiInput = {
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
+  /** Push environment variables into the engine and reload it (used by /login). */
+  onEnv?: (env: Record<string, string>) => Promise<void>
   directory?: string
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
@@ -349,6 +352,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                   <LocationProvider>
                                                                     <App
                                                                       onSnapshot={input.onSnapshot}
+                                                                      onEnv={input.onEnv}
                                                                       pluginHost={input.pluginHost}
                                                                     />
                                                                   </LocationProvider>
@@ -394,7 +398,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
+function App(props: {
+  onSnapshot?: () => Promise<string[]>
+  onEnv?: (env: Record<string, string>) => Promise<void>
+  pluginHost: TuiPluginHost
+}) {
   const startup = useTuiStartup()
   const tuiConfig = useTuiConfig()
   const route = useRoute()
@@ -808,6 +816,16 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         },
         category: "Provider",
       },
+      {
+        name: "sente.login",
+        title: "Log in to teai.io (API key)",
+        slashName: "login",
+        slashAliases: ["signin", "apikey"],
+        run: () => {
+          dialog.replace(() => <DialogTeaiLogin onEnv={props.onEnv} />)
+        },
+        category: "Provider",
+      },
       ...(sync.data.console_state.switchableOrgCount > 1
         ? [
             {
@@ -1162,9 +1180,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         evt.stopPropagation()
       }}
       onMouseUp={
-        !Flag.SENTE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT
-          ? () => Selection.copy(renderer, toast, clipboard)
-          : undefined
+        !Flag.SENTE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT ? () => Selection.copy(renderer, toast, clipboard) : undefined
       }
     >
       <Show when={Flag.SENTE_SHOW_TTFD}>

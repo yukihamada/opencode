@@ -69,6 +69,20 @@ export const rpc = {
       }),
     )
   },
+  /**
+   * `/login` in the TUI: the engine runs in this worker with a copy of the
+   * launcher's environment, so a key pasted in the UI has to be pushed here
+   * before `{env:TEAI_API_KEY}` in the provider config can resolve to it.
+   * Applies the variables, drops the cached config and disposes instances so
+   * the next request is built with the new key.
+   */
+  async credentials(input: { env: Record<string, string> }) {
+    for (const [name, value] of Object.entries(input.env)) {
+      if (!/^[A-Z][A-Z0-9_]*$/.test(name)) continue
+      process.env[name] = value
+    }
+    await rpc.reload()
+  },
   async shutdown() {
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
