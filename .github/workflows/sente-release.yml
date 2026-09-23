@@ -55,6 +55,11 @@ jobs:
           SENTE_CHANNEL: ${{ github.ref_name }}
           SENTE_VERSION: ${{ steps.version.outputs.version }}
 
+      - name: Check login and account logic
+        run: |
+          (cd packages/tui && bun test test/util/teai.test.ts && bun typecheck)
+          (cd packages/sente && bun typecheck)
+
       - name: Package
         run: |
           set -eu
@@ -74,6 +79,14 @@ jobs:
           (cd out && shasum -a 256 *.tar.gz *.zip > SHA256SUMS.txt)
           ls -la out
 
+      - name: Verify packaged release and login restart
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux
+          python3 script/check-release.py out release-smoke
+          test "$(release-smoke/sente --version)" = "${{ steps.version.outputs.version }}"
+          python3 script/login-release-smoke.py release-smoke/sente
+
       - name: Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -83,6 +96,8 @@ jobs:
           gh release create "$TAG" out/*.tar.gz out/*.zip out/SHA256SUMS.txt \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
-            --latest \
+            --draft \
             --title "${{ steps.version.outputs.title }}" \
             --notes "Sente CLI build of \`${{ github.ref_name }}\` @ ${{ github.sha }}. Installed by \`te update\` (teai.io/te) and the in-app updater. Windows: \`irm https://teai.io/te.ps1 | iex\`. Verify with SHA256SUMS.txt."
+          # Uploads finish while still a draft. Only then move the public latest pointer.
+          gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --latest

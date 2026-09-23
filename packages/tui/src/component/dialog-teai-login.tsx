@@ -8,6 +8,8 @@ import { useTheme } from "../context/theme"
 import {
   TEAI_KEY_ENV,
   credentialsPath,
+  accountText,
+  durableKey,
   formatCredits,
   looksLikeEmail,
   looksLikeKey,
@@ -109,27 +111,17 @@ export function DialogTeaiLogin(props: { onEnv?: ApplyEnv }) {
               })
               return
             }
-            if (result.apiKey) {
-              // Brand-new account: the server already issued a real API key — use it.
-              const verified = await verifyKey(result.apiKey)
-              await finishWithKey(
-                result.apiKey,
-                result.account.email ?? email,
-                verified.ok ? verified.account.credits_remaining : undefined,
-              )
-              return
-            }
-            // Existing account: the auth token works as a Bearer credential directly.
-            const verified = await verifyKey(result.token)
+            const key = await durableKey(result)
+            const verified = await verifyKey(key)
             if (!verified.ok) {
               toast.show({
                 variant: "error",
                 duration: 6000,
-                message: "Logged in, but the session token was rejected. Please paste an API key instead.",
+                message: accountText().verifyFailed,
               })
               return
             }
-            await finishWithKey(result.token, verified.account.email ?? email, verified.account.credits_remaining)
+            await finishWithKey(key, verified.account.email ?? email, verified.account.credits_remaining)
           } catch (error) {
             fail("Login failed", error)
           } finally {

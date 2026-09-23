@@ -28,6 +28,8 @@ import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, u
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { DialogTeaiLogin } from "./component/dialog-teai-login"
+import { DialogTeaiAccount } from "./component/dialog-teai-account"
+import { accountText } from "./util/teai"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
@@ -824,6 +826,13 @@ function App(props: {
         run: () => {
           dialog.replace(() => <DialogTeaiLogin onEnv={props.onEnv} />)
         },
+        category: "Provider",
+      },
+      {
+        name: "sente.account",
+        title: accountText().title,
+        slashName: "account",
+        run: () => dialog.replace(() => <DialogTeaiAccount remote={!props.onEnv} />),
         category: "Provider",
       },
       ...(sync.data.console_state.switchableOrgCount > 1
