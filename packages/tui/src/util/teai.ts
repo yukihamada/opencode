@@ -160,7 +160,14 @@ export async function requestEmailCode(
   try {
     const response = await doFetch(`${api}/api/v1/auth/email`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      // X-Sente-Client marks this as a CLI request: the server skips the
+      // browser-only Turnstile widget for tagged CLI calls (rate limits and
+      // the verify-side signup guards still apply).
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "X-Sente-Client": "sente",
+      },
       body: JSON.stringify({ email }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     })
