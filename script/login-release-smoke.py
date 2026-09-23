@@ -62,6 +62,10 @@ def wait_for(text):
 
 def send(text):
     tmux("send-keys", "-t", "login:0.0", "-l", text)
+    # tmux returning only means bytes reached the PTY. Wait for the app to
+    # consume them before Enter (Linux runners otherwise drop/coalesce input).
+    wait_for(text)
+    time.sleep(0.3)
     tmux("send-keys", "-t", "login:0.0", "Enter")
 
 try:
@@ -87,7 +91,8 @@ try:
         wait_for("Ask anything")
         time.sleep(0.5)
         send("/login")
-        wait_for("Log in to teai.io")
+        # The title also appears in slash autocomplete. Require dialog-only copy.
+        wait_for("Get a key:")
         send("fixture@example.com")
         wait_for("Check your email")
         send("123456")
