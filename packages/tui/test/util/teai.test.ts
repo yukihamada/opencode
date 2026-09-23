@@ -8,6 +8,7 @@ import {
   credentialsPath,
   formatCredits,
   loginHint,
+  loadCredentials,
   looksLikeEmail,
   looksLikeKey,
   normalizeCode,
@@ -80,6 +81,80 @@ describe("util.teai keys", () => {
       const mode = (await stat(file)).mode & 0o777
       expect(mode).toBe(0o600)
     }
+  })
+
+  test("login survives process exit and is restored by a fresh process", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-restart-"))
+    temps.push(dir)
+    const module = new URL("../../src/util/teai.ts", import.meta.url).href
+    const env = { ...process.env, TE_CONFIG_DIR: dir, TEAI_API_KEY: "" }
+    const login = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `
+      import { saveCredentials } from ${JSON.stringify(module)};
+      await saveCredentials("te_restart_fixture");
+    `,
+      ],
+      { env, stdout: "pipe", stderr: "pipe" },
+    )
+    expect(await login.exited).toBe(0)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const next = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `
+        import { loadCredentials } from ${JSON.stringify(module)};
+        await loadCredentials();
+        process.exit(process.env.TEAI_API_KEY === "te_restart_fixture" ? 0 : 1);
+      `,
+        ],
+        { env, stdout: "pipe", stderr: "pipe" },
+      )
+      expect(await next.exited).toBe(0)
+    }
+  })
+
+  test("restores email tokens, respects explicit env overrides and isolates config dirs", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-restore-"))
+    temps.push(dir)
+    await saveCredentials("session-token.fixture", path.join(dir, "credentials"))
+    const saved = { TE_CONFIG_DIR: dir, TEAI_API_KEY: "" }
+    await loadCredentials(saved)
+    expect(saved.TEAI_API_KEY).toBe("session-token.fixture")
+    const override = { TE_CONFIG_DIR: dir, TEAI_API_KEY: "te_explicit" }
+    await loadCredentials(override)
+    expect(override.TEAI_API_KEY).toBe("te_explicit")
+    const missing = { TE_CONFIG_DIR: path.join(dir, "other"), TEAI_API_KEY: "" }
+    await loadCredentials(missing)
+    expect(missing.TEAI_API_KEY).toBe("")
+    const protectedEnv = { TE_CONFIG_DIR: dir, TEAI_API_KEY: "", SENTE_SCRUB_KEY: "local-proxy-fixture" }
+    await loadCredentials(protectedEnv)
+    expect(protectedEnv.TEAI_API_KEY).toBe("")
+  })
+
+  test("duplicate assignments cannot restore the old key on shell relaunch", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-duplicate-"))
+    temps.push(dir)
+    const file = path.join(dir, "credentials")
+    await Bun.write(file, "# keep\nTEAI_API_KEY=te_first\nOTHER=1\nexport TEAI_API_KEY=te_old\n")
+    expect(parseCredentials(await Bun.file(file).text())).toBe("te_old")
+    await saveCredentials("te_new", file)
+    expect(await Bun.file(file).text()).toBe("# keep\nTEAI_API_KEY=te_new\nOTHER=1\n")
+    const child = Bun.spawn(["sh", "-c", '. "$1"; test "$TEAI_API_KEY" = te_new', "sh", file], {
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(await child.exited).toBe(0)
+  })
+
+  test("read errors are not silently reported as a missing login", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-unreadable-"))
+    temps.push(dir)
+    await Bun.write(path.join(dir, "not-a-directory"), "x")
+    await expect(loadCredentials({ TE_CONFIG_DIR: path.join(dir, "not-a-directory") })).rejects.toThrow()
   })
 })
 

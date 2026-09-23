@@ -49,26 +49,42 @@ export function looksLikeKey(key: string) {
 
 /** Read TEAI_API_KEY out of a credentials file body (shell `KEY=value` lines). */
 export function parseCredentials(text: string) {
+  let key: string | undefined
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim()
     if (!line || line.startsWith("#")) continue
     const match = /^(?:export\s+)?TEAI_API_KEY\s*=\s*["']?([^"'\s]*)["']?/.exec(line)
-    if (match) return match[1] || undefined
+    if (match) key = match[1] || undefined
   }
-  return undefined
+  return key
 }
 
-/** Replace (or append) the TEAI_API_KEY line, keeping every other line intact. */
+/** Restore /login on direct engine starts, before config expansion or worker creation. */
+export async function loadCredentials(env: TeaiEnv = process.env, home = os.homedir()) {
+  // Match the launcher's explicit per-process override. Never source this as shell code.
+  if (env[TEAI_KEY_ENV] || env.SENTE_SCRUB_KEY) return
+  const text = await Bun.file(credentialsPath(env, home))
+    .text()
+    .catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return ""
+      throw error
+    })
+  const key = parseCredentials(text)
+  if (key) env[TEAI_KEY_ENV] = key
+}
+
+/** Replace all key assignments so a later legacy duplicate cannot undo /login. */
 export function renderCredentials(existing: string, key: string) {
   const lines = existing ? existing.split(/\r?\n/) : []
   if (lines.length && lines[lines.length - 1] === "") lines.pop()
   let replaced = false
-  const next = lines.map((raw) => {
-    if (/^\s*(?:export\s+)?TEAI_API_KEY\s*=/.test(raw) && !replaced) {
+  const next = lines.flatMap((raw) => {
+    if (/^\s*(?:export\s+)?TEAI_API_KEY\s*=/.test(raw)) {
+      if (replaced) return []
       replaced = true
-      return `TEAI_API_KEY=${key}`
+      return [`TEAI_API_KEY=${key}`]
     }
-    return raw
+    return [raw]
   })
   if (!replaced) next.push(`TEAI_API_KEY=${key}`)
   return next.join("\n") + "\n"
