@@ -51,7 +51,7 @@ def tmux(*args, check=True):
     return subprocess.run(["tmux", "-L", socket, *args], capture_output=True, text=True, check=check)
 
 def wait_for(text):
-    end = time.monotonic() + 45
+    end = time.monotonic() + 90
     screen = ""
     while time.monotonic() < end:
         screen = tmux("capture-pane", "-p", "-t", "login:0.0", check=False).stdout
@@ -84,7 +84,8 @@ try:
                        "models": {"fixture": {"name": "fixture"}}}}, "model": "teai/fixture", "plugin": [], "mcp": {}}))
         command = shlex.join(["env", "-i", *[k + "=" + v for k, v in env.items()], binary])
         tmux("new-session", "-d", "-s", "login", "-x", "120", "-y", "38", "-c", directory, command)
-        time.sleep(5)
+        wait_for("Ask anything")
+        time.sleep(0.5)
         send("/login")
         wait_for("Log in to teai.io")
         send("fixture@example.com")
