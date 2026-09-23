@@ -8,11 +8,15 @@ import {
   credentialsPath,
   formatCredits,
   loginHint,
+  looksLikeEmail,
   looksLikeKey,
+  normalizeCode,
   normalizeKey,
   parseCredentials,
   renderCredentials,
+  requestEmailCode,
   saveCredentials,
+  verifyEmailCode,
   verifyKey,
 } from "../../src/util/teai"
 
@@ -153,5 +157,61 @@ describe("util.teai hints", () => {
     expect(loginHint(undefined, env)).toBeUndefined()
     expect(formatCredits(undefined)).toBe("残高 未確認")
     expect(formatCredits(1234)).toBe("残高 1,234cr")
+  })
+})
+
+describe("util.teai email login", () => {
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+
+  test("looksLikeEmail accepts plain addresses and rejects keys/junk", () => {
+    expect(looksLikeEmail("a@b.co")).toBe(true)
+    expect(looksLikeEmail("te_527a7f58c9424183bbd1f50edb22256c")).toBe(false)
+    expect(looksLikeEmail("not-an-email")).toBe(false)
+  })
+
+  test("normalizeCode strips everything but digits", () => {
+    expect(normalizeCode(" 123 456 ")).toBe("123456")
+    expect(normalizeCode("12-34-56")).toBe("123456")
+  })
+
+  test("requestEmailCode posts the email and maps errors", async () => {
+    let seen: { url: string; body: string } | undefined
+    const ok = await requestEmailCode("a@b.co", {
+      api: "https://api.example",
+      fetch: async (url, init) => {
+        seen = { url, body: String(init?.body) }
+        return json(200, { ok: true })
+      },
+    })
+    expect(ok).toEqual({ ok: true })
+    expect(seen?.url).toBe("https://api.example/api/v1/auth/email")
+    expect(JSON.parse(seen?.body ?? "{}")).toEqual({ email: "a@b.co" })
+
+    const rejected = await requestEmailCode("a@b.co", {
+      api: "x",
+      fetch: async () => json(400, { error: "Invalid email format" }),
+    })
+    expect(rejected).toEqual({ ok: false, reason: "invalid", detail: "Invalid email format" })
+  })
+
+  test("verifyEmailCode returns token and api_key for new accounts", async () => {
+    const result = await verifyEmailCode("a@b.co", "123456", {
+      api: "https://api.example",
+      fetch: async () => json(200, { ok: true, token: "tok-1", api_key: "te_new", email: "a@b.co" }),
+    })
+    expect(result).toEqual({ ok: true, token: "tok-1", apiKey: "te_new", account: { email: "a@b.co" } })
+
+    const existing = await verifyEmailCode("a@b.co", "123456", {
+      api: "x",
+      fetch: async () => json(200, { ok: true, token: "tok-2", email: "a@b.co" }),
+    })
+    expect(existing.ok && existing.apiKey).toBeUndefined()
+
+    const wrong = await verifyEmailCode("a@b.co", "000000", {
+      api: "x",
+      fetch: async () => json(400, { error: "認証コードが正しくありません。" }),
+    })
+    expect(wrong).toEqual({ ok: false, reason: "invalid", detail: "認証コードが正しくありません。" })
   })
 })

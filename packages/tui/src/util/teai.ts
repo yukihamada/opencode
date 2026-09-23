@@ -140,6 +140,78 @@ export function formatCredits(credits: number | undefined) {
   return `残高 ${credits.toLocaleString("en-US")}cr`
 }
 
+export function looksLikeEmail(input: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.trim()) && input.trim().length <= 254
+}
+
+export function normalizeCode(input: string) {
+  return input.trim().replace(/[^0-9]/g, "")
+}
+
+export type EmailCodeResult = { ok: true } | { ok: false; reason: "invalid" | "network"; detail?: string }
+
+/** Ask teai.io to email a 6-digit login code. Never throws. */
+export async function requestEmailCode(
+  email: string,
+  opts: { api?: string; fetch?: Fetcher; timeoutMs?: number } = {},
+): Promise<EmailCodeResult> {
+  const api = opts.api ?? apiBase()
+  const doFetch: Fetcher = opts.fetch ?? ((url, init) => fetch(url, init))
+  try {
+    const response = await doFetch(`${api}/api/v1/auth/email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ email }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+    })
+    if (response.ok) return { ok: true }
+    const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined
+    const detail = body?.error ?? `HTTP ${response.status}`
+    if (response.status >= 500) return { ok: false, reason: "network", detail }
+    return { ok: false, reason: "invalid", detail }
+  } catch (error) {
+    return { ok: false, reason: "network", detail: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export type VerifyEmailResult =
+  | { ok: true; token: string; apiKey?: string; account: TeaiAccount }
+  | { ok: false; reason: "invalid" | "network"; detail?: string }
+
+/** Redeem the 6-digit code. Returns the session token and, for brand-new accounts, the auto-issued API key. */
+export async function verifyEmailCode(
+  email: string,
+  code: string,
+  opts: { api?: string; fetch?: Fetcher; timeoutMs?: number } = {},
+): Promise<VerifyEmailResult> {
+  const api = opts.api ?? apiBase()
+  const doFetch: Fetcher = opts.fetch ?? ((url, init) => fetch(url, init))
+  try {
+    const response = await doFetch(`${api}/api/v1/auth/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ email, code }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+    })
+    const body = (await response.json().catch(() => undefined)) as
+      | { ok?: boolean; token?: string; api_key?: string; email?: string; error?: string }
+      | undefined
+    if (response.ok && body?.token) {
+      return {
+        ok: true,
+        token: body.token,
+        apiKey: body.api_key,
+        account: { email: body.email ?? email },
+      }
+    }
+    const detail = body?.error ?? `HTTP ${response.status}`
+    if (response.status >= 500) return { ok: false, reason: "network", detail }
+    return { ok: false, reason: "invalid", detail }
+  } catch (error) {
+    return { ok: false, reason: "network", detail: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 /**
  * Sente-specific advice appended under teai.io account errors. The server's
  * text already says what happened; this says what to press next.

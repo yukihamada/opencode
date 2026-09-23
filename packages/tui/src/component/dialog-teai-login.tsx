@@ -9,10 +9,14 @@ import {
   TEAI_KEY_ENV,
   credentialsPath,
   formatCredits,
+  looksLikeEmail,
   looksLikeKey,
+  normalizeCode,
   normalizeKey,
+  requestEmailCode,
   saveCredentials,
   siteBase,
+  verifyEmailCode,
   verifyKey,
 } from "../util/teai"
 
@@ -49,31 +53,145 @@ export function DialogTeaiLogin(props: { onEnv?: ApplyEnv }) {
     await sdk.client.instance.dispose()
   }
 
+  async function finishWithKey(key: string, who: string, credits?: number) {
+    const file = await saveCredentials(key)
+    await apply(key)
+    await sync.bootstrap()
+    toast.show({
+      variant: "success",
+      duration: 6000,
+      message: `Logged in as ${who} · ${formatCredits(credits)} · saved to ${file}`,
+    })
+    dialog.clear()
+  }
+
+  function fail(prefix: string, error: unknown) {
+    toast.show({
+      variant: "error",
+      duration: 6000,
+      message: `${prefix}: ${error instanceof Error ? error.message : String(error)}`,
+    })
+  }
+
+  function openEmailCodePrompt(email: string) {
+    dialog.replace(() => (
+      <DialogPrompt
+        title="Check your email"
+        placeholder="6-digit code"
+        busy={busy()}
+        busyText="Verifying code…"
+        description={() => (
+          <box gap={1}>
+            <text fg={theme.textMuted}>
+              We sent a 6-digit login code to <span style={{ fg: theme.text }}>{email}</span>. Paste it here to log
+              in — no API key needed. The code expires in 10 minutes.
+            </text>
+          </box>
+        )}
+        onConfirm={async (value) => {
+          if (busy()) return
+          const code = normalizeCode(value ?? "")
+          if (code.length !== 6) {
+            toast.show({ variant: "warning", message: "The code is 6 digits — check the email and try again." })
+            return
+          }
+          setBusy(true)
+          try {
+            const result = await verifyEmailCode(email, code)
+            if (!result.ok) {
+              toast.show({
+                variant: "error",
+                duration: 6000,
+                message:
+                  result.reason === "invalid"
+                    ? `Code rejected (${result.detail ?? "invalid"}). Request a new one with /login.`
+                    : `Could not reach teai.io (${result.detail ?? "network"}). Try again.`,
+              })
+              return
+            }
+            if (result.apiKey) {
+              // Brand-new account: the server already issued a real API key — use it.
+              const verified = await verifyKey(result.apiKey)
+              await finishWithKey(
+                result.apiKey,
+                result.account.email ?? email,
+                verified.ok ? verified.account.credits_remaining : undefined,
+              )
+              return
+            }
+            // Existing account: the auth token works as a Bearer credential directly.
+            const verified = await verifyKey(result.token)
+            if (!verified.ok) {
+              toast.show({
+                variant: "error",
+                duration: 6000,
+                message: "Logged in, but the session token was rejected. Please paste an API key instead.",
+              })
+              return
+            }
+            await finishWithKey(result.token, verified.account.email ?? email, verified.account.credits_remaining)
+          } catch (error) {
+            fail("Login failed", error)
+          } finally {
+            setBusy(false)
+          }
+        }}
+      />
+    ))
+  }
+
   return (
     <DialogPrompt
       title="Log in to teai.io"
-      placeholder="te_…"
+      placeholder="te_… or you@example.com"
       busy={busy()}
       busyText={busyText()}
       description={() => (
         <box gap={1}>
           <text fg={theme.textMuted}>
-            Paste your teai.io API key. It is checked first, then saved to {credentialsPath()} and applied to this
-            session without a restart.
+            Paste your teai.io API key — or type your email address and we'll email you a 6-digit login code (no key
+            needed). Either way it is saved to {credentialsPath()} and applied to this session without a restart.
           </text>
           <text fg={theme.text}>
             Get a key: <span style={{ fg: theme.primary }}>{site}/dashboard#api-keys</span>
-            <span style={{ fg: theme.textMuted }}> · no account yet: run </span>
-            <span style={{ fg: theme.primary }}>te register</span>
+            <span style={{ fg: theme.textMuted }}> · no account yet: enter your email to sign up</span>
           </text>
         </box>
       )}
       onConfirm={async (value) => {
         if (busy()) return
-        const key = normalizeKey(value ?? "")
-        if (!key) return
+        const input = (value ?? "").trim()
+        if (!input) return
+        if (!looksLikeKey(normalizeKey(input)) && looksLikeEmail(input)) {
+          setBusy(true)
+          try {
+            setBusyText("Sending login code…")
+            const result = await requestEmailCode(input.toLowerCase())
+            if (!result.ok) {
+              toast.show({
+                variant: "error",
+                duration: 6000,
+                message:
+                  result.reason === "invalid"
+                    ? `Could not send the code (${result.detail ?? "rejected"}). Check the address.`
+                    : `Could not reach teai.io (${result.detail ?? "network"}). Try again.`,
+              })
+              return
+            }
+            openEmailCodePrompt(input.toLowerCase())
+          } catch (error) {
+            fail("Could not send the code", error)
+          } finally {
+            setBusy(false)
+          }
+          return
+        }
+        const key = normalizeKey(input)
         if (!looksLikeKey(key)) {
-          toast.show({ variant: "warning", message: "teai.io keys start with te_ — paste the full key." })
+          toast.show({
+            variant: "warning",
+            message: "Paste a teai.io key (te_…) or your email address for a login code.",
+          })
           return
         }
         setBusy(true)
@@ -92,22 +210,10 @@ export function DialogTeaiLogin(props: { onEnv?: ApplyEnv }) {
             return
           }
           setBusyText("Saving and applying…")
-          const file = await saveCredentials(key)
-          await apply(key)
-          await sync.bootstrap()
           const who = result.account.email ?? result.account.display_name ?? "teai.io"
-          toast.show({
-            variant: "success",
-            duration: 6000,
-            message: `Logged in as ${who} · ${formatCredits(result.account.credits_remaining)} · saved to ${file}`,
-          })
-          dialog.clear()
+          await finishWithKey(key, who, result.account.credits_remaining)
         } catch (error) {
-          toast.show({
-            variant: "error",
-            duration: 6000,
-            message: `Login failed: ${error instanceof Error ? error.message : String(error)}`,
-          })
+          fail("Login failed", error)
         } finally {
           setBusy(false)
         }
