@@ -31,13 +31,30 @@ This is not evidence that every launcher login failure has the same cause.
 - Test drivers beside this checkout: `../login-restart-check.py`,
   `../login-tui-check.py`.
 
+## Public release (2026-09-23)
+
+Commit `a8efa9edd3` pushed to `mine/headless-model-fallback` (yukihamada/opencode).
+Release `sente-0.0.0-headless-model-fallback-202609230314` — title
+"Sente 2026.09.23 · 03:14 UTC", `--latest`, 12 platform assets + SHA256SUMS.txt.
+
+Verified after publication: downloaded `sente-darwin-arm64.zip`, SHA256 matched,
+the full E2E (`/login` → code → `/exit` → two fresh process resolutions) passed on
+the downloaded binary, then installed it to `~/.opencode/bin/opencode` and
+re-verified `--version`, codesign and `te doctor`.
+
+Build note: the first full build stopped on linux targets. `--skip-install` skips
+the per-platform native deps; the retry ran
+`bun install --os="*" --cpu="*" @opentui/core@0.4.5 @parcel/watcher@2.5.1 @ff-labs/fff-bun@0.9.4`
+first (matching build.ts:145-147). Release assets are packaged by hand, not by
+`SENTE_RELEASE=1` (its `gh release upload v<ver>` would fail).
+
 ## Installed scope
 
-This Mac only: `~/.opencode/bin/opencode`, version
-`0.0.0-headless-model-fallback-202609230205` (same DB channel).
-Previous binary: `~/.opencode/bin/opencode.pre-persistence-20260923`.
-No commit, push or public release. `te update` can replace this local fix until
-it is released. M5 SSH to 192.168.0.47 timed out; M5 remains unverified.
+This Mac: `~/.opencode/bin/opencode`, version
+`0.0.0-headless-model-fallback-202609230314` (same DB channel, now the public
+latest). Previous binaries: `opencode.pre-persistence-20260923`,
+`opencode.pre-loginemail-20260923`. `te update` now keeps the fix.
+M5 SSH to 192.168.0.47 timed out; M5 remains unverified and unpatched.
 
 Dependency setup needed a fresh Bun cache and isolated linker; cached packages
 initially lacked package.json, and hoisted mode misresolved Azure's OpenAI SDK.
