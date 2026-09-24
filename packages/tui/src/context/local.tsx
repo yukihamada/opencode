@@ -13,11 +13,6 @@ import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 import { usePermission } from "./permission"
-import {
-  creditsRemaining,
-  isPremiumModel,
-  LOW_CREDITS_THRESHOLD,
-} from "../util/credits"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -51,21 +46,6 @@ export function recentModels(
     })
     .slice(0, 10)
     .map((item) => ({ providerID: item.providerID, modelID: item.modelID }))
-}
-
-export function nextRecentModel(
-  current: { providerID: string; modelID: string } | undefined,
-  recent: { providerID: string; modelID: string }[],
-  direction: 1 | -1,
-) {
-  if (!recent.length) return
-  const index = recent.findIndex((item) => item.providerID === current?.providerID && item.modelID === current?.modelID)
-  const next =
-    recent[
-      index === -1 ? (direction === 1 ? 0 : recent.length - 1) : (index + direction + recent.length) % recent.length
-    ]
-  if (next.providerID === current?.providerID && next.modelID === current?.modelID) return
-  return next
 }
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
@@ -186,25 +166,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         pending: false,
       }
 
-      /// 残高が少ない時に高級モデルへ切り替えたら警告する。
-      ///
-      /// 高級モデルは1ターンで数千〜数万クレジットを消費しうる。残高が尽きると
-      /// 推論が止まる（= Sente が黙る）ので、**選ぶ直前**に気づけるようにしている。
-      /// 残高が不明なときは何も出さない（推測で脅かさない）。
-      async function warnPremiumOnLowCredits(model: { providerID: string; modelID: string }) {
-        const credits = await creditsRemaining(path.join(paths.state, "last-route.json"))
-        if (credits === null) return
-        if (credits >= LOW_CREDITS_THRESHOLD) return
-        const provider = sync.data.provider.find((item) => item.id === model.providerID)
-        const info = provider?.models[model.modelID]
-        if (!isPremiumModel(info?.cost)) return
-        toast.show({
-          variant: "warning",
-          message: `残高が ${credits.toLocaleString()}cr です。このモデルは消費が大きいため、途中で止まる可能性があります。`,
-          duration: 6000,
-        })
-      }
-
       function save() {
         if (!modelStore.ready) {
           state.pending = true
@@ -312,14 +273,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }),
         cycle(direction: 1 | -1) {
-          const val = nextRecentModel(currentModel(), modelStore.recent.filter(isModelValid), direction)
-          if (!val) return false
+          const current = currentModel()
+          if (!current) return
+          const recent = modelStore.recent
+          const index = recent.findIndex((x) => x.providerID === current.providerID && x.modelID === current.modelID)
+          if (index === -1) return
+          let next = index + direction
+          if (next < 0) next = recent.length - 1
+          if (next >= recent.length) next = 0
+          const val = recent[next]
+          if (!val) return
           const a = agent.current()
-          if (!a) return false
+          if (!a) return
           setModelStore("model", a.name, { ...val })
-          toast.show({ message: `Model: ${this.parsed().model}`, variant: "info", duration: 3000 })
-          void warnPremiumOnLowCredits(val)
-          return true
         },
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
@@ -368,7 +334,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               setModelStore("recent", recentModels(model, modelStore.recent))
               save()
             }
-            void warnPremiumOnLowCredits(model)
           })
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {
