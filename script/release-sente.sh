@@ -14,7 +14,8 @@ for d in dist/sente-*/; do
   key="$(basename "$d")"; [ -d "$d/bin" ] || continue
   case "$key" in
     *windows*) (cd "$d/bin" && zip -q -r "$OLDPWD/$OUT/$key.zip" .) ;;
-    *) (cd "$d/bin" && tar -czf "$OLDPWD/$OUT/$key.tar.gz" .) ;;
+    # COPYFILE_DISABLE/--no-mac-metadata: macOS の拡張属性(com.apple.provenance 等)が ._sente として混入するのを防ぐ
+    *) (cd "$d/bin" && COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$OLDPWD/$OUT/$key.tar.gz" ./sente) ;;
   esac
 done
 (cd "$OUT" && shasum -a 256 *.tar.gz *.zip > SHA256SUMS.txt)

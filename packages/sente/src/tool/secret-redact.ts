@@ -26,7 +26,8 @@ function mask(value: string) {
 
 function envSecrets(env: Record<string, string | undefined>) {
   return Object.entries(env)
-    .filter(([name, value]) => SECRET_ENV.test(name) && value && value.length >= 16 && !/\s/.test(value))
+    // Token-shaped values only (letters and digits, no path separators) so e.g. GPG_KEY_PATH=/Users/… never masks paths.
+    .filter(([name, value]) => SECRET_ENV.test(name) && !!value && /^[A-Za-z0-9_\-.+=]{16,}$/.test(value) && /[A-Za-z]/.test(value) && /\d/.test(value))
     .map(([, value]) => value as string)
     .sort((a, b) => b.length - a.length)
 }
@@ -43,10 +44,19 @@ export function redact(text: string, env: Record<string, string | undefined> = p
   return out
 }
 
-/** Redacts every string field named `output` (the shell tool's live preview) in tool metadata. */
-export function redactMetadata<M extends Record<string, any> | undefined>(metadata: M, env?: Record<string, string | undefined>): M {
-  if (!metadata || typeof metadata.output !== "string") return metadata
-  return { ...metadata, output: redact(metadata.output, env) }
+/**
+ * Redacts every string inside tool metadata (shell live output, read's preview/display text, edit diffs…).
+ * Metadata is persisted in the session DB and rendered in the TUI; the 2026-09-25 leak was read back from the DB.
+ */
+export function redactMetadata<M>(metadata: M, env?: Record<string, string | undefined>): M {
+  const walk = (value: unknown, depth: number): unknown => {
+    if (typeof value === "string") return redact(value, env)
+    if (depth > 8 || value === null || typeof value !== "object") return value
+    if (Array.isArray(value)) return value.map((item) => walk(item, depth + 1))
+    if (Object.getPrototypeOf(value) !== Object.prototype) return value
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item, depth + 1)]))
+  }
+  return walk(metadata, 0) as M
 }
 
 export * as SecretRedact from "./secret-redact"

@@ -28,10 +28,26 @@ describe("SecretRedact.redact", () => {
   })
 
   test("masks exact values of secret-looking env vars in any format", () => {
-    const env = { MY_SERVICE_TOKEN: "Zq9-custom.secret/value", PATH: "/usr/bin:/bin:/usr/local/bin" }
-    const out = SecretRedact.redact(`token is Zq9-custom.secret/value; path /usr/bin:/bin:/usr/local/bin`, env)
-    expect(out).not.toContain("Zq9-custom.secret/value")
+    const env = { MY_SERVICE_TOKEN: "Zq9-custom.secret-value42", PATH: "/usr/bin:/bin:/usr/local/bin" }
+    const out = SecretRedact.redact(`token is Zq9-custom.secret-value42; path /usr/bin:/bin:/usr/local/bin`, env)
+    expect(out).not.toContain("Zq9-custom.secret-value42")
     expect(out).toContain("/usr/bin:/bin:/usr/local/bin")
+  })
+
+  test("does not treat path-like env values as secrets", () => {
+    const env = { GPG_KEY_PATH: "/Users/someone/.gnupg/key1234", API_TOKEN: "abcDEF1234567890xyz" }
+    const out = SecretRedact.redact("key at /Users/someone/.gnupg/key1234 token abcDEF1234567890xyz", env)
+    expect(out).toContain("/Users/someone/.gnupg/key1234")
+    expect(out).not.toContain("abcDEF1234567890xyz")
+  })
+
+  test("redactMetadata walks nested display fields and keeps non-strings", () => {
+    const secret = "te_" + "c32a".repeat(8)
+    const meta = { preview: secret, display: { text: `id ${secret}` }, exit: 0, list: [secret], truncated: false }
+    const out = SecretRedact.redactMetadata(meta, {})
+    expect(JSON.stringify(out)).not.toContain(secret)
+    expect(out.exit).toBe(0)
+    expect(out.truncated).toBe(false)
   })
 
   test("leaves ordinary text alone", () => {
