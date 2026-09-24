@@ -79,6 +79,35 @@ describe("Tool.define", () => {
     }),
   )
 
+  it.effect("redacts secrets in live metadata, title and output before they reach the model", () =>
+    Effect.gen(function* () {
+      const secret = "te_" + "c32a".repeat(8)
+      const seen: unknown[] = []
+      const info = yield* Tool.define(
+        "test-secret",
+        Effect.succeed({
+          description: "test tool",
+          parameters: params,
+          execute(_args: { input: string }, ctx: Tool.Context) {
+            return ctx.metadata({ metadata: { output: `TEAI_API_KEY=${secret}` } }).pipe(
+              Effect.as({
+                title: `cat credentials # ${secret}`,
+                output: `TEAI_API_KEY=${secret}\n`,
+                metadata: { output: secret, truncated: false },
+              }),
+            )
+          },
+        }),
+      )
+      const ctx = { ...makeCtx(), metadata: (input: unknown) => Effect.sync(() => void seen.push(input)) }
+      const tool = yield* info.init()
+      const result = yield* tool.execute({ input: "x" }, ctx)
+      const everything = JSON.stringify({ result, seen })
+      expect(everything).not.toContain(secret)
+      expect(result.output).toBe("TEAI_API_KEY=te_c32ac…[REDACTED]\n")
+    }),
+  )
+
   it.effect("execute receives decoded parameters", () =>
     Effect.gen(function* () {
       const parameters = Schema.Struct({

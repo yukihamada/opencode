@@ -6,6 +6,7 @@ import type { MessageV2 } from "../session/message-v2"
 import type { Permission } from "../permission"
 import type { SessionID, MessageID } from "../session/schema"
 import * as Truncate from "./truncate"
+import { SecretRedact } from "./secret-redact"
 import { Agent } from "@/agent/agent"
 
 interface Metadata {
@@ -127,7 +128,19 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
                 }),
             ),
           )
-          const result = yield* execute(decoded as Schema.Schema.Type<Parameters>, ctx)
+          // Secrets never reach the model or the session DB: live previews and the final output
+          // are redacted here, before truncation (see secret-redact.ts for the incident).
+          const redactingCtx: Context = {
+            ...ctx,
+            metadata: (input) => ctx.metadata({ ...input, metadata: SecretRedact.redactMetadata(input.metadata) }),
+          }
+          const raw = yield* execute(decoded as Schema.Schema.Type<Parameters>, redactingCtx)
+          const result = {
+            ...raw,
+            title: SecretRedact.redact(raw.title),
+            output: SecretRedact.redact(raw.output),
+            metadata: SecretRedact.redactMetadata(raw.metadata),
+          }
           if (result.metadata.truncated !== undefined) {
             return result
           }
