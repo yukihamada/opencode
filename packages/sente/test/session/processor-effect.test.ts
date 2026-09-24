@@ -9,6 +9,7 @@ import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
 import { Provider } from "@/provider/provider"
+import { Permission } from "@/permission"
 
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
@@ -173,6 +174,7 @@ const root = LayerNode.group([
   Database.node,
   EventV2Bridge.node,
   SessionStatus.node,
+  Permission.node,
   CrossSpawnSpawner.node,
 ])
 const replacements = [
@@ -869,6 +871,107 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
     { config: (url) => providerCfg(url) },
   ),
 )
+
+for (const scenario of [
+  { name: "detects failed tools across assistant turns", fails: true, action: "deny", boundary: "none", stops: true },
+  { name: "allows failed repetitions when permitted", fails: true, action: "allow", boundary: "none", stops: false },
+  { name: "gates successful repetitions", fails: false, action: "deny", boundary: "none", stops: true },
+  { name: "allows successful polling when permitted", fails: false, action: "allow", boundary: "none", stops: false },
+  { name: "resets on changed input", fails: true, action: "deny", boundary: "input", stops: false },
+  { name: "resets on changed tool", fails: true, action: "deny", boundary: "tool", stops: false },
+  { name: "isolates new user messages", fails: true, action: "deny", boundary: "user", stops: false },
+  { name: "isolates sessions", fails: true, action: "deny", boundary: "session", stops: false },
+  { name: "reads beyond a history page", fails: true, action: "deny", boundary: "page", stops: true },
+  { name: "stops after rejecting permission", fails: true, action: "ask", boundary: "none", stops: true },
+] as const) {
+  it.live(`session.processor doom_loop ${scenario.name}`, () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "retry lookup")
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const outcomes: SessionProcessor.Result[] = []
+          const calls: SessionV1.ToolPart[] = []
+          let executions = 0
+          let current = parent
+          const permission = yield* Permission.Service
+          const events = yield* EventV2Bridge.Service
+          const requests: string[] = []
+          const off = yield* events.listen((event) => {
+            if (event.type !== Permission.Event.Asked.type) return Effect.void
+            const request = event.data as typeof Permission.Event.Asked.data.Type
+            if (request.sessionID !== chat.id) return Effect.void
+            requests.push(request.permission)
+            expect(request.patterns).toEqual(["lookup"])
+            expect(request.metadata).toEqual({ tool: "lookup", input: { query: "weather" } })
+            return permission.reply({ requestID: request.id, reply: "reject" }).pipe(Effect.orDie)
+          })
+
+          for (let turn = 0; turn < 4; turn++) {
+            if (turn === 2 && scenario.boundary === "user") current = yield* user(chat.id, "try again")
+            if (turn === 2 && scenario.boundary === "session") {
+              const other = yield* session.create({})
+              current = yield* user(other.id, "retry lookup")
+            }
+            if (turn === 2 && scenario.boundary === "page") {
+              for (let index = 0; index < 51; index++) {
+                const msg = yield* assistant(current.sessionID, current.id, path.resolve(dir))
+                yield* session.updatePart({
+                  id: PartID.ascending(),
+                  messageID: msg.id,
+                  sessionID: current.sessionID,
+                  type: "text",
+                  text: "still working",
+                })
+              }
+            }
+            const query = scenario.boundary === "input" && turn >= 2 ? "forecast" : "weather"
+            const name = scenario.boundary === "tool" && turn >= 2 ? "search" : "lookup"
+            yield* llm.push(reply().text("trying lookup").tool(name, { query }))
+            const msg = yield* assistant(current.sessionID, current.id, path.resolve(dir))
+            const handle = yield* processors.create({ assistantMessage: msg, sessionID: current.sessionID, model: mdl })
+            const outcome = yield* handle.process({
+              user: current as SessionV1.User,
+              sessionID: current.sessionID,
+              model: mdl,
+              agent: agent(),
+              system: [],
+              messages: [{ role: "user", content: "retry lookup" }],
+              tools: {
+                [name]: tool({
+                  description: "Look up information",
+                  inputSchema: z.object({ query: z.string() }),
+                  execute: async ({ query }) => {
+                    executions++
+                    if (scenario.fails) throw new Error(`lookup failed: ${query}`)
+                    return { title: "Lookup", output: query, metadata: {} }
+                  },
+                }),
+              },
+            })
+            outcomes.push(outcome)
+            calls.push(...(yield* MessageV2.parts(msg.id)).filter((part) => part.type === "tool"))
+            if (outcome === "stop") break
+          }
+
+          yield* off
+          expect(requests).toEqual(scenario.action === "ask" ? ["doom_loop"] : [])
+          expect(outcomes).toEqual(
+            scenario.stops ? ["continue", "continue", "stop"] : ["continue", "continue", "continue", "continue"],
+          )
+          expect(yield* llm.calls).toBe(scenario.stops ? 3 : 4)
+          expect(executions).toBe(scenario.stops ? 3 : 4)
+          expect(calls.slice(0, 2).map((part) => part.state.status)).toEqual(
+            scenario.fails ? ["error", "error"] : ["completed", "completed"],
+          )
+          expect(new Set(calls.map((part) => part.messageID)).size).toBe(scenario.stops ? 3 : 4)
+        }),
+      { config: (url) => ({ ...providerCfg(url), permission: { doom_loop: scenario.action } }) },
+    ),
+  )
+}
 
 it.live("session.processor effect tests mark pending tools as aborted on cleanup", () =>
   provideTmpdirServer(
