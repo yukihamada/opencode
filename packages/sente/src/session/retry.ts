@@ -50,31 +50,37 @@ export function delay(attempt: number, error?: SessionV1.APIError, random = Math
     if (headers) {
       const retryAfterMs = headers["retry-after-ms"]
       if (retryAfterMs) {
-        const parsedMs = Number.parseFloat(retryAfterMs)
-        if (!Number.isNaN(parsedMs)) {
-          return cap(parsedMs)
+        const parsedMs = retryHint(retryAfterMs)
+        if (parsedMs !== undefined) {
+          return cap(Math.ceil(parsedMs))
         }
       }
 
       const retryAfter = headers["retry-after"]
       if (retryAfter) {
-        const parsedSeconds = Number.parseFloat(retryAfter)
-        if (!Number.isNaN(parsedSeconds)) {
+        const parsedSeconds = retryHint(retryAfter)
+        if (parsedSeconds !== undefined) {
           // convert seconds to milliseconds
           return cap(Math.ceil(parsedSeconds * 1000))
         }
-        // Try parsing as HTTP date format
-        const parsed = Date.parse(retryAfter) - Date.now()
-        if (!Number.isNaN(parsed) && parsed > 0) {
-          return cap(Math.ceil(parsed))
+        // HTTP dates start with a weekday; Date.parse also accepts invalid hints such as "-9999".
+        if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i.test(retryAfter.trim())) {
+          const parsed = Date.parse(retryAfter) - Date.now()
+          if (Number.isFinite(parsed) && parsed > 0) {
+            return cap(Math.ceil(parsed))
+          }
         }
       }
-
-      return cap(exponential(attempt, random))
     }
   }
 
   return cap(Math.min(exponential(attempt, random), RETRY_MAX_DELAY_NO_HEADERS))
+}
+
+function retryHint(value: string) {
+  if (!/^\d+(?:\.\d+)?$/.test(value.trim())) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 function exponential(attempt: number, random: number) {
