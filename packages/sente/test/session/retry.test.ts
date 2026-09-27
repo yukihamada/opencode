@@ -47,6 +47,38 @@ describe("session.retry.delay", () => {
     expect(SessionRetry.delay(5, error, 1)).toBe(30000)
   })
 
+  const fallbackHeaders: Record<string, string>[] = [
+    {},
+    { "content-type": "application/json" },
+    { "retry-after": "invalid" },
+  ]
+  test.each(fallbackHeaders)("caps fallback delays when headers contain no valid retry hint: %j", (headers) => {
+    expect(SessionRetry.delay(5, apiError(headers), 1)).toBe(30000)
+  })
+
+  test.each(["-1", "Infinity", "-Infinity", "NaN", "1500ms", "0x10", "1e309", " "])(
+    "ignores invalid millisecond retry hints: %s",
+    (value) => {
+      expect(SessionRetry.delay(1, apiError({ "retry-after-ms": value }), 0)).toBe(2000)
+      expect(SessionRetry.delay(1, apiError({ "retry-after-ms": value, "retry-after": "3" }), 0)).toBe(3000)
+    },
+  )
+
+  test.each(["-1", "-9999", "Infinity", "-Infinity", "NaN", "30seconds", "0x10", "1e309", " "])(
+    "ignores invalid seconds retry hints: %s",
+    (value) => {
+      expect(SessionRetry.delay(1, apiError({ "retry-after": value }), 0)).toBe(2000)
+    },
+  )
+
+  test("preserves zero, fractional values, whitespace and millisecond priority", () => {
+    expect(SessionRetry.delay(1, apiError({ "retry-after-ms": "0", "retry-after": "3" }), 0)).toBe(0)
+    expect(SessionRetry.delay(1, apiError({ "retry-after": "0" }), 0)).toBe(0)
+    expect(SessionRetry.delay(1, apiError({ "retry-after-ms": " 1.5 " }), 0)).toBe(2)
+    expect(SessionRetry.delay(1, apiError({ "retry-after": " 0.0015 " }), 0)).toBe(2)
+    expect(SessionRetry.delay(1, apiError({ "retry-after": "9999" }), 0)).toBe(9999000)
+  })
+
   test("prefers retry-after-ms when shorter than exponential", () => {
     const error = apiError({ "retry-after-ms": "1500" })
     expect(SessionRetry.delay(4, error)).toBe(1500)
