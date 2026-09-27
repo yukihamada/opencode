@@ -1,17 +1,17 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@sente-ai/core/effect/layer-node"
-import { httpClient } from "@sente-ai/core/effect/app-node-platform"
-import { Effect, Layer } from "effect"
+import { filesystem, httpClient } from "@sente-ai/core/effect/app-node-platform"
+import { Cause, Effect, Exit, FileSystem, Layer } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
 import { WebFetchTool } from "../../src/tool/webfetch"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Tool } from "@/tool/tool"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(
-  LayerNode.compile(LayerNode.group([httpClient, Truncate.node, Agent.node]), [
+  LayerNode.compile(LayerNode.group([filesystem, httpClient, Truncate.node, Agent.node]), [
     [httpClient, FetchHttpClient.layer as Layer.Layer<HttpClient.HttpClient>],
   ]),
 )
@@ -44,6 +44,129 @@ const exec = Effect.fn("WebFetchToolTest.exec")(function* (args: Tool.InferParam
 })
 
 describe("tool.webfetch", () => {
+  it.instance("closes the upstream stream after a body timeout", () =>
+    Effect.gen(function* () {
+      let cancelled = false
+      yield* withFetch(
+        () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("partial"))
+              },
+              cancel() {
+                cancelled = true
+              },
+            }),
+          ),
+        (url) =>
+          Effect.gen(function* () {
+            yield* exec({ url: url.toString(), format: "text", timeout: 0.1 }).pipe(Effect.exit)
+            yield* pollWithTimeout(
+              Effect.sync(() => (cancelled ? true : undefined)),
+              "upstream was not cancelled",
+              2000,
+            )
+          }),
+      )
+    }),
+  )
+
+  it.instance("accepts exactly 5MB and preserves all chunks", () =>
+    withFetch(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("a".repeat(3 * 1024 * 1024)))
+              controller.enqueue(new TextEncoder().encode("b".repeat(2 * 1024 * 1024)))
+              controller.close()
+            },
+          }),
+        ),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: url.toString(), format: "text" })
+          expect(result.metadata).toMatchObject({ truncated: true })
+          if (!("outputPath" in result.metadata) || typeof result.metadata.outputPath !== "string") {
+            throw new Error("expected the complete response to be saved")
+          }
+          const fs = yield* FileSystem.FileSystem
+          const content = yield* fs.readFileString(result.metadata.outputPath)
+          expect(content === "a".repeat(3 * 1024 * 1024) + "b".repeat(2 * 1024 * 1024)).toBe(true)
+        }),
+    ),
+  )
+
+  for (const status of [204, 205]) {
+    it.instance(`accepts an empty ${status} response`, () =>
+      withFetch(
+        () => new Response(null, { status }),
+        (url) =>
+          Effect.gen(function* () {
+            expect((yield* exec({ url: url.toString(), format: "text" })).output).toBe("")
+          }),
+      ),
+    )
+  }
+
+  it.instance("retries a Cloudflare challenge with the honest user agent", () =>
+    withFetch(
+      (req) =>
+        req.headers.get("user-agent") === "sente"
+          ? new Response("retried")
+          : new Response("challenge", { status: 403, headers: { "cf-mitigated": "challenge" } }),
+      (url) =>
+        Effect.gen(function* () {
+          expect((yield* exec({ url: url.toString(), format: "text" })).output).toBe("retried")
+        }),
+    ),
+  )
+
+  it.instance("enforces the timeout while reading a stalled response body", () =>
+    withFetch(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("partial"))
+            },
+          }),
+        ),
+      (url) =>
+        Effect.gen(function* () {
+          const exit = yield* exec({ url: url.toString(), format: "text", timeout: 0.1 }).pipe(
+            Effect.timeoutOrElse({ duration: 2000, orElse: () => Effect.die(new Error("test watchdog expired")) }),
+            Effect.exit,
+          )
+          if (!Exit.isFailure(exit)) throw new Error("expected request timeout")
+          expect(String(Cause.squash(exit.cause))).toContain("Request timed out")
+        }),
+    ),
+  )
+
+  it.instance("rejects an oversized chunked body before the stream ends", () =>
+    withFetch(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(5 * 1024 * 1024 + 1))
+            },
+          }),
+        ),
+      (url) =>
+        Effect.gen(function* () {
+          const exit = yield* exec({ url: url.toString(), format: "text" }).pipe(
+            Effect.timeoutOrElse({ duration: 2000, orElse: () => Effect.die(new Error("test watchdog expired")) }),
+            Effect.exit,
+          )
+          if (!Exit.isFailure(exit)) throw new Error("expected size limit")
+          expect(String(Cause.squash(exit.cause))).toContain("Response too large")
+        }),
+    ),
+  )
+
   it.instance("returns image responses as file attachments", () =>
     Effect.gen(function* () {
       const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
