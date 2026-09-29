@@ -11,6 +11,8 @@ import {
   credentialsPath,
   formatCredits,
   loginHint,
+  classifyAuthError,
+  diagnoseHint,
   loadCredentials,
   looksLikeEmail,
   looksLikeKey,
@@ -203,7 +205,8 @@ describe("util.teai verifyKey", () => {
 })
 
 describe("util.teai hints", () => {
-  const env = { TEAI_SITE: "https://teai.io" }
+  const env = { TEAI_SITE: "https://teai.io", LANG: "ja_JP.UTF-8" }
+  const en = { TEAI_SITE: "https://teai.io", LANG: "en_US.UTF-8" }
 
   test("demo-mode message points at /login", () => {
     const hint = loginHint(
@@ -220,13 +223,31 @@ describe("util.teai hints", () => {
       env,
     )
     expect(hint).toContain("月次上限")
-    expect(hint).toContain("/login")
+    expect(hint).toContain("te key rotate")
+    expect(hint).not.toContain("残高不足")
+  })
+
+  test("monthly limit is not mistaken for empty balance, in both languages", () => {
+    const text =
+      '{"error":{"code":"api_key_monthly_limit_exceeded","message":"reached its monthly limit (1 of 1 credits this month)"}}'
+    expect(classifyAuthError(text)).toBe("monthly_limit")
+    expect(loginHint(text, en)).toContain("monthly cap")
+    expect(loginHint(text, en)).toContain("balance is separate")
+    expect(classifyAuthError("Insufficient credits")).toBe("credits")
+    expect(loginHint("Insufficient credits", en)).toContain("balance is empty")
+  })
+
+  test("self-revoke 409 points at te key rotate", () => {
+    const text = '{"error":{"code":"cannot_revoke_current_key"}}'
+    expect(classifyAuthError(text)).toBe("self_revoke_blocked")
+    expect(loginHint(text, en)).toContain("te key rotate")
   })
 
   test("insufficient credits and invalid key get their own advice", () => {
     expect(loginHint("Insufficient credits", env)).toContain("pricing")
     expect(loginHint('{"error":{"code":"insufficient_quota"}}', env)).toContain("残高不足")
     expect(loginHint("Invalid API key", env)).toContain("無効")
+    expect(loginHint("Invalid API key", en)).toContain("revoked or deleted")
   })
 
   test("unrelated errors are left alone", () => {
@@ -336,5 +357,48 @@ describe("util.teai email login", () => {
       fetch: async () => json(400, { error: "認証コードが正しくありません。" }),
     })
     expect(wrong).toEqual({ ok: false, reason: "invalid", detail: "認証コードが正しくありません。" })
+  })
+})
+
+describe("util.teai demo diagnosis (auth/me first)", () => {
+  const demo = "こちらはデモです。自由な質問はアカウント登録から"
+  const reply = (status: number, body: unknown) => async () => new Response(JSON.stringify(body), { status })
+  let dir = ""
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true })
+    dir = ""
+  })
+  async function home(creds?: string) {
+    dir = await mkdtemp(path.join(os.tmpdir(), "sente-diag-"))
+    if (creds !== undefined) await Bun.write(path.join(dir, "credentials"), creds)
+    return { TE_CONFIG_DIR: dir, TEAI_API_KEY: "", TEAI_SITE: "https://teai.io", LANG: "en_US.UTF-8" }
+  }
+
+  test("no key saved -> no-key cause", async () => {
+    const env = await home()
+    expect(await diagnoseHint(demo, { env, fetch: reply(200, {}) })).toContain("no API key set")
+  })
+
+  test("key that auth/me rejects -> dead key, and says it is not a balance problem", async () => {
+    const env = await home("TEAI_API_KEY=te_revoked_fixture_1234\n")
+    const hint = await diagnoseHint(demo, { env, fetch: reply(200, { authenticated: false }) })
+    expect(hint).toContain("no longer authenticates")
+    expect(hint).toContain("Not a balance problem")
+  })
+
+  test("key that auth/me accepts -> stale session, never prints the key", async () => {
+    const env = await home("TEAI_API_KEY=te_valid_fixture_12345678\n")
+    const hint = await diagnoseHint(demo, { env, fetch: reply(200, { authenticated: true, credits_remaining: 0 }) })
+    expect(hint).toContain("session started with an old or missing key")
+    expect(hint).not.toContain("te_valid_fixture")
+  })
+
+  test("auth/me outage falls back to the generic hint; non-demo errors skip auth/me", async () => {
+    const env = await home("TEAI_API_KEY=te_valid_fixture_12345678\n")
+    expect(await diagnoseHint(demo, { env, fetch: reply(503, {}) })).toContain("te doctor")
+    let calls = 0
+    const counting = async () => (calls++, new Response("{}"))
+    expect(await diagnoseHint("Insufficient credits", { env, fetch: counting })).toContain("balance is empty")
+    expect(calls).toBe(0)
   })
 })
