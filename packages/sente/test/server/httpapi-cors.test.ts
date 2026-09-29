@@ -71,14 +71,26 @@ describe("HttpApi CORS", () => {
       const response = yield* Effect.promise(() =>
         handler(
           new Request(new URL("/global/config", "http://localhost"), {
-            headers: { origin: "https://teai.io/sente/app" },
+            headers: { origin: "https://teai.io" },
           }),
           HttpApiApp.context,
         ),
       )
 
       expect(response.status).toBe(401)
-      expect(response.headers.get("access-control-allow-origin")).toBe("https://teai.io/sente/app")
+      expect(response.headers.get("access-control-allow-origin")).toBe("https://teai.io")
+    }),
+  )
+
+  it.live("does not grant preflight access to lookalike domains", () =>
+    Effect.gen(function* () {
+      for (const origin of ["https://teaixio", "https://app.teaixio", "http://localhost:3000@evil.example"]) {
+        const response = yield* HttpClientRequest.options(InstancePaths.path).pipe(
+          HttpClientRequest.setHeaders({ origin, "access-control-request-method": "GET" }),
+          HttpClient.execute,
+        )
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined()
+      }
     }),
   )
 
