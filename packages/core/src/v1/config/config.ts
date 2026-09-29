@@ -166,7 +166,7 @@ export const Info = Schema.Struct({
       }),
       max_context: Schema.optional(NonNegativeInt).annotate({
         description:
-          "Compact once a request's context reaches this many tokens, even when the model's window is larger. Every step resends the whole context, so an uncapped 1M-token window means 1M-token requests. 0 disables the cap (default: 256000).",
+          "Compact once a request's context reaches this many tokens, even when the model's window is larger. Every step resends the whole context, so an uncapped 1M-token window means 1M-token requests. 0 disables the cap (default: 256000). The SENTE_MAX_CONTEXT environment variable (e.g. 400k) overrides this.",
       }),
     }),
   ),
