@@ -1,3 +1,5 @@
+import { ProviderQuota } from "@/provider/quota"
+
 /**
  * Exit code contract for the sente CLI.
  *
@@ -92,7 +94,18 @@ export function exitCodeForError(error: unknown): ExitCode {
   if (name === "ContextOverflowError" || name === "MessageOutputLengthError" || name === "ContentFilterError") {
     return ExitCode.User
   }
-  if (name === "APIError") return statusCode(error) === 402 ? ExitCode.Quota : ExitCode.Network
+  if (name === "APIError") {
+    if (statusCode(error) !== 402) return ExitCode.Network
+    // 402 without a quota/balance reading is teai's keyless demo reply: a login problem, not a limit.
+    const data = (error as { data?: { responseBody?: unknown; message?: unknown } }).data
+    return ProviderQuota.detect({
+      statusCode: 402,
+      responseBody: typeof data?.responseBody === "string" ? data.responseBody : undefined,
+      message: typeof data?.message === "string" ? data.message : undefined,
+    })
+      ? ExitCode.Quota
+      : ExitCode.Auth
+  }
   if (name === "ProviderModelNotFoundError" || name === "ProviderInitError") return ExitCode.User
   if (name === "ConfigJsonError" || name === "ConfigInvalidError" || name === "ConfigDirectoryTypoError") {
     return ExitCode.User
