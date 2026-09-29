@@ -23,12 +23,23 @@ export const ExitCode = {
   /** The request was well-formed but the target state changed (write conflict). */
   Conflict: 5,
   /**
+   * The provider refused with 402: a per-key usage cap (minute/hour/day/month)
+   * or an empty balance. Retrying before the window resets only burns another
+   * rejected request, so supervisors must not restart on this. The session is
+   * intact; `te resume` continues it once the window has reset.
+   */
+  Quota: 6,
+  /**
    * An unattended run (`--unattended`) refused at least one action that its
    * policy does not allow. The rest of the run may have completed; the refused
    * steps are on stderr and in the unattended audit log. Retrying without a
    * policy change will be refused again.
+   *
+   * Was 6 in the build of 2026-09-29 15:14 UTC (#21); moved to 7 because the
+   * te launcher already treats 6 as Quota (teai 402) and nothing consumed the
+   * unattended code yet.
    */
-  PermissionDenied: 6,
+  PermissionDenied: 7,
   /**
    * The TUI asks to be relaunched with --resume (after a compaction).
    *
@@ -81,7 +92,7 @@ export function exitCodeForError(error: unknown): ExitCode {
   if (name === "ContextOverflowError" || name === "MessageOutputLengthError" || name === "ContentFilterError") {
     return ExitCode.User
   }
-  if (name === "APIError") return ExitCode.Network
+  if (name === "APIError") return statusCode(error) === 402 ? ExitCode.Quota : ExitCode.Network
   if (name === "ProviderModelNotFoundError" || name === "ProviderInitError") return ExitCode.User
   if (name === "ConfigJsonError" || name === "ConfigInvalidError" || name === "ConfigDirectoryTypoError") {
     return ExitCode.User
@@ -122,6 +133,14 @@ export function diagnostic(
     message,
     ...data,
   }
+}
+
+function statusCode(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined
+  const data = (error as Record<string, unknown>).data
+  if (typeof data !== "object" || data === null) return undefined
+  const code = (data as Record<string, unknown>).statusCode
+  return typeof code === "number" ? code : undefined
 }
 
 function errorName(error: unknown): string | undefined {
