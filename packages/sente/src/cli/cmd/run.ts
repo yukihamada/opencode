@@ -26,6 +26,7 @@ import { createSenteClient, type SenteClient, type ToolPart } from "@sente-ai/sd
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { ExitCode, diagnostic, exitCodeForError } from "../exit-code"
+import { Unattended } from "@/permission/unattended"
 
 type ModelInput = Parameters<SenteClient["session"]["prompt"]>[0]["model"]
 
@@ -245,6 +246,16 @@ export const RunCommand = effectCmd({
         describe: "auto-approve permissions that are not explicitly denied (dangerous!)",
         default: false,
       })
+      .option("unattended", {
+        type: "boolean",
+        describe:
+          "no one is watching: auto-approve only what the unattended policy allows (~/.config/sente/unattended.json, agent frontmatter sente.permissions; read-only by default), refuse the rest and exit 6",
+        default: false,
+      })
+      .option("unattended-policy", {
+        type: "string",
+        describe: "policy file for --unattended (implies --unattended)",
+      })
       .option("yolo", {
         type: "boolean",
         hidden: true,
@@ -273,6 +284,8 @@ export const RunCommand = effectCmd({
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const interactive = args.mini
       const auto = args.auto || args.yolo || args["dangerously-skip-permissions"]
+      const unattendedPolicy = args["unattended-policy"] || process.env["SENTE_UNATTENDED_POLICY"] || undefined
+      const unattended = args.unattended || Boolean(unattendedPolicy) || process.env["SENTE_UNATTENDED"] === "1"
       const thinking = interactive ? (args.thinking ?? true) : (args.thinking ?? false)
       // Usage errors are the one class of failure that can fire before a session
       // exists. Under `--format json` they still go to stderr — stdout must stay
@@ -329,6 +342,18 @@ export const RunCommand = effectCmd({
 
       if (interactive && !process.stdout.isTTY) {
         die("--mini requires a TTY stdout")
+      }
+
+      if (unattended && auto) {
+        die("--unattended cannot be combined with --auto/--yolo: pick the allowlist or the blanket approval")
+      }
+
+      if (unattended && interactive) {
+        die("--unattended is for non-interactive runs")
+      }
+
+      if (unattended && args.attach) {
+        die("--unattended cannot enforce its policy on a remote server (--attach)")
       }
 
       if (interactive) {
@@ -958,6 +983,47 @@ export const RunCommand = effectCmd({
         return await execute(sdk)
       }
 
+      if (unattended) {
+        let agentPermissions: unknown
+        if (args.agent) {
+          const entry = await Effect.runPromise(
+            agentSvc.get(args.agent).pipe(Effect.provideService(InstanceRef, localInstance)),
+          )
+          const sente = (entry?.options as Record<string, unknown> | undefined)?.["sente"]
+          if (sente && typeof sente === "object") agentPermissions = (sente as Record<string, unknown>)["permissions"]
+        }
+        let policy: Unattended.Policy
+        try {
+          policy = Unattended.resolve({ file: unattendedPolicy, agent: args.agent, agentPermissions })
+        } catch (error) {
+          return die(error instanceof Error ? error.message : String(error))
+        }
+        const log = Unattended.defaultLogPath()
+        Unattended.activate(policy, {
+          log,
+          onDecision: (decision) => {
+            if (decision.allow) return
+            diag(
+              "warn",
+              `unattended: refused ${decision.permission} "${decision.pattern ?? "*"}" — ${decision.reason}`,
+              {
+                permission: decision.permission,
+                pattern: decision.pattern,
+                danger: decision.danger,
+              },
+            )
+          },
+        })
+        diag(
+          "info",
+          `unattended mode — policy: ${policy.sources.join(" + ")}; refusals exit ${ExitCode.PermissionDenied}, log: ${log}`,
+          {
+            sources: policy.sources,
+            log,
+          },
+        )
+      }
+
       const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const { Server } = await import("@/server/server")
         const request = new Request(input, init)
@@ -972,6 +1038,20 @@ export const RunCommand = effectCmd({
         directory,
       })
       await execute(sdk)
+      if (unattended) {
+        const refused = Unattended.denials()
+        if (refused.length) {
+          diag(
+            "warn",
+            `unattended: ${refused.length} action(s) refused by policy — see the log above; exiting ${ExitCode.PermissionDenied}`,
+            {
+              refused: refused.map((d) => ({ permission: d.permission, pattern: d.pattern, reason: d.reason })),
+            },
+          )
+          if (!process.exitCode) process.exitCode = ExitCode.PermissionDenied
+        }
+        Unattended.deactivate()
+      }
     })
   }),
 })
@@ -1021,6 +1101,9 @@ export async function runMini(input: MiniCommandInput) {
     "replay-limit": input.replayLimit,
     replayLimit: input.replayLimit,
     auto: false,
+    unattended: false,
+    "unattended-policy": undefined,
+    unattendedPolicy: undefined,
     yolo: false,
     "dangerously-skip-permissions": false,
     dangerouslySkipPermissions: false,

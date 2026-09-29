@@ -64,6 +64,10 @@ export const Flag = {
   get SENTE_CONFIG_DIR() {
     return process.env["SENTE_CONFIG_DIR"]
   },
+  // Auto-compaction ceiling in tokens ("256000", "256k", "1m", "25.6万", "0" = off). Beats compaction.max_context.
+  get SENTE_MAX_CONTEXT() {
+    return process.env["SENTE_MAX_CONTEXT"]
+  },
   get SENTE_PURE() {
     return truthy("SENTE_PURE")
   },

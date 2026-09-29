@@ -6,6 +6,7 @@ import { Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@sente-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Unattended } from "./unattended"
 
 export const Event = PermissionV1.Event
 
@@ -79,6 +80,24 @@ const layer = Layer.effect(
         }
         if (rule.action === "allow") continue
         needsAsk = true
+      }
+
+      // Unattended run: nobody can answer a prompt, and the engine's defaults
+      // allow almost everything, so the policy decides every non-denied request
+      // (config "allow" included). Config denies above still win.
+      const unattended = Unattended.current()
+      if (unattended) {
+        const ctx = yield* InstanceState.context
+        const verdict = Unattended.decide(unattended, request, { worktree: ctx.worktree, directory: ctx.directory })
+        Unattended.record(verdict, request)
+        yield* Effect.logInfo("unattended", {
+          permission: request.permission,
+          allow: verdict.allow,
+          reason: verdict.reason,
+        })
+        if (verdict.allow) return
+        if (unattended.onDeny === "stop") return yield* new PermissionV1.RejectedError()
+        return yield* new PermissionV1.CorrectedError({ feedback: Unattended.feedback(verdict) })
       }
 
       if (!needsAsk) return

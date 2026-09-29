@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Parser } from "htmlparser2"
 import * as Tool from "./tool"
@@ -25,7 +25,7 @@ export const WebFetchTool = Tool.define(
   "webfetch",
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
-    const httpOk = HttpClient.filterStatusOk(http)
+    const httpOk = HttpClient.filterStatusOk(HttpClient.withScope(http))
 
     return {
       description: DESCRIPTION,
@@ -75,35 +75,47 @@ export const WebFetchTool = Tool.define(
 
           const request = HttpClientRequest.get(params.url).pipe(HttpClientRequest.setHeaders(headers))
 
-          // Retry with honest UA if blocked by Cloudflare bot detection (TLS fingerprint mismatch)
-          const response = yield* httpOk.execute(request).pipe(
-            Effect.catchIf(
-              (err) =>
-                err.reason._tag === "StatusCodeError" &&
-                err.reason.response.status === 403 &&
-                err.reason.response.headers["cf-mitigated"] === "challenge",
-              () =>
-                httpOk.execute(
-                  HttpClientRequest.get(params.url).pipe(
-                    HttpClientRequest.setHeaders({ ...headers, "User-Agent": "sente" }),
+          const { arrayBuffer, contentType } = yield* Effect.gen(function* () {
+            // Retry with honest UA if blocked by Cloudflare bot detection (TLS fingerprint mismatch)
+            const response = yield* httpOk.execute(request).pipe(
+              Effect.catchIf(
+                (err) =>
+                  err.reason._tag === "StatusCodeError" &&
+                  err.reason.response.status === 403 &&
+                  err.reason.response.headers["cf-mitigated"] === "challenge",
+                () =>
+                  httpOk.execute(
+                    HttpClientRequest.get(params.url).pipe(
+                      HttpClientRequest.setHeaders({ ...headers, "User-Agent": "sente" }),
+                    ),
                   ),
-                ),
-            ),
+              ),
+            )
+
+            // Check content length
+            const contentLength = response.headers["content-length"]
+            if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
+              throw new Error("Response too large (exceeds 5MB limit)")
+            }
+
+            // Enforce the limit while receiving bytes, including chunked/decompressed bodies.
+            const chunks: Uint8Array[] = []
+            let size = 0
+            yield* response.stream.pipe(
+              Stream.runForEach((chunk) =>
+                Effect.sync(() => {
+                  size += chunk.byteLength
+                  if (size > MAX_RESPONSE_SIZE) throw new Error("Response too large (exceeds 5MB limit)")
+                  chunks.push(chunk)
+                }),
+              ),
+            )
+            return { arrayBuffer: Buffer.concat(chunks, size), contentType: response.headers["content-type"] || "" }
+          }).pipe(
+            Effect.scoped,
             Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
           )
 
-          // Check content length
-          const contentLength = response.headers["content-length"]
-          if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
-            throw new Error("Response too large (exceeds 5MB limit)")
-          }
-
-          const arrayBuffer = yield* response.arrayBuffer
-          if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
-            throw new Error("Response too large (exceeds 5MB limit)")
-          }
-
-          const contentType = response.headers["content-type"] || ""
           const mime = contentType.split(";")[0]?.trim().toLowerCase() || ""
           const title = `${params.url} (${contentType})`
 

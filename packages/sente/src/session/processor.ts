@@ -350,10 +350,28 @@ const layer = Layer.effect(
                 : value.providerMetadata,
             }))
 
-            const parts = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
-              Effect.provideService(Database.Service, database),
-            )
-            const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
+            const recentParts = yield* Effect.gen(function* () {
+              const recent: SessionV1.ToolPart[] = []
+              let before: string | undefined
+              let current = false
+              while (true) {
+                const page = yield* MessageV2.page({ sessionID: ctx.sessionID, limit: 50, before })
+                for (const message of page.items.toReversed()) {
+                  if (message.info.id === ctx.assistantMessage.id) current = true
+                  if (!current) continue
+                  if (message.info.role !== "assistant" || message.info.parentID !== ctx.assistantMessage.parentID) {
+                    return recent
+                  }
+                  for (const part of message.parts.toReversed()) {
+                    if (part.type !== "tool") continue
+                    recent.push(part)
+                    if (recent.length === DOOM_LOOP_THRESHOLD) return recent
+                  }
+                }
+                if (!page.more || !page.cursor) return recent
+                before = page.cursor
+              }
+            }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
 
             if (
               recentParts.length !== DOOM_LOOP_THRESHOLD ||

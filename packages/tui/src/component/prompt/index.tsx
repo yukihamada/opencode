@@ -60,6 +60,8 @@ import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
 import { PromptRecovery } from "./recovery"
+import { ModelPresets } from "../model-presets"
+import { modelBrowseText } from "../../util/model-browse"
 
 registerOpencodeSpinner()
 
@@ -828,6 +830,28 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  const presetArrows = () =>
+    inputTarget() !== undefined && !props.disabled && props.visible !== false &&
+    dialog.stack.length === 0 && store.mode === "normal" && !auto()?.visible &&
+    local.model.presets().length > 0 && store.prompt.parts.length === 0
+
+  useBindings(() => ({
+    target: inputTarget,
+    enabled: presetArrows() && store.prompt.input === "",
+    bindings: [
+      { key: "left", desc: modelBrowseText().previous, group: "Prompt", cmd: () => local.model.cyclePreset(-1) },
+      { key: "right", desc: modelBrowseText().next, group: "Prompt", cmd: () => local.model.cyclePreset(1) },
+    ],
+  }))
+
+  useBindings(() => ({
+    target: inputTarget,
+    enabled: presetArrows() && store.prompt.input !== "",
+    bindings: [
+      { key: "right", desc: modelBrowseText().next, group: "Prompt", cmd: () => local.model.cyclePreset(1) },
+    ],
+  }))
+
   useBindings(() => {
     return {
       target: inputTarget,
@@ -1426,6 +1450,13 @@ export function Prompt(props: PromptProps) {
               cursorStyle={tuiConfig.cursor}
               syntaxStyle={syntax()}
             />
+            <Show when={store.mode === "normal" && props.visible !== false}>
+              <ModelPresets
+                disabled={props.disabled}
+                typing={store.prompt.input !== "" || store.prompt.parts.length > 0}
+                onSelect={() => input.focus()}
+              />
+            </Show>
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
               <box flexDirection="row" gap={1}>
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
