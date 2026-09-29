@@ -27,6 +27,7 @@ import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
+import { DataPolicy } from "@/config/data-policy"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@sente-ai/core/util/error"
@@ -1269,21 +1270,35 @@ const layer = Layer.effect(
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
-            const result = yield* handle.process({
-              user: lastUser,
-              agent,
-              permission: session.permission,
-              sessionID,
-              parentSessionID: session.parentID,
-              system,
-              messages: [
-                ...modelMsgs,
-                ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
-              ],
-              tools,
-              model,
-              toolChoice: format.type === "json_schema" ? "required" : undefined,
-            })
+            const result = yield* handle
+              .process({
+                user: lastUser,
+                agent,
+                permission: session.permission,
+                sessionID,
+                parentSessionID: session.parentID,
+                system,
+                messages: [
+                  ...modelMsgs,
+                  ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
+                ],
+                tools,
+                model,
+                toolChoice: format.type === "json_schema" ? "required" : undefined,
+              })
+              .pipe(
+                Effect.catchIf(DataPolicy.BlockedError.isInstance, (e) => {
+                  const error = e.toObject()
+                  return Effect.gen(function* () {
+                    msg.error = error
+                    msg.finish = "error"
+                    msg.time.completed = Date.now()
+                    yield* sessions.updateMessage(msg)
+                    yield* events.publish(Session.Event.Error, { sessionID, error })
+                    return "stop" as const
+                  })
+                }),
+              )
 
             if (structured !== undefined) {
               handle.message.structured = structured

@@ -66,3 +66,7 @@ export const ContextOverflowError = NamedError.create("ContextOverflowError", {
   responseBody: Schema.optional(Schema.String),
 })
 export const ContentFilterError = NamedError.create("ContentFilterError", { message: Schema.String })
+export const DataPolicyBlockedError = NamedError.create("DataPolicyBlockedError", {
+  message: Schema.String,
+  patterns: Schema.mutable(Schema.Array(Schema.String)),
+})

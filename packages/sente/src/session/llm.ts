@@ -110,6 +110,7 @@ const live: Layer.Layer<
         plugin,
         flags,
         isWorkflow,
+        dataPolicy: cfg.dataPolicy,
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls

@@ -61,6 +61,10 @@ export const ContextOverflowError = namedError("ContextOverflowError", {
 export const ContentFilterError = namedError("ContentFilterError", {
   message: Schema.String,
 })
+export const DataPolicyBlockedError = namedError("DataPolicyBlockedError", {
+  message: Schema.String,
+  patterns: Schema.mutable(Schema.Array(Schema.String)),
+})
 
 export class OutputFormatText extends Schema.Class<OutputFormatText>("OutputFormatText")({
   type: Schema.Literal("text"),
@@ -390,6 +394,7 @@ const AssistantErrorSchema = Schema.Union([
   StructuredOutputError.EffectSchema,
   ContextOverflowError.EffectSchema,
   ContentFilterError.EffectSchema,
+  DataPolicyBlockedError.EffectSchema,
   APIError.EffectSchema,
 ]).annotate({ discriminator: "name" })
 type AssistantError = Schema.Schema.Type<typeof AssistantErrorSchema>
