@@ -1992,6 +1992,60 @@ describe("deduplicatePluginOrigins", () => {
   )
 })
 
+describe("SENTE_MAX_CONTEXT", () => {
+  test("parses plain, k, m and 万 sizes", () => {
+    expect(Config.parseContextSize("256000")).toBe(256_000)
+    expect(Config.parseContextSize("400k")).toBe(400_000)
+    expect(Config.parseContextSize(" 1M ")).toBe(1_000_000)
+    expect(Config.parseContextSize("25.6万")).toBe(256_000)
+    expect(Config.parseContextSize("256,000")).toBe(256_000)
+    expect(Config.parseContextSize("0")).toBe(0)
+    expect(Config.parseContextSize("lots")).toBeUndefined()
+    expect(Config.parseContextSize("-5")).toBeUndefined()
+  })
+
+  it.instance(
+    "overrides compaction.max_context from the config file",
+    () =>
+      withProcessEnv(
+        "SENTE_MAX_CONTEXT",
+        "400k",
+        Effect.gen(function* () {
+          const config = yield* Config.use.get()
+          expect(config.compaction?.max_context).toBe(400_000)
+          expect(config.compaction?.auto).toBe(true)
+        }),
+      ),
+    { config: { compaction: { auto: true, max_context: 120_000 } } },
+  )
+
+  it.instance(
+    "0 disables the cap",
+    () =>
+      withProcessEnv(
+        "SENTE_MAX_CONTEXT",
+        "0",
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).compaction?.max_context).toBe(0)
+        }),
+      ),
+    { config: { compaction: { max_context: 120_000 } } },
+  )
+
+  it.instance(
+    "invalid value keeps the file setting",
+    () =>
+      withProcessEnv(
+        "SENTE_MAX_CONTEXT",
+        "lots",
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).compaction?.max_context).toBe(120_000)
+        }),
+      ),
+    { config: { compaction: { max_context: 120_000 } } },
+  )
+})
+
 describe("SENTE_DISABLE_PROJECT_CONFIG", () => {
   it.instance(
     "skips project config files when flag is set",

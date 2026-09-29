@@ -122,6 +122,17 @@ type State = {
   consoleState: ConsoleState
 }
 
+/**
+ * Parses a token count for SENTE_MAX_CONTEXT: plain integers, `k`/`m` suffixes
+ * and 万 (10,000), e.g. "256000", "256k", "1m", "25.6万". "0" disables the cap.
+ */
+export function parseContextSize(input: string) {
+  const match = /^([0-9]+(?:\.[0-9]+)?)\s*(k|m|万)?$/i.exec(input.trim().replaceAll(/[,_]/g, ""))
+  if (!match) return undefined
+  const unit = match[2]?.toLowerCase()
+  return Math.round(Number(match[1]) * (unit === "k" ? 1_000 : unit === "m" ? 1_000_000 : unit === "万" ? 10_000 : 1))
+}
+
 export interface Interface {
   readonly get: () => Effect.Effect<Info>
   readonly getGlobal: () => Effect.Effect<Info>
@@ -597,6 +608,15 @@ const layer = Layer.effect(
         }
         if (Flag.SENTE_DISABLE_PRUNE) {
           result.compaction = { ...result.compaction, prune: false }
+        }
+        const maxContext = Flag.SENTE_MAX_CONTEXT
+        if (maxContext !== undefined && maxContext.trim() !== "") {
+          const tokens = parseContextSize(maxContext)
+          if (tokens === undefined)
+            yield* Effect.logWarning("ignoring SENTE_MAX_CONTEXT: expected e.g. 256000, 256k, 1m, 25.6万 or 0", {
+              value: maxContext,
+            })
+          else result.compaction = { ...result.compaction, max_context: tokens }
         }
 
         return {
