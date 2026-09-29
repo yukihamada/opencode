@@ -16,7 +16,9 @@ import { AppNodeBuilder } from "@sente-ai/core/effect/app-node-builder"
 import { LayerNode } from "@sente-ai/core/effect/layer-node"
 import { Layer } from "effect"
 
-const ctx = { worktree: "/repo", directory: "/repo" }
+// path.resolve keeps the absolute-path cases valid on Windows (C:\\repo)
+const root = path.resolve("/repo")
+const ctx = { worktree: root, directory: root }
 const bash = (policy: Unattended.Policy, command: string) =>
   Unattended.decide(policy, { permission: "bash", patterns: [command] }, ctx)
 const withAllow = (allow: Record<string, boolean | string | string[]>, extra: Unattended.PolicyInput = {}) =>
@@ -165,7 +167,7 @@ describe("unattended.decide — allowlists", () => {
       true,
     )
     expect(Unattended.decide(policy, { permission: "edit", patterns: ["src/app.ts"] }, ctx).allow).toBe(false)
-    const abs = withAllow({ edit: ["/repo/tasks/*"] })
+    const abs = withAllow({ edit: [`${root}/tasks/*`] })
     expect(Unattended.decide(abs, { permission: "edit", patterns: ["tasks/x.md"] }, ctx).allow).toBe(true)
     const home = withAllow({ external_directory: ["~/workspace/*"] })
     expect(
