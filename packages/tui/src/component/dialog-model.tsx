@@ -8,6 +8,8 @@ import { DialogVariant } from "./dialog-variant"
 import * as fuzzysort from "fuzzysort"
 import { useConnected } from "./use-connected"
 import { useSync } from "../context/sync"
+import { modelCostDetail } from "../util/model-cost"
+import { availableFavorite, presetLabels, presetName, type ModelFavorite } from "../util/model-presets"
 
 export function DialogModel(props: { providerID?: string }) {
   const local = useLocal()
@@ -26,24 +28,27 @@ export function DialogModel(props: { providerID?: string }) {
     const favorites = connected() ? local.model.favorite() : []
     const recents = local.model.recent()
 
-    function toOptions(items: typeof favorites, category: string) {
+    function toOptions(items: ModelFavorite[], category: string) {
       if (!showSections) return []
       return items.flatMap((item) => {
         const provider = sync.data.provider.find((provider) => provider.id === item.providerID)
         if (!provider) return []
         const model = provider.models[item.modelID]
-        if (!model) return []
+        if (!model && !item.presetID) return []
+        const name = presetName(item.presetID)
+        const available = availableFavorite(item, model)
         return [
           {
             key: item,
-            value: { providerID: provider.id, modelID: model.id },
-            title: model.name ?? item.modelID,
+            value: { providerID: provider.id, modelID: item.modelID },
+            title: name ?? model?.name ?? item.modelID,
             description: provider.name,
-            category,
-            disabled: provider.id === "sente" && model.id.includes("-nano"),
-            footer: model.cost?.input === 0 && provider.id === "sente" ? "Free" : undefined,
+            details: [...(name ? [item.modelID, presetLabels().automatic] : []), modelCostDetail(model?.cost), ...(!available ? [presetLabels().unavailable] : [])],
+            category: name ? presetLabels().section : category,
+            disabled: provider.id === "sente" && item.modelID.includes("-nano"),
+            footer: model?.cost?.input === 0 && provider.id === "sente" ? "Free" : undefined,
             onSelect: () => {
-              onSelect(provider.id, model.id)
+              if (available) onSelect(provider.id, item.modelID)
             },
           },
         ]
@@ -70,20 +75,26 @@ export function DialogModel(props: { providerID?: string }) {
           entries(),
           filter(([_, info]) => info.status !== "deprecated"),
           filter(([_, info]) => (props.providerID ? info.providerID === props.providerID : true)),
-          map(([model, info]) => ({
+          map(([model, info]) => {
+            const favorite = favorites.find((item) => item.providerID === provider.id && item.modelID === model)
+            const name = presetName(favorite?.presetID)
+            const available = !favorite || availableFavorite(favorite, info)
+            return {
             value: { providerID: provider.id, modelID: model },
-            title: info.name ?? model,
+            title: name ?? info.name ?? model,
+            search: `${model} ${info.name}`,
             releaseDate: info.release_date,
             description: favorites.some((item) => item.providerID === provider.id && item.modelID === model)
               ? "(Favorite)"
               : undefined,
             category: connected() ? provider.name : undefined,
+            details: [...(name ? [model, presetLabels().automatic] : []), modelCostDetail(info.cost), ...(!available ? [presetLabels().unavailable] : [])],
             disabled: provider.id === "sente" && model.includes("-nano"),
             footer: info.cost?.input === 0 && provider.id === "sente" ? "Free" : undefined,
             onSelect() {
-              onSelect(provider.id, model)
+              if (available) onSelect(provider.id, model)
             },
-          })),
+          }}),
           filter((option) => {
             if (!showSections) return true
             if (
@@ -119,7 +130,7 @@ export function DialogModel(props: { providerID?: string }) {
     if (needle) {
       return [
         ...sortModelOptions(
-          fuzzysort.go(needle, providerOptions, { keys: ["title", "category"] }).map((x) => x.obj),
+          fuzzysort.go(needle, providerOptions, { keys: ["title", "category", "search"] }).map((x) => x.obj),
           false,
         ),
         ...fuzzysort.go(needle, popularProviders, { keys: ["title"] }).map((x) => x.obj),

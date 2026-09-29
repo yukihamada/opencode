@@ -84,3 +84,16 @@ export function pluralize(count: number, singular: string, plural: string): stri
 }
 
 export * as Locale from "./locale"
+
+export function terminalLocale(env: Record<string, string | undefined> = process.env) {
+  const value = env.LC_ALL || env.LC_MESSAGES || env.LANG
+  if (!value) return Intl.NumberFormat().resolvedOptions().locale
+  const locale = value.split(/[.@]/)[0].replaceAll("_", "-")
+  if (locale === "C" || locale === "POSIX") return "en-US"
+  try {
+    return new Intl.Locale(locale).baseName
+  } catch {
+    // Invalid terminal configuration must not prevent the model picker opening.
+    return "en-US"
+  }
+}

@@ -9,6 +9,14 @@ import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import { readJson, writeJsonAtomic } from "../util/persistence"
+import {
+  availableFavorite,
+  modelPresets,
+  presetLabels,
+  presetName,
+  updateModelFavorite,
+  type ModelFavorite,
+} from "../util/model-presets"
 import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
@@ -168,10 +176,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           providerID: string
           modelID: string
         }[]
-        favorite: {
-          providerID: string
-          modelID: string
-        }[]
+        favorite: ModelFavorite[]
         variant: Record<string, string | undefined>
       }>({
         ready: false,
@@ -233,6 +238,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (state.pending) save()
         })
 
+      createEffect(() => {
+        if (!modelStore.ready) return
+        const provider = sync.data.provider.find((item) => item.id === "teai")
+        if (!provider) return
+        const next = modelStore.favorite.map((item) => updateModelFavorite(item, provider.models))
+        if (JSON.stringify(next) === JSON.stringify(modelStore.favorite)) return
+        setModelStore("favorite", next)
+        save()
+      })
+
       const fallbackModel = createMemo(() => {
         if (args.model) {
           const { providerID, modelID } = parseModel(args.model)
@@ -283,8 +298,39 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         )
       })
 
+      const presets = createMemo(() => {
+        const provider = sync.data.provider.find((item) => item.id === "teai")
+        if (!provider || !modelStore.ready) return []
+        return modelPresets.map((preset) =>
+          updateModelFavorite(
+            modelStore.favorite.find((item) => item.providerID === "teai" && item.presetID === preset.id) ?? {
+              providerID: "teai", modelID: preset.seed, presetID: preset.id,
+            },
+            provider.models,
+          ),
+        )
+      })
+
       return {
         current: currentModel,
+        presets,
+        selectPreset(id: string) {
+          const item = presets().find((item) => item.presetID === id)
+          const info = sync.data.provider.find((provider) => provider.id === item?.providerID)?.models[item?.modelID ?? ""]
+          if (!item || !availableFavorite(item, info)) {
+            toast.show({ message: presetLabels().unavailable, variant: "warning", duration: 3000 })
+            return false
+          }
+          if (!agent.current() || !isModelValid(item)) return false
+          this.set({ providerID: item.providerID, modelID: item.modelID }, { recent: true })
+          setModelStore("favorite", [
+            ...modelStore.favorite.filter((favorite) =>
+              favorite.providerID !== item.providerID || (favorite.presetID !== id && favorite.modelID !== item.modelID)),
+            item,
+          ])
+          save()
+          return true
+        },
         get ready() {
           return modelStore.ready
         },
@@ -307,7 +353,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const info = provider?.models[value.modelID]
           return {
             provider: provider?.name ?? value.providerID,
-            model: info?.name ?? value.modelID,
+            model: presetName(modelStore.favorite.find((item) => item.providerID === value.providerID && item.modelID === value.modelID)?.presetID) ?? info?.name ?? value.modelID,
             reasoning: info?.capabilities?.reasoning ?? false,
           }
         }),
@@ -322,7 +368,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return true
         },
         cycleFavorite(direction: 1 | -1) {
-          const favorites = modelStore.favorite.filter((item) => isModelValid(item))
+          const favorites = modelStore.favorite.filter((item) => availableFavorite(item, sync.data.provider.find((provider) => provider.id === item.providerID)?.models[item.modelID]))
           if (!favorites.length) {
             toast.show({
               variant: "info",
@@ -347,7 +393,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (!next) return
           const a = agent.current()
           if (!a) return
-          setModelStore("model", a.name, { ...next })
+          setModelStore("model", a.name, { providerID: next.providerID, modelID: next.modelID })
           setModelStore("recent", recentModels(next, modelStore.recent))
           save()
         },
@@ -389,7 +435,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               : [model, ...modelStore.favorite]
             setModelStore(
               "favorite",
-              next.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
+              next,
             )
             save()
           })
