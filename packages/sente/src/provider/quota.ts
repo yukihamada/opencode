@@ -27,6 +27,15 @@ const CODE_PERIOD: Record<string, QuotaPeriod> = {
   api_key_monthly_limit_exceeded: "month",
 }
 
+/**
+ * 402 でも上限/残高ではないもの。teai はキー無し(匿名)の呼び出しにデモ文言付きの 402 を返す
+ * (`code` = anonymous_demo_only, `type` = signup_required)。これは「ログインが必要」であって
+ * 残高不足ではないので、文言を差し替えず(TUI が原因別の案内を出す)Quota 扱いもしない。
+ */
+function signupRequired(body: any, text: string) {
+  return body?.error?.code === "anonymous_demo_only" || body?.error?.type === "signup_required" || /anonymous_demo_only/.test(text)
+}
+
 const MESSAGE_PERIOD: Array<[RegExp, QuotaPeriod]> = [
   [/reached its per-minute limit/i, "minute"],
   [/reached its hourly limit/i, "hour"],
@@ -71,6 +80,7 @@ export function detect(input: { statusCode?: number; responseBody?: string; mess
     input.message ?? "",
     input.responseBody ?? "",
   ].join("\n")
+  if (signupRequired(body, text)) return undefined
   const period =
     CODE_PERIOD[code] ??
     MESSAGE_PERIOD.find(([pattern]) => pattern.test(text))?.[1] ??

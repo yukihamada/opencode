@@ -159,3 +159,28 @@ describe("402 end to end through the error pipeline", () => {
     expect(SessionRetry.retryable(error, "teai")).toBeDefined()
   })
 })
+
+describe("keyless demo 402 is a login problem, not a quota", () => {
+  // teai.io がキー無しの呼び出しに返す本文(login-release-smoke と同じ形)
+  const DEMO = JSON.stringify({
+    error: {
+      message: "こちらはデモです。自由な質問・全モデル・ツール実行はアカウント登録から",
+      type: "signup_required",
+      code: "anonymous_demo_only",
+    },
+  })
+
+  test("detect ignores it", () => {
+    expect(ProviderQuota.detect({ statusCode: 402, responseBody: DEMO }, NOW)).toBeUndefined()
+  })
+
+  test("keeps the demo text for the TUI's cause-specific hint and exits as Auth", () => {
+    const error = MessageV2.fromError(callError(402, DEMO), { providerID: ProviderV2.ID.make("teai") })
+    expect(JSON.stringify(error)).not.toContain("balance is too low")
+    expect(JSON.stringify(error)).not.toContain("残高が不足")
+    expect(exitCodeForError(error)).toBe(ExitCode.Auth)
+    expect(shouldRestart(exitCodeForError(error))).toBe(false)
+    expect(SessionRetry.retryable(error, "teai")).toBeUndefined()
+  })
+})
+
