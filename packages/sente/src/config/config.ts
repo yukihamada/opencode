@@ -8,6 +8,7 @@ import { mergeDeep } from "remeda"
 import { Global } from "@sente-ai/core/global"
 import fsNode from "fs/promises"
 import { Flag } from "@sente-ai/core/flag/flag"
+import { UsageMode } from "@sente-ai/core/usage-mode"
 import { Auth } from "../auth"
 import { Env } from "../env"
 import { applyEdits, modify } from "jsonc-parser"
@@ -609,6 +610,12 @@ const layer = Layer.effect(
         if (Flag.SENTE_DISABLE_PRUNE) {
           result.compaction = { ...result.compaction, prune: false }
         }
+        const mode = UsageMode.resolve({ env: Flag.SENTE_MODE, config: result.compaction?.mode })
+        if (mode.invalid !== undefined)
+          yield* Effect.logWarning("ignoring SENTE_MODE: expected saver, standard, max, 節約, 標準 or たっぷり", {
+            value: mode.invalid,
+          })
+        if (mode.source === "env") result.compaction = { ...result.compaction, mode: mode.mode }
         const maxContext = Flag.SENTE_MAX_CONTEXT
         if (maxContext !== undefined && maxContext.trim() !== "") {
           const tokens = parseContextSize(maxContext)

@@ -1,6 +1,7 @@
 import type { Config } from "@/config/config"
 import { ConfigV1 } from "@sente-ai/core/v1/config/config"
 import { SessionV1 } from "@sente-ai/core/v1/session"
+import { UsageMode } from "@sente-ai/core/usage-mode"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import type { MessageV2 } from "./message-v2"
@@ -16,7 +17,7 @@ const COMPACTION_BUFFER = 20_000
  * at ≥300k tokens, max 912,439. 256k keeps every model whose window is at or
  * below ~276k on its existing threshold.
  */
-export const DEFAULT_MAX_CONTEXT = 256_000
+export const DEFAULT_MAX_CONTEXT = UsageMode.maxContext(UsageMode.DEFAULT_MODE)
 
 export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outputTokenMax?: number }) {
   const context = input.model.limit.context
@@ -28,8 +29,12 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
   const window = input.model.limit.input
     ? Math.max(0, input.model.limit.input - reserved)
     : Math.max(0, context - ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
-  const cap = input.cfg.compaction?.max_context ?? DEFAULT_MAX_CONTEXT
-  return cap > 0 ? Math.min(window, cap) : window
+  // SENTE_MAX_CONTEXT / compaction.max_context > usage mode (SENTE_MODE / compaction.mode) > standard.
+  return UsageMode.threshold({
+    mode: input.cfg.compaction?.mode ?? UsageMode.DEFAULT_MODE,
+    override: input.cfg.compaction?.max_context,
+    window,
+  })
 }
 
 export function isOverflow(input: {

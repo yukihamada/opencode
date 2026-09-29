@@ -51,3 +51,32 @@ describe("session.overflow max_context cap", () => {
     )
   })
 })
+
+describe("session.overflow usage mode", () => {
+  const m = model(1_050_000)
+  const window = 1_050_000 - 32_000
+
+  test("saver / standard / max map to 128k / 256k / the model window", () => {
+    expect(usable({ cfg: { compaction: { mode: "saver" } }, model: m })).toBe(128_000)
+    expect(usable({ cfg: { compaction: { mode: "standard" } }, model: m })).toBe(256_000)
+    expect(usable({ cfg: { compaction: { mode: "max" } }, model: m })).toBe(window)
+    expect(usable({ cfg: {}, model: m })).toBe(256_000)
+  })
+
+  test("an explicit max_context (SENTE_MAX_CONTEXT or config) beats the mode", () => {
+    expect(usable({ cfg: { compaction: { mode: "saver", max_context: 400_000 } }, model: m })).toBe(400_000)
+    expect(usable({ cfg: { compaction: { mode: "max", max_context: 64_000 } }, model: m })).toBe(64_000)
+    expect(usable({ cfg: { compaction: { mode: "saver", max_context: 0 } }, model: m })).toBe(window)
+  })
+
+  test("a smaller model window still wins over the mode", () => {
+    expect(usable({ cfg: { compaction: { mode: "max" } }, model: model(200_000) })).toBe(200_000 - 32_000)
+    expect(usable({ cfg: { compaction: { mode: "saver" } }, model: model(100_000) })).toBe(100_000 - 32_000)
+  })
+
+  test("saver compacts a 150k request that standard would keep", () => {
+    expect(isOverflow({ cfg: { compaction: { mode: "saver" } }, model: m, tokens: tokens(150_000) })).toBe(true)
+    expect(isOverflow({ cfg: {}, model: m, tokens: tokens(150_000) })).toBe(false)
+    expect(isOverflow({ cfg: { compaction: { mode: "max" } }, model: m, tokens: tokens(900_000) })).toBe(false)
+  })
+})

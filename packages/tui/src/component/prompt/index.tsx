@@ -51,6 +51,8 @@ import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
+import { useUsageMode } from "../dialog-mode"
+import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import { SENTE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
@@ -177,6 +179,7 @@ export function Prompt(props: PromptProps) {
   const { theme, syntax } = useTheme()
   const kv = useKV()
   const language = useLanguage()
+  const usageMode = useUsageMode()
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
   const list = createMemo(() => props.placeholders?.normal ?? [])
   const shell = createMemo(() => props.placeholders?.shell ?? [])
@@ -1011,6 +1014,20 @@ export function Prompt(props: PromptProps) {
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
+      return true
+    }
+    // `/mode 節約` 等はサーバのコマンドではなく手元で設定を切り替える(引数なしはダイアログと同じ表示)。
+    const modeCommand = parseModeCommand(trimmed)
+    if (modeCommand) {
+      if (modeCommand.type === "set") void usageMode.set(modeCommand.mode)
+      if (modeCommand.type === "show") usageMode.showStatus()
+      if (modeCommand.type === "invalid")
+        toast.show({ variant: "error", message: invalidModeMessage(modeCommand.value, language.current()) })
+      history.append(structuredClone(unwrap({ ...store.prompt, mode: store.mode })))
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
       return true
     }
     const selectedModel = local.model.current()

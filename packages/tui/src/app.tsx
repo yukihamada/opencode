@@ -49,6 +49,7 @@ import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogLanguage } from "./component/dialog-language"
+import { DialogMode } from "./component/dialog-mode"
 import { useLanguage } from "./context/language"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogOnboarding } from "./ui/dialog-onboarding"
@@ -887,6 +888,13 @@ function App(props: {
         slashAliases: ["lang"],
         category: language.text("設定", "Settings"),
         run: () => dialog.replace(() => <DialogLanguage />),
+      },
+      {
+        name: "usage.mode",
+        title: language.text("モード(節約 / 標準 / たっぷり)", "Mode (Saver / Standard / Max)"),
+        slashName: "mode",
+        category: language.text("設定", "Settings"),
+        run: () => dialog.replace(() => <DialogMode />),
       },
       {
         name: "theme.switch_mode",

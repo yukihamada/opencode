@@ -164,6 +164,10 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      mode: Schema.optional(Schema.Literals(["saver", "standard", "max"])).annotate({
+        description:
+          "Usage mode: saver compacts at 128k tokens and prunes old tool outputs, standard at 256k (default), max only near the model's context window. max_context / SENTE_MAX_CONTEXT beat it; the SENTE_MODE environment variable overrides this.",
+      }),
       max_context: Schema.optional(NonNegativeInt).annotate({
         description:
           "Compact once a request's context reaches this many tokens, even when the model's window is larger. Every step resends the whole context, so an uncapped 1M-token window means 1M-token requests. 0 disables the cap (default: 256000). The SENTE_MAX_CONTEXT environment variable (e.g. 400k) overrides this.",
