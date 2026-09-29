@@ -10,8 +10,13 @@ describe("cli.exit-code", () => {
       Auth: 3,
       Other: 4,
       Conflict: 5,
+      PermissionDenied: 6,
       Restart: 75,
     })
+  })
+
+  test("never restarts an unattended run that its policy refused", () => {
+    expect(shouldRestart(ExitCode.PermissionDenied)).toBe(false)
   })
 
   test("classifies auth failures as 3 so callers do not retry", () => {
