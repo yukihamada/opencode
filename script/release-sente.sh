@@ -1,4 +1,7 @@
 #!/bin/bash
+# DEPRECATED (emergency only): the supported release path is .github/workflows/sente-release.yml,
+# triggered by pushing a `sente-ship-*` tag on a commit already in headless-model-fallback.
+# That path builds in CI, smoke-tests the macOS arm64 binary on Apple Silicon, and publishes with SHA256SUMS.
 # Package dist/* into release assets (same layout as prior releases: tar.gz with ./sente for darwin+linux, zip for windows), write SHA256SUMS.txt, create GitHub release.
 # Usage: on branch headless-model-fallback (merge main into it first, push it), run
 #   cd packages/sente && bun run script/build.ts      # all 12 targets, version=0.0.0-<branch>-<UTC ts>
