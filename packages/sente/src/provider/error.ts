@@ -3,6 +3,7 @@ import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
 import type { ProviderV2 } from "@sente-ai/core/provider"
 import { isContextOverflow } from "@sente-ai/llm"
+import { ProviderQuota } from "./quota"
 
 export class HeaderTimeoutError extends Error {
   public override readonly name = "ProviderHeaderTimeoutError"
@@ -180,7 +181,31 @@ export function parseAPICallError(input: { providerID: ProviderV2.ID; error: API
     }
   }
 
-  const metadata = input.error.url ? { url: input.error.url } : undefined
+  const metadata: Record<string, string> | undefined = input.error.url ? { url: input.error.url } : undefined
+  // 402 = 上限到達/残高不足。同じ窓の中では何度送っても 402 なので再試行しない。
+  // teai の上限なら「どの窓の上限か・いつ再開できるか」を説明文に差し替える。
+  const quota = ProviderQuota.detect({
+    statusCode: input.error.statusCode,
+    responseBody: input.error.responseBody,
+    message: m,
+  })
+  if (quota) {
+    const explain = input.providerID.startsWith("teai") || quota.period !== "balance"
+    return {
+      type: "api_error",
+      message: explain ? ProviderQuota.describe(quota) : m,
+      statusCode: input.error.statusCode,
+      isRetryable: false,
+      responseHeaders: input.error.responseHeaders,
+      responseBody: input.error.responseBody,
+      metadata: {
+        ...metadata,
+        quotaPeriod: quota.period,
+        quotaCode: quota.code,
+        ...(quota.resetAt === undefined ? {} : { quotaResetAt: new Date(quota.resetAt).toISOString() }),
+      },
+    }
+  }
   return {
     type: "api_error",
     message: m,

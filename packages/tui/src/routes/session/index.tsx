@@ -3,6 +3,7 @@ import {
   createContext,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   Match,
@@ -57,7 +58,7 @@ import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
-import { loginHint } from "../../util/teai"
+import { diagnoseHint } from "../../util/teai"
 import { Toast, useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
 import stripAnsi from "strip-ansi"
@@ -1506,6 +1507,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const { theme } = useTheme()
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
+  // Cause-specific advice; the demo text alone is ambiguous so this asks /auth/me once per error.
+  const [authHint] = createResource(
+    () => (props.message.error ? errorMessage(props.message.error) : undefined),
+    (message) => diagnoseHint(message),
+  )
   const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
 
   const final = createMemo(() => {
@@ -1577,7 +1583,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           borderColor={theme.error}
         >
           <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
-          <Show when={loginHint(errorMessage(props.message.error))}>
+          <Show when={authHint()}>
             {(hint) => (
               <text fg={theme.text} marginTop={1}>
                 {hint()}

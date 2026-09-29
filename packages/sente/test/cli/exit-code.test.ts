@@ -10,7 +10,8 @@ describe("cli.exit-code", () => {
       Auth: 3,
       Other: 4,
       Conflict: 5,
-      PermissionDenied: 6,
+      Quota: 6,
+      PermissionDenied: 7,
       Restart: 75,
     })
   })
@@ -29,6 +30,14 @@ describe("cli.exit-code", () => {
     for (const name of ["AccountServiceError", "MCPFailed", "APIError"]) {
       expect(exitCodeForError({ name, data: {} })).toBe(ExitCode.Network)
     }
+  })
+
+  // teai が分/時/日/月の上限で 402 を返した時に 2(Network=再試行してよい)を返すと、
+  // te loop / launchd が上限切れの鍵で再起動を繰り返す。
+  test("classifies a 402 usage cap as 6 so supervisors stop instead of retrying", () => {
+    expect(exitCodeForError({ name: "APIError", data: { statusCode: 402 } })).toBe(ExitCode.Quota)
+    expect(exitCodeForError({ name: "APIError", data: { statusCode: 503 } })).toBe(ExitCode.Network)
+    expect(shouldRestart(ExitCode.Quota)).toBe(false)
   })
 
   test("classifies caller mistakes as 1", () => {
@@ -96,7 +105,7 @@ describe("cli.diagnostic", () => {
 
 describe("cli.shouldRestart", () => {
   test("never restarts on a permanent failure", () => {
-    for (const code of [ExitCode.User, ExitCode.Auth, ExitCode.Conflict]) {
+    for (const code of [ExitCode.User, ExitCode.Auth, ExitCode.Conflict, ExitCode.Quota]) {
       expect(shouldRestart(code)).toBe(false)
     }
   })
