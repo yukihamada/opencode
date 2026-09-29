@@ -95,6 +95,30 @@ describe("Storage", () => {
     }),
   )
 
+  it.live("create refuses overwrite and preserves the original reservation", () =>
+    Effect.gen(function* () {
+      const { root, svc } = yield* scope()
+      const key = [...root, "reservation"]
+      yield* svc.create(key, { reserve: 1 })
+      expect(Exit.isFailure(yield* Effect.exit(svc.create(key, { reserve: 0 })))).toBe(true)
+      expect(yield* svc.read(key)).toEqual({ reserve: 1 })
+    }),
+  )
+
+  it.live("concurrent creates admit exactly one reservation", () =>
+    Effect.gen(function* () {
+      const { root, svc } = yield* scope()
+      const key = [...root, "reservation"]
+      const results = yield* Effect.all(
+        Array.from({ length: 20 }, (_, id) => Effect.exit(svc.create(key, { id }))),
+        { concurrency: "unbounded" },
+      )
+      expect(results.filter(Exit.isSuccess)).toHaveLength(1)
+      expect(results.filter(Exit.isFailure)).toHaveLength(19)
+      expect(yield* svc.read(key)).toEqual({ id: results.findIndex(Exit.isSuccess) })
+    }),
+  )
+
   it.live("write overwrites existing value", () =>
     Effect.gen(function* () {
       const { root, svc } = yield* scope()

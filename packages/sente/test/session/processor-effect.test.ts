@@ -557,6 +557,37 @@ it.live("session.processor effect tests do not retry unknown json errors", () =>
   ),
 )
 
+it.live("economy stops after one HTTP attempt despite SDK retry input", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        yield* llm.error(429, { type: "error", error: { type: "too_many_requests" } })
+        yield* llm.text("must not retry")
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "no hidden retries")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const model = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model, economy: true })
+        const result = yield* handle.process({
+          user: parent,
+          sessionID: chat.id,
+          model,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "no hidden retries" }],
+          tools: {},
+          retries: 3,
+        })
+        expect(result).toBe("stop")
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* llm.pending).toBe(1)
+        expect(handle.message.error).toBeDefined()
+      }),
+    { config: providerCfg },
+  ),
+)
+
 it.live("session.processor effect tests retry recognized structured json errors", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
