@@ -202,7 +202,11 @@ export function detectDesktopNativeLocale(languages: readonly string[]): Desktop
     if (["no", "nb", "nn"].includes(source.language)) return "no"
     const match = DESKTOP_NATIVE_LOCALES.find((candidate) => {
       const target = locale(DESKTOP_NATIVE_LOCALE_TAGS[candidate])
-      return target?.language === source.language && target.script === source.script
+      return (
+        target?.language === source.language &&
+        (target.script === source.script ||
+          (candidate === "pa" && source.script === "Aran" && target.script === "Arab"))
+      )
     })
     if (match) return match
   }
