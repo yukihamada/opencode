@@ -249,7 +249,7 @@ export const RunCommand = effectCmd({
       .option("unattended", {
         type: "boolean",
         describe:
-          "no one is watching: auto-approve only what the unattended policy allows (~/.config/sente/unattended.json, agent frontmatter sente.permissions; read-only by default), refuse the rest and exit 6",
+          "no one is watching: auto-approve only what the unattended policy allows (~/.config/sente/unattended.json, agent frontmatter sente.permissions; read-only by default), refuse the rest and exit 7",
         default: false,
       })
       .option("unattended-policy", {

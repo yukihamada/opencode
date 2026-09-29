@@ -4,6 +4,7 @@ import { Cause, Clock, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
+import { ProviderQuota } from "@/provider/quota"
 
 export type Err = ReturnType<NamedError["toObject"]>
 
@@ -99,6 +100,12 @@ export function retryable(error: Err, provider: string) {
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
+    // 402(上限到達/残高不足)は同じ窓の中では再送しても必ず 402。本文の数値
+    // (例: "500 of 100 credits")が 5xx パターンに誤マッチして再送連打しないよう、先に止める。
+    if (
+      ProviderQuota.detect({ statusCode: status, responseBody: error.data.responseBody, message: error.data.message })
+    )
+      return undefined
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
     if (
