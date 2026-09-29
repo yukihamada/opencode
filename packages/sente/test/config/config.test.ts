@@ -2046,6 +2046,55 @@ describe("SENTE_MAX_CONTEXT", () => {
   )
 })
 
+describe("SENTE_MODE", () => {
+  it.instance(
+    "overrides compaction.mode and accepts Japanese names",
+    () =>
+      withProcessEnv(
+        "SENTE_MODE",
+        "たっぷり",
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).compaction?.mode).toBe("max")
+        }),
+      ),
+    { config: { compaction: { mode: "saver" } } },
+  )
+
+  it.instance("accepts English names in any case", () =>
+    withProcessEnv(
+      "SENTE_MODE",
+      "Saver",
+      Effect.gen(function* () {
+        expect((yield* Config.use.get()).compaction?.mode).toBe("saver")
+      }),
+    ),
+  )
+
+  it.instance(
+    "invalid value keeps the file setting",
+    () =>
+      withProcessEnv(
+        "SENTE_MODE",
+        "turbo",
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).compaction?.mode).toBe("saver")
+        }),
+      ),
+    { config: { compaction: { mode: "saver" } } },
+  )
+
+  it.instance("SENTE_MAX_CONTEXT is kept alongside the mode (and wins in overflow)", () =>
+    withProcessEnvs(
+      { SENTE_MODE: "saver", SENTE_MAX_CONTEXT: "400k" },
+      Effect.gen(function* () {
+        const config = yield* Config.use.get()
+        expect(config.compaction?.mode).toBe("saver")
+        expect(config.compaction?.max_context).toBe(400_000)
+      }),
+    ),
+  )
+})
+
 describe("SENTE_DISABLE_PROJECT_CONFIG", () => {
   it.instance(
     "skips project config files when flag is set",

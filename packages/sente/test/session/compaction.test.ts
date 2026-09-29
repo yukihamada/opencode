@@ -623,7 +623,120 @@ describe("session.compaction.create", () => {
   )
 })
 
+const prunedBashOutput = (dir: string) =>
+  Effect.gen(function* () {
+    const compact = yield* SessionCompaction.Service
+    const ssn = yield* SessionNs.Service
+    const info = yield* ssn.create({})
+    const a = yield* ssn.updateMessage({
+      id: MessageID.ascending(),
+      role: "user",
+      sessionID: info.id,
+      agent: "build",
+      model: ref,
+      time: { created: Date.now() },
+    })
+    yield* ssn.updatePart({
+      id: PartID.ascending(),
+      messageID: a.id,
+      sessionID: info.id,
+      type: "text",
+      text: "first",
+    })
+    const b: SessionV1.Assistant = {
+      id: MessageID.ascending(),
+      role: "assistant",
+      sessionID: info.id,
+      mode: "build",
+      agent: "build",
+      path: { cwd: dir, root: dir },
+      cost: 0,
+      tokens: {
+        output: 0,
+        input: 0,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+      modelID: ref.modelID,
+      providerID: ref.providerID,
+      parentID: a.id,
+      time: { created: Date.now() },
+      finish: "end_turn",
+    }
+    yield* ssn.updateMessage(b)
+    yield* ssn.updatePart({
+      id: PartID.ascending(),
+      messageID: b.id,
+      sessionID: info.id,
+      type: "tool",
+      callID: crypto.randomUUID(),
+      tool: "bash",
+      state: {
+        status: "completed",
+        input: {},
+        output: "x".repeat(200_000),
+        title: "done",
+        metadata: {},
+        time: { start: Date.now(), end: Date.now() },
+      },
+    })
+    for (const text of ["second", "third"]) {
+      const msg = yield* ssn.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: info.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: msg.id,
+        sessionID: info.id,
+        type: "text",
+        text,
+      })
+    }
+
+    yield* compact.prune({ sessionID: info.id })
+    const part = (yield* ssn.messages({ sessionID: info.id }))
+      .flatMap((msg) => msg.parts)
+      .find((part) => part.type === "tool")
+    return part?.type === "tool" && part.state.status === "completed" ? part.state.time.compacted : "missing"
+  })
+
 describe("session.compaction.prune", () => {
+  // 節約モードは古いツール出力の整理を既定で ON にする。明示の compaction.prune が優先。
+  it.live(
+    "saver mode prunes old tool output without compaction.prune",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          expect(yield* prunedBashOutput(dir)).toBeNumber()
+        }),
+      { config: { compaction: { mode: "saver" } } },
+    ),
+  )
+
+  it.live(
+    "standard mode (default) does not prune",
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        expect(yield* prunedBashOutput(dir)).toBeUndefined()
+      }),
+    ),
+  )
+
+  it.live(
+    "explicit compaction.prune: false beats saver mode",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          expect(yield* prunedBashOutput(dir)).toBeUndefined()
+        }),
+      { config: { compaction: { mode: "saver", prune: false } } },
+    ),
+  )
   it.live(
     "compacts old completed tool output",
     provideTmpdirInstance(

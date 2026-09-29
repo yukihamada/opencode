@@ -68,6 +68,10 @@ export const Flag = {
   get SENTE_MAX_CONTEXT() {
     return process.env["SENTE_MAX_CONTEXT"]
   },
+  // Usage mode: saver|standard|max or 節約|標準|たっぷり. Beats compaction.mode.
+  get SENTE_MODE() {
+    return process.env["SENTE_MODE"]
+  },
   get SENTE_PURE() {
     return truthy("SENTE_PURE")
   },

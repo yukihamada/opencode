@@ -21,6 +21,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { ModelV2 } from "@sente-ai/core/model"
 import { buildPrompt } from "@sente-ai/core/session/compaction"
+import { UsageMode } from "@sente-ai/core/usage-mode"
 import { SessionCompactionEvent } from "@sente-ai/schema/session-compaction-event"
 
 export const Event = SessionCompactionEvent
@@ -272,7 +273,7 @@ const layer = Layer.effect(
     // calls, then erases output of older tool calls to free context space
     const prune = Effect.fn("SessionCompaction.prune")(function* (input: { sessionID: SessionID }) {
       const cfg = yield* config.get()
-      if (!cfg.compaction?.prune) return
+      if (!(cfg.compaction?.prune ?? UsageMode.prune(cfg.compaction?.mode ?? UsageMode.DEFAULT_MODE))) return
       yield* Effect.logInfo("pruning")
 
       const msgs = yield* session
