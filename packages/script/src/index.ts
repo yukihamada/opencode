@@ -29,6 +29,12 @@ const CHANNEL = await (async () => {
   if (env.SENTE_VERSION && !env.SENTE_VERSION.startsWith("0.0.0-")) return "latest"
   return await $`git branch --show-current`.text().then((x) => x.trim())
 })()
+// A detached HEAD yields an empty channel, which silently switches the session DB to
+// `sente-.db` and hides every existing session. Refuse instead of shipping that build.
+if (!CHANNEL)
+  throw new Error(
+    "SENTE_CHANNEL is empty (detached HEAD?). Set SENTE_CHANNEL=headless-model-fallback to keep sente-<channel>.db.",
+  )
 const IS_PREVIEW = CHANNEL !== "latest"
 
 const VERSION = await (async () => {
