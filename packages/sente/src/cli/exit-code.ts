@@ -23,6 +23,13 @@ export const ExitCode = {
   /** The request was well-formed but the target state changed (write conflict). */
   Conflict: 5,
   /**
+   * An unattended run (`--unattended`) refused at least one action that its
+   * policy does not allow. The rest of the run may have completed; the refused
+   * steps are on stderr and in the unattended audit log. Retrying without a
+   * policy change will be refused again.
+   */
+  PermissionDenied: 6,
+  /**
    * The TUI asks to be relaunched with --resume (after a compaction).
    *
    * Deliberately outside 0-5 and matches `SENTE_RESTART_EXIT_CODE` in the
