@@ -301,31 +301,108 @@ export async function verifyEmailCode(
   }
 }
 
-/**
- * Sente-specific advice appended under teai.io account errors. The server's
- * text already says what happened; this says what to press next.
- * Returns undefined for every other error so unrelated failures stay untouched.
- */
-export function loginHint(message: string | undefined, env: TeaiEnv = process.env) {
+export type AuthErrorKind = "demo" | "monthly_limit" | "credits" | "invalid" | "self_revoke_blocked"
+export type HintKind = AuthErrorKind | "demo_no_key" | "demo_key_dead" | "demo_stale_session"
+
+/** Map a teai.io error text/JSON to the cause it describes. Undefined = not an account error. */
+export function classifyAuthError(message: string | undefined): AuthErrorKind | undefined {
   if (!message) return undefined
-  const site = siteBase(env)
-  // Demo/anonymous: the engine sent no usable key (fresh install, revoked key,
-  // or the launcher started before `te login` wrote the file).
-  if (message.includes("こちらはデモです") || /アカウント登録から/.test(message)) {
-    return `→ /login で teai.io の API キー(te_…)を貼ると、このセッションのまま切り替わります。キー発行: ${site}/dashboard#api-keys`
-  }
-  if (/api_key_monthly_limit_exceeded|reached its monthly limit/i.test(message)) {
-    return `→ このキーの月次上限です。${site}/dashboard#api-keys で上限を上げる/外す、または /login で別のキーに切り替えられます。`
-  }
+  if (/cannot_revoke_current_key/i.test(message)) return "self_revoke_blocked"
+  // Check the per-key cap BEFORE generic credit wording: its text also says "credits this month".
+  if (/api_key_monthly_limit_exceeded|reached its monthly limit/i.test(message)) return "monthly_limit"
+  if (message.includes("こちらはデモです") || /アカウント登録から|anonymous_demo_only/.test(message)) return "demo"
   if (
     /insufficient[_ ]credits|insufficient_quota|credits? (?:exhausted|remaining: 0)|クレジット(?:が|残高が)?\s*(?:不足|0)/i.test(
       message,
     )
-  ) {
-    return `→ teai.io の残高不足です。チャージ: ${site}/pricing ・ 別アカウントのキーに切り替える: /login`
-  }
-  if (/invalid api key|invalid_api_key|api key.*(invalid|revoked|expired)|unauthorized/i.test(message)) {
-    return `→ キーが無効です。${site}/dashboard#api-keys で発行し直し、/login で貼り直してください。`
-  }
+  )
+    return "credits"
+  if (/invalid api key|invalid_api_key|api key.*(invalid|revoked|expired)|unauthorized/i.test(message)) return "invalid"
   return undefined
+}
+
+function isJa(env: TeaiEnv) {
+  return /^(ja)(_|-|\b)/i.test(env.LC_ALL || env.LC_MESSAGES || env.LANG || "en")
+}
+
+/** Cause-specific "what to press next" lines (ja/en). One line each. */
+export function authHintText(kind: HintKind, env: TeaiEnv = process.env) {
+  const keys = `${siteBase(env)}/dashboard#api-keys`
+  const pricing = `${siteBase(env)}/pricing`
+  const ja = isJa(env)
+  switch (kind) {
+    case "monthly_limit":
+      return ja
+        ? `→ 原因: このキーの月次上限に到達(残高は別)。${keys} で上限を上げる/外す、または \`te key rotate\` / /login で別のキーへ。`
+        : `→ Cause: this API key hit its monthly cap (your balance is separate). Raise/remove the cap at ${keys}, or switch keys with \`te key rotate\` or /login.`
+    case "credits":
+      return ja
+        ? `→ 原因: アカウントの残高不足。チャージ: ${pricing} ・ 別アカウントのキーへ: /login`
+        : `→ Cause: account balance is empty. Top up: ${pricing}, or switch account with /login.`
+    case "invalid":
+      return ja
+        ? `→ 原因: キーが無効(失効・削除)。${keys} で発行し直し、/login で貼り直してください。`
+        : `→ Cause: the key is invalid (revoked or deleted). Issue a new one at ${keys} and paste it with /login.`
+    case "self_revoke_blocked":
+      return ja
+        ? "→ 実行中のSente自身のキーは失効できません。`te key rotate`(新キー発行→差替→旧キー失効)を使ってください。"
+        : "→ The key this session is using cannot be revoked. Use `te key rotate` (issue new, swap, then revoke old)."
+    case "demo_no_key":
+      return ja
+        ? `→ 原因: キー未設定(デモモード)。/login でキー(te_…)を貼るか \`te register\`。発行: ${keys}`
+        : `→ Cause: no API key set (demo mode). Paste a key (te_…) with /login or run \`te register\`. Get one: ${keys}`
+    case "demo_key_dead":
+      return ja
+        ? `→ 原因: 保存中のキーが認証されません(失効/削除/自己失効の可能性)。残高の問題ではありません。${keys} で発行し、/login で貼り直してください。`
+        : `→ Cause: the stored key no longer authenticates (revoked/deleted, possibly self-revoked). Not a balance problem. Issue a new key at ${keys} and paste it with /login.`
+    case "demo_stale_session":
+      return ja
+        ? "→ 原因: キーは有効ですが、このセッションが古いキー/無キーで起動したままです。/login で同じキーを貼り直すか Sente を再起動してください。"
+        : "→ Cause: your key is valid, but this session started with an old or missing key. Paste it again with /login or restart Sente."
+    case "demo":
+      return ja
+        ? `→ /login で teai.io の API キー(te_…)を貼ると、このセッションのまま切り替わります。キー発行: ${keys} ・ 診断: \`te doctor\``
+        : `→ Paste a teai.io API key (te_…) with /login to switch this session in place. Get one: ${keys} · diagnose: \`te doctor\``
+  }
+}
+
+/**
+ * Sync advice appended under teai.io account errors. The server's text says
+ * what happened; this says the cause and what to press next. Demo text is
+ * ambiguous (no key / dead key / stale session): use diagnoseHint() for the
+ * precise answer. Undefined for unrelated errors.
+ */
+export function loginHint(message: string | undefined, env: TeaiEnv = process.env) {
+  const kind = classifyAuthError(message)
+  return kind ? authHintText(kind, env) : undefined
+}
+
+type DiagnoseOpts = { env?: TeaiEnv; home?: string; fetch?: Fetcher }
+
+/**
+ * "Demo" is shown for three different causes. Ask /auth/me (not the balance)
+ * which one. Never throws, never returns the key.
+ */
+export async function diagnoseDemo(opts: DiagnoseOpts = {}) {
+  const env = opts.env ?? process.env
+  try {
+    const saved = parseCredentials(
+      await Bun.file(credentialsPath(env, opts.home))
+        .text()
+        .catch(() => ""),
+    )
+    const key = saved || env.TEAI_API_KEY
+    if (!key) return authHintText("demo_no_key", env)
+    const result = await verifyKey(key, { api: apiBase(env), fetch: opts.fetch })
+    if (result.ok) return authHintText("demo_stale_session", env)
+    if (result.reason === "invalid") return authHintText("demo_key_dead", env)
+  } catch {}
+  return authHintText("demo", env)
+}
+
+/** Precise for demo (async /auth/me), sync classification otherwise. */
+export async function diagnoseHint(message: string | undefined, opts: DiagnoseOpts = {}) {
+  const env = opts.env ?? process.env
+  if (classifyAuthError(message) === "demo" && !env.SENTE_SCRUB_KEY) return diagnoseDemo(opts)
+  return loginHint(message, env)
 }

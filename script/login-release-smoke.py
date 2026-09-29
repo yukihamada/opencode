@@ -34,6 +34,10 @@ class API(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         calls.append(self.path)
+        if self.path == "/v1/chat/completions":
+            # Same wire shape as teai.io: keyless calls get the demo text (402 anonymous_demo_only).
+            self.reply({"error": {"message": "こちらはデモです。自由な質問・全モデル・ツール実行はアカウント登録から", "type": "signup_required", "code": "anonymous_demo_only"}}, 402)
+            return
         if self.path == "/api/v1/auth/email" and body.get("email") == "fixture@example.com":
             self.reply({"ok": True})
         elif self.path == "/api/v1/auth/verify" and body.get("code") == "123456":
@@ -90,6 +94,10 @@ try:
         tmux("new-session", "-d", "-s", "login", "-x", "120", "-y", "38", "-c", directory, command)
         wait_for("Ask anything")
         time.sleep(0.5)
+        # Demo text must be diagnosed by cause (auth/me first), not blamed on the balance.
+        send("hello")
+        wait_for("Cause: no API key set")
+        assert "/api/v1/auth/me" not in calls, "keyless demo diagnosis must not need a network round trip"
         send("/login")
         # The title also appears in slash autocomplete. Require dialog-only copy.
         wait_for("Get a key:")
