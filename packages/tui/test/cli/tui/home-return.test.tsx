@@ -138,12 +138,18 @@ async function mount(state: string, width: number, height = 40, initial = [
     await app.mockMouse.click(target.x + 1, target.y)
     await app.renderOnce()
   }
-  return { app, ctx, calls, events, response, click }
+  async function resume() {
+    app.mockInput.pressKey("x", { ctrl: true })
+    await app.renderOnce()
+    app.mockInput.pressKey("p")
+    await app.renderOnce()
+  }
+  return { app, ctx, calls, events, response, click, resume }
 }
 
-test.each([40, 80, 140])("home shows latest work below prompt and opens by click or Ctrl+R at %i columns", async (width) => {
+test.each([40, 80, 140])("home shows latest work below prompt and opens by click or <leader>p at %i columns", async (width) => {
   await using tmp = await tmpdir()
-  const { app, ctx, calls, click } = await mount(tmp.path, width)
+  const { app, ctx, calls, click, resume } = await mount(tmp.path, width)
   try {
     const frame = app.captureCharFrame()
     expect(frame).toContain("Sente")
@@ -161,7 +167,11 @@ test.each([40, 80, 140])("home shows latest work below prompt and opens by click
     expect(ctx.route.data).toEqual({ type: "session", sessionID: "second" })
     ctx.route.navigate({ type: "home" })
     ctx.prompt.current!.focus()
+    // ctrl+r stays reserved for session rename; it must not resume from home.
     app.mockInput.pressKey("r", { ctrl: true })
+    await app.renderOnce()
+    expect(ctx.route.data.type).toBe("home")
+    await resume()
     await wait(() => ctx.route.data.type === "session")
     expect(ctx.route.data).toEqual({ type: "session", sessionID: "first" })
   } finally { app.renderer.destroy() }
@@ -169,7 +179,7 @@ test.each([40, 80, 140])("home shows latest work below prompt and opens by click
 
 test("home preserves drafts and attachments and does not resume through an open dialog", async () => {
   await using tmp = await tmpdir()
-  const { app, ctx, click } = await mount(tmp.path, 80)
+  const { app, ctx, click, resume } = await mount(tmp.path, 80)
   try {
     const prompt = ctx.prompt.current!
     for (const draft of [
@@ -182,16 +192,14 @@ test("home preserves drafts and attachments and does not resume through an open 
       expect(prompt.current).toEqual(draft)
       await click("home-previous-work")
       expect(ctx.route.data.type, `after click ${draft.input || "attachment"}`).toBe("home")
-      app.mockInput.pressKey("r", { ctrl: true })
-      await app.renderOnce()
+      await resume()
       expect(ctx.route.data.type, `after key ${draft.input || "attachment"}`).toBe("home")
       expect(prompt.current).toEqual(draft)
       expect(app.captureCharFrame()).toContain(homeLabels().draft)
     }
     prompt.reset()
     ctx.dialog.replace(() => <text>Open dialog</text>)
-    app.mockInput.pressKey("r", { ctrl: true })
-    await app.renderOnce()
+    await resume()
     expect(ctx.route.data.type).toBe("home")
     ctx.dialog.clear()
     await click("home-history")
@@ -248,4 +256,10 @@ test("session updates refresh titles and order without claiming idle work is com
     expect(app.captureCharFrame()).not.toContain(homeLabels().busy)
     expect(app.captureCharFrame()).not.toMatch(/Completed|完了/)
   } finally { app.renderer.destroy() }
+})
+
+test("home resume default does not share a key with session rename", async () => {
+  const { TuiKeybind } = await import("../../../src/config/keybind")
+  expect(TuiKeybind.Definitions.home_resume.default).toBe("<leader>p")
+  expect(TuiKeybind.Definitions.home_resume.default).not.toBe(TuiKeybind.Definitions.session_rename.default)
 })

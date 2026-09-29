@@ -58,7 +58,8 @@ export function RecentWork(props: { prompt?: PromptRef; maxWidth: number }) {
     .toSorted((a, b) => b.time.updated - a.time.updated || b.id.localeCompare(a.id))
     .slice(0, 3))
   const empty = () => !!props.prompt && !props.prompt.current.input && props.prompt.current.parts.length === 0
-  const enabled = () => route.data.type === "home" && dialog.stack.length === 0 && empty()
+  const available = () => route.data.type === "home" && dialog.stack.length === 0
+  const enabled = () => available() && empty()
   function open(session: Session) {
     if (!ready() || !enabled()) return
     route.navigate({ type: "session", sessionID: session.id })
@@ -67,7 +68,9 @@ export function RecentWork(props: { prompt?: PromptRef; maxWidth: number }) {
     mode: SENTE_BASE_MODE,
     commands: [{
       name: "home.resume", title: labels.open, category: "Session", namespace: "palette",
-      enabled: () => ready() && sessions().length > 0 && enabled(),
+      // Stay enabled while a draft exists so the leader sequence is consumed instead of
+      // typing into the draft; open() refuses to leave home until the draft is cleared.
+      enabled: () => ready() && sessions().length > 0 && available(),
       run: () => { const session = sessions()[0]; if (session) open(session) },
     }],
     bindings: config.keybinds.get("home.resume"),

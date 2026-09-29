@@ -88,7 +88,7 @@ export const Definitions = {
   session_move: keybind("none", "Move session"),
   session_new: keybind("<leader>n", "Create a new session"),
   session_list: keybind("<leader>l", "List all sessions"),
-  home_resume: keybind("ctrl+r", "Open the most recent session from home"),
+  home_resume: keybind("<leader>p", "Open the previous session from home"),
   session_timeline: keybind("<leader>g", "Show session timeline"),
   session_fork: keybind("none", "Fork session from message"),
   session_rename: keybind("ctrl+r", "Rename session"),
