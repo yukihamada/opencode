@@ -1197,3 +1197,26 @@ describe("tool.shell truncation", () => {
     ),
   )
 })
+
+describe("tool.shell secret redaction", () => {
+  it.live("a credentials file printed by a command never reaches the tool output or live preview", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      const secret = "te_" + "c32a".repeat(8)
+      yield* Effect.promise(() => Bun.write(path.join(tmp, "credentials"), `TEAI_API_KEY=${secret}\n`))
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          const previews: unknown[] = []
+          const result = yield* run(
+            // The exact command shape that leaked the key on 2026-09-25.
+            { command: "awk -F'[:,]' '{print $1}' credentials", workdir: tmp },
+            { ...ctx, metadata: (input) => Effect.sync(() => void previews.push(input)) },
+          )
+          expect(result.output).toContain("TEAI_API_KEY=te_c32ac…[REDACTED]")
+          expect(JSON.stringify({ result, previews })).not.toContain(secret)
+        }),
+      )
+    }),
+  )
+})

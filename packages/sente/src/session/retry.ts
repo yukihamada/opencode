@@ -38,6 +38,12 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
   /try your request again|retry your request|resource exhausted|resource_exhausted/i,
   /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i,
+  // teai のストリームが途中で失敗したときの文面。以前はどのパターンにも当たらず、
+  // 再送すれば成功する一時障害なのに「再試行しないエラー」として打ち切られていた。
+  // サーバ側が実際の理由を埋め込むので、その中身に上のパターンが含まれる場合も
+  // ここで拾える(例: "Generation did not complete: API error (503): ...")。
+  /generation did not complete|generation_failed|generation_capacity_full/i,
+  /concurrent generation limit/i,
 ]
 
 function cap(ms: number) {

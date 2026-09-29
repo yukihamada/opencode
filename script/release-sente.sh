@@ -1,4 +1,7 @@
 #!/bin/bash
+# DEPRECATED (emergency only): the supported release path is .github/workflows/sente-release.yml,
+# triggered by pushing a `sente-ship-*` tag on a commit already in headless-model-fallback.
+# That path builds in CI, smoke-tests the macOS arm64 binary on Apple Silicon, and publishes with SHA256SUMS.
 # Package dist/* into release assets (same layout as prior releases: tar.gz with ./sente for darwin+linux, zip for windows), write SHA256SUMS.txt, create GitHub release.
 # Usage: on branch headless-model-fallback (merge main into it first, push it), run
 #   cd packages/sente && bun run script/build.ts      # all 12 targets, version=0.0.0-<branch>-<UTC ts>
@@ -14,7 +17,8 @@ for d in dist/sente-*/; do
   key="$(basename "$d")"; [ -d "$d/bin" ] || continue
   case "$key" in
     *windows*) (cd "$d/bin" && zip -q -r "$OLDPWD/$OUT/$key.zip" .) ;;
-    *) (cd "$d/bin" && tar -czf "$OLDPWD/$OUT/$key.tar.gz" .) ;;
+    # COPYFILE_DISABLE/--no-mac-metadata: macOS の拡張属性(com.apple.provenance 等)が ._sente として混入するのを防ぐ
+    *) (cd "$d/bin" && COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$OLDPWD/$OUT/$key.tar.gz" ./sente) ;;
   esac
 done
 (cd "$OUT" && shasum -a 256 *.tar.gz *.zip > SHA256SUMS.txt)

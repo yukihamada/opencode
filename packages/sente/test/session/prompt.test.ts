@@ -288,13 +288,16 @@ const cfg = {
   },
 }
 
-function providerCfg(url: string) {
+function providerCfg(url: string, limit = cfg.provider.test.models["test-model"].limit) {
   return {
     ...cfg,
     provider: {
       ...cfg.provider,
       test: {
         ...cfg.provider.test,
+        models: {
+          "test-model": { ...cfg.provider.test.models["test-model"], limit },
+        },
         options: {
           ...cfg.provider.test.options,
           baseURL: url,
@@ -915,6 +918,76 @@ it.instance("glob tool keeps instance context during prompt runs", () =>
     expect(tool.state.output).toContain(file)
     expect(tool.state.output).not.toContain("No context found for instance")
     expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+  }),
+)
+
+it.instance("loop defers compaction after a completed answer until the next user input", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => providerCfg(url, { context: 8191, output: 4096 }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({ title: "Pinned" })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.text("done", { usage: { input: 11900, output: 100 } })
+    // These responses bound the old loop and reveal any unsolicited calls.
+    yield* llm.text("summary")
+    yield* llm.text("next answer")
+
+    const result = yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(1)
+    expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+    const messages = yield* sessions.messages({ sessionID: session.id })
+    expect(messages.some((message) => message.parts.some((part) => part.type === "compaction"))).toBe(false)
+    expect(messages.filter((message) => message.info.role === "user")).toHaveLength(1)
+
+    yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(1)
+
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "next question" }],
+    })
+    const next = yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(3)
+    expect(next.parts.some((part) => part.type === "text" && part.text === "next answer")).toBe(true)
+    const history = yield* sessions.messages({ sessionID: session.id })
+    expect(history.flatMap((message) => message.parts).filter((part) => part.type === "compaction")).toHaveLength(1)
+  }),
+)
+
+it.instance("loop compacts and continues tool results even when finish is stop", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => providerCfg(url, { context: 8191, output: 4096 }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.push(reply().tool("first", { value: "first" }).usage({ input: 11900, output: 100 }).stop())
+    yield* llm.text("summary")
+    yield* llm.text("done", { usage: { input: 11900, output: 100 } })
+    yield* llm.text("unexpected summary")
+    yield* llm.text("unexpected continuation")
+
+    const result = yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(3)
+    expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+    const messages = yield* sessions.messages({ sessionID: session.id })
+    expect(messages.flatMap((message) => message.parts).filter((part) => part.type === "compaction")).toHaveLength(1)
   }),
 )
 

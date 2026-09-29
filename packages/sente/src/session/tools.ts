@@ -9,6 +9,9 @@ import { Tool } from "@/tool/tool"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
+// MCP tool/resource output bypasses Tool.define, so it is redacted here (see tool/secret-redact.ts).
+import { SecretRedact } from "@/tool/secret-redact"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 
 import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
@@ -193,7 +196,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
                 ),
               )
             const content = JSON.stringify({ resources: filtered.map(formatMcpResource) }, null, 2)
-            const truncated = yield* truncate.output(content, {}, input.agent)
+            const truncated = yield* truncate.output(SecretRedact.redact(content), {}, input.agent)
             const output = {
               title: parsed.server ? `MCP resources: ${parsed.server}` : "MCP resources",
               metadata: {
@@ -276,7 +279,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
                 ),
               )
             const content = JSON.stringify({ resourceTemplates: filtered.map(formatMcpResourceTemplate) }, null, 2)
-            const truncated = yield* truncate.output(content, {}, input.agent)
+            const truncated = yield* truncate.output(SecretRedact.redact(content), {}, input.agent)
             const output = {
               title: parsed.server ? `MCP resource templates: ${parsed.server}` : "MCP resource templates",
               metadata: {
@@ -351,7 +354,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             if (!content) throw new Error(`Failed to read MCP resource: ${parsed.server}/${parsed.uri}`)
 
             const formatted = formatMcpResourceContent(parsed.server, parsed.uri, content)
-            const truncated = yield* truncate.output(formatted.text, {}, input.agent)
+            const truncated = yield* truncate.output(SecretRedact.redact(formatted.text), {}, input.agent)
             const output = {
               title: `MCP resource: ${parsed.uri}`,
               metadata: {
@@ -461,7 +464,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             }
           }
 
-          const truncated = yield* truncate.output(textParts.join("\n\n"), {}, input.agent)
+          const truncated = yield* truncate.output(SecretRedact.redact(textParts.join("\n\n")), {}, input.agent)
           const metadata = {
             ...result.metadata,
             truncated: truncated.truncated,
@@ -478,7 +481,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               sessionID: ctx.sessionID,
               messageID: input.processor.message.id,
             })),
-            content: result.content,
+            content: (result.content as CallToolResult["content"]).map((item) =>
+              item.type === "text"
+                ? { ...item, text: SecretRedact.redact(item.text) }
+                : item.type === "resource" && "text" in item.resource
+                  ? { ...item, resource: { ...item.resource, text: SecretRedact.redact(item.resource.text) } }
+                  : item,
+            ),
           }
           if (opts.abortSignal?.aborted) {
             yield* input.processor.completeToolCall(opts.toolCallId, output)

@@ -1,4 +1,4 @@
-import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { registerOpencodeSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
@@ -28,6 +28,8 @@ import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, u
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { DialogTeaiLogin } from "./component/dialog-teai-login"
+import { DialogTeaiAccount } from "./component/dialog-teai-account"
+import { accountText } from "./util/teai"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
@@ -46,6 +48,8 @@ import { DialogMcp } from "./component/dialog-mcp"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
+import { DialogLanguage } from "./component/dialog-language"
+import { useLanguage } from "./context/language"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogOnboarding } from "./ui/dialog-onboarding"
 import { ONBOARDING_KEY, shouldShowOnboarding } from "./onboarding"
@@ -90,6 +94,7 @@ import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-wi
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { setVoiceMuted, stopSpeaking, voiceLabel, voiceState } from "./util/voice"
+import { DialogVoiceStyle } from "./component/dialog-voice-style"
 
 registerOpencodeSpinner()
 
@@ -410,6 +415,7 @@ function App(props: {
   const dialog = useDialog()
   const local = useLocal()
   const kv = useKV()
+  const language = useLanguage()
   const keymap = useOpencodeKeymap()
   const event = useEvent()
   const sdk = useSDK()
@@ -423,6 +429,10 @@ function App(props: {
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
+  useKeyboard((event) => {
+    // Leave existing dialog/input Escape handling intact; stopping output never mutes.
+    if (event.name === "escape") stopSpeaking()
+  })
 
   const api = createTuiApi(
     createTuiApiAdapters({
@@ -686,6 +696,13 @@ function App(props: {
         },
       },
       {
+        name: "koe.style",
+        title: "Speaking style / 話し方",
+        slashName: "voice-style",
+        category: "System",
+        run: () => dialog.replace(() => <DialogVoiceStyle />),
+      },
+      {
         name: "model.list",
         title: "Switch model",
         suggested: true,
@@ -814,6 +831,13 @@ function App(props: {
         },
         category: "Provider",
       },
+      {
+        name: "sente.account",
+        title: accountText().title,
+        slashName: "account",
+        run: () => dialog.replace(() => <DialogTeaiAccount remote={!props.onEnv} />),
+        category: "Provider",
+      },
       ...(sync.data.console_state.switchableOrgCount > 1
         ? [
             {
@@ -855,6 +879,14 @@ function App(props: {
           dialog.replace(() => <DialogThemeList />)
         },
         category: "System",
+      },
+      {
+        name: "language.select",
+        title: language.text("言語設定", "Language settings"),
+        slashName: "language",
+        slashAliases: ["lang"],
+        category: language.text("設定", "Settings"),
+        run: () => dialog.replace(() => <DialogLanguage />),
       },
       {
         name: "theme.switch_mode",

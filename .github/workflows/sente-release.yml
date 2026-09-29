@@ -1,0 +1,177 @@
+name: sente-release
+run-name: "sente release (${{ github.ref_name }})"
+
+# Builds the Sente CLI for darwin/linux/windows and publishes it as the fork's
+# *latest* GitHub Release (tag `sente-<version>`). `te update` (teai.io/te
+# installer) and the binary's own updater (packages/sente/src/installation)
+# download `sente-<os>-<arch>.tar.gz` from releases/latest, so a published
+# release reaches every user's machine. Windows ships as `.zip` (sente.exe),
+# installed by teai.io/te.ps1.
+#
+# Release is an explicit, human-gated step:
+#   - Merging into `headless-model-fallback` does NOT publish anything.
+#   - A maintainer pushes a `sente-ship-*` tag (e.g. `sente-ship-20260930a`) on a
+#     commit that is already in `headless-model-fallback`, or runs this workflow
+#     manually (workflow_dispatch) from that branch.
+#   - The macOS arm64 binary must pass `--version` and `debug config` on a real
+#     Apple Silicon runner before anything is published.
+#   - The publish job runs in the `sente-release` environment; add required
+#     reviewers there (Settings > Environments) for a second approval click.
+on:
+  push:
+    tags:
+      - "sente-ship-*"
+  workflow_dispatch:
+
+concurrency:
+  group: sente-release
+  cancel-in-progress: false
+
+env:
+  # The release branch doubles as the build channel and therefore the session DB
+  # name (sente-<channel>.db). Keep it fixed so updates never orphan sessions,
+  # regardless of whether the run was started from a tag or a branch.
+  RELEASE_BRANCH: headless-model-fallback
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.repository == 'yukihamada/opencode'
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      title: ${{ steps.version.outputs.title }}
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          fetch-depth: 0
+
+      - name: Require a reviewed commit from the release branch
+        run: |
+          set -eu
+          git fetch --no-tags origin "$RELEASE_BRANCH"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$RELEASE_BRANCH"; then
+            echo "::error::$GITHUB_SHA is not in $RELEASE_BRANCH. Merge the PR first, then tag a commit on $RELEASE_BRANCH."
+            exit 1
+          fi
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Version
+        id: version
+        run: |
+          echo "version=0.0.0-${RELEASE_BRANCH}-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+          echo "title=Sente $(date -u '+%Y.%m.%d · %H:%M UTC')" >> "$GITHUB_OUTPUT"
+
+      # Deps are installed with the repo's pinned bun (package.json packageManager) above.
+      # Bytecode is OFF: measured on M-series it only shaves ~160ms (1550ms -> 1390ms) on TUI
+      # first draw while doubling the binary (~142MB -> ~334MB) and raising RSS. Not worth it.
+      - name: Setup Bun for compile
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.0"
+
+      - name: Build CLI (all darwin/linux/windows targets)
+        # --skip-embed-web-ui: don't bundle the browser UI; serve proxies teai.io/sente/app.
+        # 142MB -> 107MB. Fallback: serve still works via upstream proxy.
+        run: bun --version && ./packages/sente/script/build.ts --skip-embed-web-ui
+        env:
+          SENTE_CHANNEL: ${{ env.RELEASE_BRANCH }}
+          SENTE_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Check login and account logic
+        run: |
+          (cd packages/tui && bun test test/util/teai.test.ts test/cli/tui/skill-language.test.tsx && bun typecheck)
+          (cd packages/sente && bun typecheck)
+
+      - name: Package
+        run: |
+          set -eu
+          mkdir -p out
+          # darwin/linux: tar.gz (teai.io/te installer + in-app updater expect this).
+          for dir in packages/sente/dist/sente-darwin-* packages/sente/dist/sente-linux-*; do
+            [ -d "$dir/bin" ] || continue
+            name="$(basename "$dir")"
+            tar -czf "out/$name.tar.gz" -C "$dir/bin" .
+          done
+          # windows: zip (sente.exe). teai.io/te.ps1 downloads sente-windows-<arch>.zip.
+          for dir in packages/sente/dist/sente-windows-*; do
+            [ -d "$dir/bin" ] || continue
+            name="$(basename "$dir")"
+            (cd "$dir/bin" && zip -qr "$OLDPWD/out/$name.zip" .)
+          done
+          (cd out && shasum -a 256 *.tar.gz *.zip > SHA256SUMS.txt)
+          ls -la out
+
+      - name: Verify packaged release (linux) and login restart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux
+          python3 script/check-release.py out release-smoke
+          test "$(release-smoke/sente --version)" = "$VERSION"
+          python3 script/sente-release-smoke.py release-smoke/sente "$VERSION"
+          python3 script/login-release-smoke.py release-smoke/sente
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sente-release
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke-macos-arm64:
+    needs: build
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          sparse-checkout: script
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sente-release
+          path: out
+      - name: Verify SHA256 and run the Apple Silicon binary
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          test "$(uname -sm)" = "Darwin arm64"
+          (cd out && grep ' sente-darwin-arm64.tar.gz$' SHA256SUMS.txt | shasum -a 256 -c -)
+          mkdir -p smoke
+          tar -xzf out/sente-darwin-arm64.tar.gz -C smoke
+          file smoke/sente
+          python3 script/sente-release-smoke.py smoke/sente "$VERSION"
+
+  release:
+    needs: [build, smoke-macos-arm64]
+    runs-on: ubuntu-latest
+    environment: sente-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sente-release
+          path: out
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: sente-${{ needs.build.outputs.version }}
+          TITLE: ${{ needs.build.outputs.title }}
+        run: |
+          set -eu
+          (cd out && shasum -a 256 -c SHA256SUMS.txt)
+          gh release create "$TAG" out/*.tar.gz out/*.zip out/SHA256SUMS.txt \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --draft \
+            --title "$TITLE" \
+            --notes "Sente CLI build of \`${RELEASE_BRANCH}\` @ ${{ github.sha }} (trigger: \`${{ github.ref_name }}\`). Installed by \`te update\` (teai.io/te) and the in-app updater. Windows: \`irm https://teai.io/te.ps1 | iex\`. Verify with SHA256SUMS.txt."
+          # Uploads finish while still a draft. Only then move the public latest pointer.
+          gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --latest

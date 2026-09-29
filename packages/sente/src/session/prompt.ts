@@ -1318,6 +1318,21 @@ const layer = Layer.effect(
 
             if (result === "stop") return "break" as const
             if (result === "compact") {
+              // A compaction message would replace lastUser and bypass the loop's
+              // finished-turn check, causing an unsolicited summary/continue loop.
+              // Defer compaction until new input unless tool results still need a turn.
+              if (finished) {
+                const parts = yield* MessageV2.parts(handle.message.id).pipe(
+                  Effect.provideService(Database.Service, database),
+                )
+                if (
+                  !parts.some(
+                    (part) =>
+                      part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
+                  )
+                )
+                  return "continue" as const
+              }
               yield* compaction.create({
                 sessionID,
                 agent: lastUser.agent,

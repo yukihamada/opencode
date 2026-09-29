@@ -49,26 +49,42 @@ export function looksLikeKey(key: string) {
 
 /** Read TEAI_API_KEY out of a credentials file body (shell `KEY=value` lines). */
 export function parseCredentials(text: string) {
+  let key: string | undefined
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim()
     if (!line || line.startsWith("#")) continue
     const match = /^(?:export\s+)?TEAI_API_KEY\s*=\s*["']?([^"'\s]*)["']?/.exec(line)
-    if (match) return match[1] || undefined
+    if (match) key = match[1] || undefined
   }
-  return undefined
+  return key
 }
 
-/** Replace (or append) the TEAI_API_KEY line, keeping every other line intact. */
+/** Restore /login on direct engine starts, before config expansion or worker creation. */
+export async function loadCredentials(env: TeaiEnv = process.env, home = os.homedir()) {
+  // Match the launcher's explicit per-process override. Never source this as shell code.
+  if (env[TEAI_KEY_ENV] || env.SENTE_SCRUB_KEY) return
+  const text = await Bun.file(credentialsPath(env, home))
+    .text()
+    .catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return ""
+      throw error
+    })
+  const key = parseCredentials(text)
+  if (key) env[TEAI_KEY_ENV] = key
+}
+
+/** Replace all key assignments so a later legacy duplicate cannot undo /login. */
 export function renderCredentials(existing: string, key: string) {
   const lines = existing ? existing.split(/\r?\n/) : []
   if (lines.length && lines[lines.length - 1] === "") lines.pop()
   let replaced = false
-  const next = lines.map((raw) => {
-    if (/^\s*(?:export\s+)?TEAI_API_KEY\s*=/.test(raw) && !replaced) {
+  const next = lines.flatMap((raw) => {
+    if (/^\s*(?:export\s+)?TEAI_API_KEY\s*=/.test(raw)) {
+      if (replaced) return []
       replaced = true
-      return `TEAI_API_KEY=${key}`
+      return [`TEAI_API_KEY=${key}`]
     }
-    return raw
+    return [raw]
   })
   if (!replaced) next.push(`TEAI_API_KEY=${key}`)
   return next.join("\n") + "\n"
@@ -99,6 +115,72 @@ export type VerifyResult =
 
 export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>
 
+/** Exchange a short-lived email session for a revocable, persistent CLI API key. */
+export async function durableKey(
+  login: { token: string; apiKey?: string },
+  opts: { api?: string; fetch?: Fetcher } = {},
+) {
+  if (login.apiKey && looksLikeKey(login.apiKey)) return login.apiKey
+  const response = await (opts.fetch ?? fetch)(`${opts.api ?? apiBase()}/api/v1/apikeys`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${login.token}`, "Content-Type": "application/json", "X-Sente-Client": "sente" },
+    body: JSON.stringify({ name: `sente-cli-${os.hostname().slice(0, 60)}` }),
+    signal: AbortSignal.timeout(15_000),
+  })
+  const body = await response.json().catch(() => undefined)
+  if (!response.ok || body?.ok !== true || typeof body.api_key !== "string" || !looksLikeKey(body.api_key)) {
+    // Never silently save the 30-day token as if login were persistent. Do not retry this POST.
+    throw new Error(accountText().keyFailed)
+  }
+  return body.api_key as string
+}
+
+export function accountText(env: TeaiEnv = process.env) {
+  const ja = /^(ja)(_|-|\b)/i.test(env.LC_ALL || env.LC_MESSAGES || env.LANG || "en")
+  return ja ? {
+    title: "teai.io アカウント", loading: "認証状態を確認中…", signedIn: "ログイン済み", signedOut: "未ログイン",
+    invalid: "認証情報が失効しています。/login で再ログインしてください。",
+    network: "通信を確認できません。ログイン情報は保持しています。",
+    credits: "残高", low: "残高不足（ログインは有効）", unknown: "未確認", source: "認証情報の取得元",
+    saved: "保存済みログイン", env: "環境変数 TEAI_API_KEY", conflict: "環境変数が保存済みログインより優先されています。",
+    temporary: "短期セッショントークンを利用中です。/login で端末用キーへ切り替えてください。",
+    persistent: "端末用APIキー（ダッシュボードで失効可能）", hint: "/login: 再ログイン · Esc: 閉じる",
+    failed: "保存済みログイン情報を読み取れません。", remote: "接続先エンジンの認証状態はこの画面では未確認です。",
+    keyFailed: "端末用キーを発行できませんでした。既存のログインは変更していません。再ログインしてください。",
+    verifyFailed: "端末用キーを確認できませんでした。既存のログインは変更していません。/login で再試行してください。",
+    protected: "保護モード中です。この画面では実キーを読み込まず、アカウント確認を行いません。",
+  } : {
+    title: "teai.io account", loading: "Checking authentication…", signedIn: "Logged in", signedOut: "Not logged in",
+    invalid: "Credentials expired or revoked. Use /login to sign in again.",
+    network: "Connection unavailable. Saved login has been kept.", credits: "Credits", low: "Insufficient credits (still logged in)",
+    unknown: "Unknown", source: "Credential source", saved: "Saved login", env: "Environment TEAI_API_KEY",
+    conflict: "The environment key overrides your saved login.",
+    temporary: "Using a short-lived session token. Use /login to switch to a persistent CLI key.",
+    persistent: "CLI API key (revocable in the dashboard)", hint: "/login: sign in again · Esc: close",
+    failed: "Could not read saved credentials.", remote: "Authentication of the attached engine is not verified by this screen.",
+    keyFailed: "Could not issue a CLI key. Existing login was not changed. Sign in again.",
+    verifyFailed: "Could not verify the CLI key. Existing login was not changed. Try /login again.",
+    protected: "Protected mode: this screen does not load the real key or query the account.",
+  }
+}
+
+/** No secrets returned to the UI; no key minting or login writes on status checks. */
+export async function accountStatus(opts: { env?: TeaiEnv; home?: string; fetch?: Fetcher } = {}) {
+  const env = opts.env ?? process.env
+  if (env.SENTE_SCRUB_KEY) return { state: "protected" as const, conflict: false, source: "saved" }
+  const saved = parseCredentials(await Bun.file(credentialsPath(env, opts.home)).text().catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return ""
+    throw new Error(accountText(env).failed)
+  }))
+  const key = env.TEAI_API_KEY || saved
+  const conflict = Boolean(env.TEAI_API_KEY && saved && env.TEAI_API_KEY !== saved)
+  const source = env.TEAI_API_KEY && env.TEAI_API_KEY !== saved ? "env" : "saved"
+  if (!key) return { state: "missing" as const, conflict, source }
+  const result = await verifyKey(key, { api: apiBase(env), fetch: opts.fetch })
+  if (!result.ok) return { state: result.reason, conflict, source }
+  return { state: "authenticated" as const, conflict, source, account: result.account, temporary: !looksLikeKey(key) }
+}
+
 /** Check a key against /api/v1/auth/me. Never throws. */
 export async function verifyKey(key: string, opts: { api?: string; fetch?: Fetcher; timeoutMs?: number } = {}) {
   const api = opts.api ?? apiBase()
@@ -122,7 +204,7 @@ export async function verifyKey(key: string, opts: { api?: string; fetch?: Fetch
         },
       } satisfies VerifyResult
     }
-    if (response.status >= 500) {
+    if (response.status >= 500 || response.status === 429 || (response.ok && !body)) {
       return { ok: false, reason: "network", detail: `HTTP ${response.status}` } satisfies VerifyResult
     }
     return { ok: false, reason: "invalid", detail: `HTTP ${response.status}` } satisfies VerifyResult
@@ -138,6 +220,85 @@ export async function verifyKey(key: string, opts: { api?: string; fetch?: Fetch
 export function formatCredits(credits: number | undefined) {
   if (credits === undefined) return "残高 未確認"
   return `残高 ${credits.toLocaleString("en-US")}cr`
+}
+
+export function looksLikeEmail(input: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.trim()) && input.trim().length <= 254
+}
+
+export function normalizeCode(input: string) {
+  return input.trim().replace(/[^0-9]/g, "")
+}
+
+export type EmailCodeResult = { ok: true } | { ok: false; reason: "invalid" | "network"; detail?: string }
+
+/** Ask teai.io to email a 6-digit login code. Never throws. */
+export async function requestEmailCode(
+  email: string,
+  opts: { api?: string; fetch?: Fetcher; timeoutMs?: number } = {},
+): Promise<EmailCodeResult> {
+  const api = opts.api ?? apiBase()
+  const doFetch: Fetcher = opts.fetch ?? ((url, init) => fetch(url, init))
+  try {
+    const response = await doFetch(`${api}/api/v1/auth/email`, {
+      method: "POST",
+      // X-Sente-Client marks this as a CLI request: the server skips the
+      // browser-only Turnstile widget for tagged CLI calls (rate limits and
+      // the verify-side signup guards still apply).
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "X-Sente-Client": "sente",
+      },
+      body: JSON.stringify({ email }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+    })
+    if (response.ok) return { ok: true }
+    const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined
+    const detail = body?.error ?? `HTTP ${response.status}`
+    if (response.status >= 500) return { ok: false, reason: "network", detail }
+    return { ok: false, reason: "invalid", detail }
+  } catch (error) {
+    return { ok: false, reason: "network", detail: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export type VerifyEmailResult =
+  | { ok: true; token: string; apiKey?: string; account: TeaiAccount }
+  | { ok: false; reason: "invalid" | "network"; detail?: string }
+
+/** Redeem the 6-digit code. Returns the session token and, for brand-new accounts, the auto-issued API key. */
+export async function verifyEmailCode(
+  email: string,
+  code: string,
+  opts: { api?: string; fetch?: Fetcher; timeoutMs?: number } = {},
+): Promise<VerifyEmailResult> {
+  const api = opts.api ?? apiBase()
+  const doFetch: Fetcher = opts.fetch ?? ((url, init) => fetch(url, init))
+  try {
+    const response = await doFetch(`${api}/api/v1/auth/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ email, code }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+    })
+    const body = (await response.json().catch(() => undefined)) as
+      | { ok?: boolean; token?: string; api_key?: string; email?: string; error?: string }
+      | undefined
+    if (response.ok && body?.token) {
+      return {
+        ok: true,
+        token: body.token,
+        apiKey: body.api_key,
+        account: { email: body.email ?? email },
+      }
+    }
+    const detail = body?.error ?? `HTTP ${response.status}`
+    if (response.status >= 500) return { ok: false, reason: "network", detail }
+    return { ok: false, reason: "invalid", detail }
+  } catch (error) {
+    return { ok: false, reason: "network", detail: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /**

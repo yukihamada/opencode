@@ -4,15 +4,23 @@ import os from "os"
 import path from "path"
 import {
   apiBase,
+  accountStatus,
+  accountText,
+  durableKey,
   configDir,
   credentialsPath,
   formatCredits,
   loginHint,
+  loadCredentials,
+  looksLikeEmail,
   looksLikeKey,
+  normalizeCode,
   normalizeKey,
   parseCredentials,
   renderCredentials,
+  requestEmailCode,
   saveCredentials,
+  verifyEmailCode,
   verifyKey,
 } from "../../src/util/teai"
 
@@ -76,6 +84,80 @@ describe("util.teai keys", () => {
       const mode = (await stat(file)).mode & 0o777
       expect(mode).toBe(0o600)
     }
+  })
+
+  test("login survives process exit and is restored by a fresh process", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-restart-"))
+    temps.push(dir)
+    const module = new URL("../../src/util/teai.ts", import.meta.url).href
+    const env = { ...process.env, TE_CONFIG_DIR: dir, TEAI_API_KEY: "" }
+    const login = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `
+      import { saveCredentials } from ${JSON.stringify(module)};
+      await saveCredentials("te_restart_fixture");
+    `,
+      ],
+      { env, stdout: "pipe", stderr: "pipe" },
+    )
+    expect(await login.exited).toBe(0)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const next = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `
+        import { loadCredentials } from ${JSON.stringify(module)};
+        await loadCredentials();
+        process.exit(process.env.TEAI_API_KEY === "te_restart_fixture" ? 0 : 1);
+      `,
+        ],
+        { env, stdout: "pipe", stderr: "pipe" },
+      )
+      expect(await next.exited).toBe(0)
+    }
+  })
+
+  test("restores email tokens, respects explicit env overrides and isolates config dirs", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-restore-"))
+    temps.push(dir)
+    await saveCredentials("session-token.fixture", path.join(dir, "credentials"))
+    const saved = { TE_CONFIG_DIR: dir, TEAI_API_KEY: "" }
+    await loadCredentials(saved)
+    expect(saved.TEAI_API_KEY).toBe("session-token.fixture")
+    const override = { TE_CONFIG_DIR: dir, TEAI_API_KEY: "te_explicit" }
+    await loadCredentials(override)
+    expect(override.TEAI_API_KEY).toBe("te_explicit")
+    const missing = { TE_CONFIG_DIR: path.join(dir, "other"), TEAI_API_KEY: "" }
+    await loadCredentials(missing)
+    expect(missing.TEAI_API_KEY).toBe("")
+    const protectedEnv = { TE_CONFIG_DIR: dir, TEAI_API_KEY: "", SENTE_SCRUB_KEY: "local-proxy-fixture" }
+    await loadCredentials(protectedEnv)
+    expect(protectedEnv.TEAI_API_KEY).toBe("")
+  })
+
+  test("duplicate assignments cannot restore the old key on shell relaunch", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-duplicate-"))
+    temps.push(dir)
+    const file = path.join(dir, "credentials")
+    await Bun.write(file, "# keep\nTEAI_API_KEY=te_first\nOTHER=1\nexport TEAI_API_KEY=te_old\n")
+    expect(parseCredentials(await Bun.file(file).text())).toBe("te_old")
+    await saveCredentials("te_new", file)
+    expect(await Bun.file(file).text()).toBe("# keep\nTEAI_API_KEY=te_new\nOTHER=1\n")
+    const child = Bun.spawn(["sh", "-c", '. "$1"; test "$TEAI_API_KEY" = te_new', "sh", file], {
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(await child.exited).toBe(0)
+  })
+
+  test("read errors are not silently reported as a missing login", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-unreadable-"))
+    temps.push(dir)
+    await Bun.write(path.join(dir, "not-a-directory"), "x")
+    await expect(loadCredentials({ TE_CONFIG_DIR: path.join(dir, "not-a-directory") })).rejects.toThrow()
   })
 })
 
@@ -153,5 +235,106 @@ describe("util.teai hints", () => {
     expect(loginHint(undefined, env)).toBeUndefined()
     expect(formatCredits(undefined)).toBe("残高 未確認")
     expect(formatCredits(1234)).toBe("残高 1,234cr")
+  })
+})
+
+describe("util.teai email login", () => {
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+
+  test("existing email login exchanges session once for durable key; new signup reuses issued key", async () => {
+    let calls = 0
+    const fetcher = async (url: string, init?: RequestInit) => {
+      calls++
+      expect(url).toBe("https://api.example/api/v1/apikeys")
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer short-token")
+      expect(JSON.parse(String(init?.body)).name).toStartWith("sente-cli-")
+      return json(200, { ok: true, api_key: "te_durable_fixture" })
+    }
+    expect(await durableKey({ token: "short-token" }, { api: "https://api.example", fetch: fetcher })).toBe("te_durable_fixture")
+    expect(await durableKey({ token: "short-token", apiKey: "te_existing_fixture" }, { fetch: fetcher })).toBe("te_existing_fixture")
+    expect(calls).toBe(1)
+  })
+
+  test("failed key creation never returns a short-lived token or retries", async () => {
+    for (const response of [json(500, {}), json(200, { error: "failed" }), json(200, { ok: true, api_key: "bad" })]) {
+      let calls = 0
+      await expect(durableKey({ token: "short-token" }, { fetch: async () => { calls++; return response } })).rejects.toThrow()
+      expect(calls).toBe(1)
+    }
+  })
+
+  test("account distinguishes zero credits, revoked key, offline and env override without exposing keys", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "teai-account-"))
+    temps.push(dir)
+    await saveCredentials("te_saved_fixture", path.join(dir, "credentials"))
+    const env = { TE_CONFIG_DIR: dir, TEAI_API_KEY: "te_env_fixture" }
+    const status = await accountStatus({ env, fetch: async (_url, init) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer te_env_fixture")
+      return json(200, { authenticated: true, credits_remaining: 0 })
+    } })
+    expect(status.state).toBe("authenticated")
+    expect(status.conflict).toBe(true)
+    expect(status.source).toBe("env")
+    expect(JSON.stringify(status)).not.toContain("te_env_fixture")
+    expect(JSON.stringify(status)).not.toContain("te_saved_fixture")
+    expect((await accountStatus({ env, fetch: async () => json(401, {}) })).state).toBe("invalid")
+    expect((await accountStatus({ env, fetch: async () => json(503, {}) })).state).toBe("network")
+    expect((await accountStatus({ env, fetch: async () => json(429, {}) })).state).toBe("network")
+    expect(await Bun.file(path.join(dir, "credentials")).text()).toBe("TEAI_API_KEY=te_saved_fixture\n")
+    expect(accountText({ LANG: "ja_JP.UTF-8" }).signedIn).toBe("ログイン済み")
+    expect(accountText({ LANG: "en_US.UTF-8" }).signedIn).toBe("Logged in")
+    expect((await accountStatus({ env: { SENTE_SCRUB_KEY: "proxy" }, fetch: async () => { throw new Error("must not call") } })).state).toBe("protected")
+  })
+
+  test("looksLikeEmail accepts plain addresses and rejects keys/junk", () => {
+    expect(looksLikeEmail("a@b.co")).toBe(true)
+    expect(looksLikeEmail("te_527a7f58c9424183bbd1f50edb22256c")).toBe(false)
+    expect(looksLikeEmail("not-an-email")).toBe(false)
+  })
+
+  test("normalizeCode strips everything but digits", () => {
+    expect(normalizeCode(" 123 456 ")).toBe("123456")
+    expect(normalizeCode("12-34-56")).toBe("123456")
+  })
+
+  test("requestEmailCode posts the email and maps errors", async () => {
+    let seen: { url: string; body: string } | undefined
+    const ok = await requestEmailCode("a@b.co", {
+      api: "https://api.example",
+      fetch: async (url, init) => {
+        seen = { url, body: String(init?.body) }
+        return json(200, { ok: true })
+      },
+    })
+    expect(ok).toEqual({ ok: true })
+    expect(seen?.url).toBe("https://api.example/api/v1/auth/email")
+    expect(JSON.parse(seen?.body ?? "{}")).toEqual({ email: "a@b.co" })
+
+    const rejected = await requestEmailCode("a@b.co", {
+      api: "x",
+      fetch: async () => json(400, { error: "Invalid email format" }),
+    })
+    expect(rejected).toEqual({ ok: false, reason: "invalid", detail: "Invalid email format" })
+  })
+
+  test("verifyEmailCode returns token and api_key for new accounts", async () => {
+    const result = await verifyEmailCode("a@b.co", "123456", {
+      api: "https://api.example",
+      fetch: async () => json(200, { ok: true, token: "tok-1", api_key: "te_new", email: "a@b.co" }),
+    })
+    expect(result).toEqual({ ok: true, token: "tok-1", apiKey: "te_new", account: { email: "a@b.co" } })
+
+    const existing = await verifyEmailCode("a@b.co", "123456", {
+      api: "x",
+      fetch: async () => json(200, { ok: true, token: "tok-2", email: "a@b.co" }),
+    })
+    expect(existing.ok && existing.apiKey).toBeUndefined()
+
+    const wrong = await verifyEmailCode("a@b.co", "000000", {
+      api: "x",
+      fetch: async () => json(400, { error: "認証コードが正しくありません。" }),
+    })
+    expect(wrong).toEqual({ ok: false, reason: "invalid", detail: "認証コードが正しくありません。" })
   })
 })
