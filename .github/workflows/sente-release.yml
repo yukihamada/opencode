@@ -57,7 +57,7 @@ jobs:
 
       - name: Check login and account logic
         run: |
-          (cd packages/tui && bun test test/util/teai.test.ts && bun typecheck)
+          (cd packages/tui && bun test test/util/teai.test.ts test/cli/tui/skill-language.test.tsx && bun typecheck)
           (cd packages/sente && bun typecheck)
 
       - name: Package
