@@ -45,6 +45,8 @@ import { DialogMcp } from "./component/dialog-mcp"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
+import { DialogLanguage } from "./component/dialog-language"
+import { useLanguage } from "./context/language"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogOnboarding } from "./ui/dialog-onboarding"
 import { ONBOARDING_KEY, shouldShowOnboarding } from "./onboarding"
@@ -402,6 +404,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const dialog = useDialog()
   const local = useLocal()
   const kv = useKV()
+  const language = useLanguage()
   const keymap = useOpencodeKeymap()
   const event = useEvent()
   const sdk = useSDK()
@@ -837,6 +840,14 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           dialog.replace(() => <DialogThemeList />)
         },
         category: "System",
+      },
+      {
+        name: "language.select",
+        title: language.text("言語設定", "Language settings"),
+        slashName: "language",
+        slashAliases: ["lang"],
+        category: language.text("設定", "Settings"),
+        run: () => dialog.replace(() => <DialogLanguage />),
       },
       {
         name: "theme.switch_mode",
