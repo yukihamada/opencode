@@ -176,6 +176,12 @@ const layer = Layer.effect(
       step: number,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
     ) {
+      if (
+        (yield* config.entries()).some(
+          (entry) => entry.type === "document" && entry.info.experimental?.economy !== undefined,
+        )
+      )
+        return yield* Effect.die(new Error("Economy: unsupported by the V2 session runner; use the legacy prompt path"))
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt

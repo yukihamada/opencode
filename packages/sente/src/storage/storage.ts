@@ -54,6 +54,7 @@ export interface Interface {
   readonly remove: (key: string[]) => Effect.Effect<void, FSUtil.Error>
   readonly read: <T>(key: string[]) => Effect.Effect<T, Error>
   readonly update: <T>(key: string[], fn: (draft: T) => void) => Effect.Effect<T, Error>
+  readonly create: (key: string[], content: unknown) => Effect.Effect<void, FSUtil.Error>
   readonly write: <T>(key: string[], content: T) => Effect.Effect<void, FSUtil.Error>
   readonly list: (prefix: string[]) => Effect.Effect<string[][], FSUtil.Error>
 }
@@ -293,6 +294,17 @@ const layer = Layer.effect(
         return value as T
       })
 
+    const create: Interface["create"] = (key: string[], content: unknown) =>
+      withResolved(key, (target, rw) =>
+        TxReentrantLock.withWriteLock(
+          rw,
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(path.dirname(target), { recursive: true })
+            yield* fs.writeFileString(target, JSON.stringify(content), { flag: "wx" })
+          }),
+        ),
+      )
+
     const write: Interface["write"] = (key: string[], content: unknown) =>
       Effect.gen(function* () {
         yield* withResolved(key, (target, rw) => TxReentrantLock.withWriteLock(rw, writeJson(target, content)))
@@ -313,6 +325,7 @@ const layer = Layer.effect(
     })
 
     return Service.of({
+      create,
       remove,
       read,
       update,

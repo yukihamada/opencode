@@ -36,6 +36,8 @@ import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
+import { Economy } from "../../src/session/economy"
+import { Storage } from "../../src/storage/storage"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
@@ -182,6 +184,7 @@ const promptRoot = LayerNode.group([
   Permission.node,
   Plugin.node,
   Config.node,
+  Storage.node,
   ProviderSvc.node,
   LSP.node,
   MCP.node,
@@ -753,6 +756,200 @@ noLLMServer.instance.skip(
       )
     }),
   { config: cfg },
+)
+
+it.instance("economy budget stop is returned, persisted and notified without provider calls", () =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      model: "test/test-model",
+      experimental: {
+        economy: {
+          verification: [{ command: "exit 1", cwd: instance.directory }],
+          models: ["test/test-model"],
+          maxUsd: 0.001,
+          maxTurns: 3,
+          maxEscalations: 0,
+        },
+      },
+      provider: {
+        test: {
+          ...providerCfg(url).provider.test,
+          models: {
+            "test-model": { ...cfg.provider.test.models["test-model"], cost: { input: 1, output: 1 } },
+          },
+        },
+      },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const events = yield* EventV2Bridge.Service
+    const status = yield* SessionStatus.Service
+    const session = yield* sessions.create({ title: "Budget stop" })
+    const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+    const off = yield* events.listen((event) => {
+      if (event.type !== Session.Event.Error.type) return Effect.void
+      const data = event.data as typeof Session.Event.Error.data.Type
+      if (data.sessionID === session.id && data.error) errors.push(data.error)
+      return Effect.void
+    })
+    const result = yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      model: ref,
+      parts: [{ type: "text", text: "Run verification" }],
+    })
+    const expected = {
+      name: "UnknownError",
+      data: { message: "Economy: estimated reservation budget exhausted; not an invoice guarantee" },
+    } satisfies NonNullable<SessionV1.Assistant["error"]>
+    const stored = yield* MessageV2.get({ sessionID: session.id, messageID: result.info.id })
+    yield* off
+    expect(result.info).toMatchObject({ role: "assistant", finish: "error", error: expected, cost: 0 })
+    expect(stored.info).toEqual(result.info)
+    expect(errors).toEqual([expected])
+    expect(yield* llm.hits).toHaveLength(0)
+    expect(yield* status.get(session.id)).toEqual({ type: "idle" })
+    expect((yield* prompt.loop({ sessionID: session.id })).info.id).toBe(result.info.id)
+    expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+for (const scenario of [
+  { name: "changed config", reason: "configuration changed; resume refused" },
+  { name: "disabled config", reason: "configuration changed; resume refused" },
+  { name: "pending reservation", reason: "unsettled reservation; resume refused" },
+  { name: "missing ledger", reason: "missing ledger; resume refused" },
+  { name: "malformed ledger", reason: "ledger unavailable or invalid; resume refused" },
+  { name: "child session", reason: "unsupported or inconsistent history; resume refused" },
+  { name: "queued task", reason: "unsupported or inconsistent history; resume refused" },
+]) {
+  it.instance(`economy notifies ${scenario.name} without provider calls`, () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const economy = {
+        verification: [{ command: "exit 1", cwd: instance.directory }],
+        models: ["test/test-model"],
+        maxUsd: 10,
+        maxTurns: 3,
+        maxEscalations: 0,
+      }
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        model: "test/test-model",
+        experimental: scenario.name === "disabled config" ? {} : { economy },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const storage = yield* Storage.Service
+      const events = yield* EventV2Bridge.Service
+      const parent = scenario.name === "child session" ? yield* sessions.create({ title: "Parent" }) : undefined
+      const session = yield* sessions.create({ title: scenario.name, parentID: parent?.id })
+      const historical = ["missing ledger", "malformed ledger"].includes(scenario.name)
+      const seeded = historical ? yield* seed(session.id) : undefined
+      const msg = seeded?.user ?? (yield* user(session.id, "Run verification"))
+      const key = Economy.ledgerKey(session.id, msg.id)
+      if (scenario.name === "changed config" || scenario.name === "disabled config")
+        yield* storage.create([...key, "config"], JSON.stringify({ ...economy, maxUsd: 20 }))
+      if (scenario.name === "pending reservation") {
+        yield* storage.create([...key, "config"], JSON.stringify(economy))
+        yield* storage.create([...key, "0", "reservation"], { id: MessageID.ascending(), reserve: 0.2 })
+      }
+      if (scenario.name === "malformed ledger" && seeded) {
+        yield* storage.create([...key, "config"], JSON.stringify(economy))
+        yield* storage.create([...key, "0", "reservation"], { id: seeded.assistant.id, reserve: 0.2 })
+        yield* storage.create([...key, "0", "completion"], { reserve: 0.2 })
+      }
+      if (scenario.name === "queued task") yield* addSubtask(session.id, msg.id)
+      const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+      const off = yield* events.listen((event) => {
+        if (event.type !== Session.Event.Error.type) return Effect.void
+        const data = event.data as typeof Session.Event.Error.data.Type
+        if (data.sessionID === session.id && data.error) errors.push(data.error)
+        return Effect.void
+      })
+      const result = yield* prompt.loop({ sessionID: session.id })
+      yield* off
+      const expected = { name: "UnknownError", data: { message: `Economy: ${scenario.reason}` } } satisfies NonNullable<
+        SessionV1.Assistant["error"]
+      >
+      expect(result.info).toMatchObject({ role: "assistant", parentID: msg.id, finish: "error", error: expected })
+      expect((yield* MessageV2.get({ sessionID: session.id, messageID: result.info.id })).info).toEqual(result.info)
+      expect(errors).toEqual([expected])
+      expect(yield* llm.hits).toHaveLength(0)
+      if (seeded)
+        expect((yield* MessageV2.get({ sessionID: session.id, messageID: seeded.assistant.id })).info).toEqual(
+          seeded.assistant,
+        )
+    }),
+  )
+}
+
+unix("economy escalates after two consecutive verification failures", () =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const { llm, dir } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      model: "test/test-model",
+      experimental: {
+        economy: {
+          verification: [{ command: "exit 1", cwd: instance.directory }],
+          models: ["test/test-model", "test/test-upgrade"],
+          maxUsd: 10,
+          maxTurns: 3,
+          maxEscalations: 1,
+        },
+      },
+      provider: {
+        test: {
+          ...providerCfg(url).provider.test,
+          models: {
+            "test-model": { ...cfg.provider.test.models["test-model"], cost: { input: 1, output: 1 } },
+            "test-upgrade": {
+              ...cfg.provider.test.models["test-model"],
+              id: "test-upgrade",
+              cost: { input: 2, output: 2 },
+            },
+          },
+        },
+      },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Economy verification",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      model: ref,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Run the verification twice, preserving the failures." }],
+    })
+    for (const id of ["verification-one", "verification-two"]) {
+      yield* llm.push(reply().tool("bash", { command: "exit 1", workdir: dir, description: id }).stop())
+    }
+    yield* llm.text("Verification is still unconfirmed.")
+    yield* prompt.loop({ sessionID: session.id })
+    const messages = yield* sessions.messages({ sessionID: session.id })
+    const checks = messages.flatMap((message) =>
+      message.parts.filter((part) => part.type === "tool" && part.tool === "bash"),
+    )
+    expect(checks).toHaveLength(2)
+    for (const check of checks) {
+      expect(check).toMatchObject({ state: { status: "completed", metadata: { exit: 1 } } })
+    }
+    const hits = yield* llm.hits
+    expect(hits.map((hit) => hit.body.model)).toEqual(["test-model", "test-model", "test-upgrade"])
+    for (const hit of hits) {
+      expect(hit.body.tools).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ function: expect.objectContaining({ name: "task" }) })]),
+      )
+    }
+    expect(yield* llm.pending).toBe(0)
+  }),
 )
 
 it.instance("static loop returns assistant text through local provider", () =>

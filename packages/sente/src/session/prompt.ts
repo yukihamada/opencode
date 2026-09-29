@@ -4,6 +4,8 @@ import path from "path"
 import { SessionV1 } from "@sente-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
+import { Economy } from "./economy"
+import { Storage } from "@/storage/storage"
 import { MessageV2 } from "./message-v2"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
@@ -140,6 +142,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const storage = yield* Storage.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1129,8 +1132,31 @@ const layer = Layer.effect(
             break
           }
 
+          const cfg = yield* config.get()
+          const configured = cfg.experimental?.economy
+          const economy =
+            configured?.models[0] === `${lastUser.model.providerID}/${lastUser.model.modelID}` ? configured : undefined
+          const history = economy ? yield* sessions.messages({ sessionID }).pipe(Effect.orDie) : []
+          const turns = history.filter(
+            (message) => message.info.role === "assistant" && message.info.parentID === lastUser.id,
+          )
+          if (economy && (session.revert || session.parentID || tasks.length))
+            throw new Economy.Stopped("Economy: unsupported or inconsistent history; resume refused")
+          const admitted = yield* Economy.load(sessionID, lastUser.id, economy, turns).pipe(
+            Effect.provideService(Storage.Service, storage),
+          )
+          const ladder = economy
+            ? yield* Effect.forEach(economy.models, (name) => {
+                const ref = Provider.parseModel(name)
+                return getModel(ref.providerID, ref.modelID, sessionID)
+              })
+            : []
+          const reservation = economy
+            ? Economy.next(economy, admitted, (tier) => Economy.reserve(ladder[tier]))
+            : undefined
+
           step++
-          if (step === 1)
+          if (step === 1 && !economy)
             yield* title({
               session,
               modelID: lastUser.model.modelID,
@@ -1138,7 +1164,9 @@ const layer = Layer.effect(
               history: msgs,
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-          const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          const model = reservation
+            ? ladder[reservation.tier]
+            : yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
@@ -1159,6 +1187,7 @@ const layer = Layer.effect(
           }
 
           if (
+            !economy &&
             lastFinished &&
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
@@ -1198,6 +1227,12 @@ const layer = Layer.effect(
             time: { created: Date.now() },
             sessionID,
           }
+          if (economy && reservation) {
+            yield* Economy.admit(sessionID, lastUser.id, turns.length, {
+              id: msg.id,
+              reserve: reservation.reserve,
+            }).pipe(Effect.provideService(Storage.Service, storage))
+          }
           yield* sessions.updateMessage(msg)
 
           const finalizeInterruptedAssistant = Effect.gen(function* () {
@@ -1215,6 +1250,7 @@ const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
+              economy: !!economy,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1224,6 +1260,7 @@ const layer = Layer.effect(
             const promptOps = yield* ops()
 
             const tools = yield* SessionTools.resolve({
+              economy: !!economy,
               agent,
               session,
               model,
@@ -1249,7 +1286,7 @@ const layer = Layer.effect(
               })
             }
 
-            if (step === 1)
+            if (step === 1 && !economy)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
@@ -1331,6 +1368,19 @@ const layer = Layer.effect(
             Effect.ensuring(instruction.clear(handle.message.id)),
             Effect.onInterrupt(() => finalizeInterruptedAssistant),
           )
+          if (economy && reservation) {
+            const completed = yield* sessions
+              .findMessage(sessionID, (message) => message.info.id === msg.id)
+              .pipe(Effect.orDie)
+            if (Option.isNone(completed))
+              throw new Economy.Stopped("Economy: missing completed assistant; resume refused")
+            yield* Economy.settle(
+              sessionID,
+              lastUser.id,
+              turns.length,
+              Economy.evidence(completed.value, reservation.reserve, economy.verification),
+            ).pipe(Effect.provideService(Storage.Service, storage))
+          }
           if (outcome === "break") break
           continue
         }
@@ -1338,6 +1388,40 @@ const layer = Layer.effect(
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
       },
+      (effect, sessionID) =>
+        effect.pipe(
+          Effect.catchCause((cause) => {
+            const stopped = Cause.squash(cause)
+            if (Cause.hasInterrupts(cause) || !(stopped instanceof Economy.Stopped)) return Effect.failCause(cause)
+            return Effect.gen(function* () {
+              const ctx = yield* InstanceState.context
+              const messages = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+              const user = messages.findLast((message) => message.info.role === "user")?.info
+              if (!user || user.role !== "user") return yield* Effect.failCause(cause)
+              const error = new NamedError.Unknown({ message: stopped.message }).toObject()
+              const msg: SessionV1.Assistant = {
+                id: MessageID.ascending(),
+                sessionID,
+                parentID: user.id,
+                role: "assistant",
+                mode: user.agent,
+                agent: user.agent,
+                modelID: user.model.modelID,
+                providerID: user.model.providerID,
+                variant: user.model.variant,
+                path: { cwd: ctx.directory, root: ctx.worktree },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                time: { created: Date.now(), completed: Date.now() },
+                finish: "error",
+                error,
+              }
+              yield* sessions.updateMessage(msg)
+              yield* events.publish(Session.Event.Error, { sessionID, error })
+              return { info: msg, parts: [] }
+            })
+          }),
+        ),
     )
 
     const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
@@ -1600,6 +1684,7 @@ export const node = LayerNode.make({
   layer: layer,
   deps: [
     SessionStatus.node,
+    Storage.node,
     Session.node,
     Agent.node,
     Provider.node,

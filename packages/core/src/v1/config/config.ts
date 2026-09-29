@@ -168,6 +168,18 @@ export const Info = Schema.Struct({
   ),
   experimental: Schema.optional(
     Schema.Struct({
+      economy: Schema.optional(
+        Schema.Struct({
+          verification: Schema.mutable(Schema.Array(Schema.Struct({ command: Schema.String, cwd: Schema.String }))),
+          models: Schema.mutable(Schema.Array(Schema.String)),
+          maxUsd: Schema.Number,
+          maxTurns: PositiveInt,
+          maxEscalations: NonNegativeInt,
+        }),
+      ).annotate({
+        description:
+          "Opt-in legacy model escalation. Starts only at the first model. maxUsd limits conservative per-user-turn reservations, not invoiced charges. Subtasks and compaction are unavailable.",
+      }),
       disable_paste_summary: Schema.optional(Schema.Boolean),
       batch_tool: Schema.optional(Schema.Boolean).annotate({ description: "Enable the batch tool" }),
       openTelemetry: Schema.optional(Schema.Boolean).annotate({

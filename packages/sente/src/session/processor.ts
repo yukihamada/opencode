@@ -51,6 +51,7 @@ type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
+  economy?: boolean
 }
 
 export interface Interface {
@@ -482,13 +483,15 @@ const layer = Layer.effect(
               }
               ctx.snapshot = undefined
             }
-            yield* summary
-              .summarize({
-                sessionID: ctx.sessionID,
-                messageID: ctx.assistantMessage.parentID,
-              })
-              .pipe(Effect.ignore, Effect.forkIn(scope))
+            if (!input.economy)
+              yield* summary
+                .summarize({
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.assistantMessage.parentID,
+                })
+                .pipe(Effect.ignore, Effect.forkIn(scope))
             if (
+              !input.economy &&
               !ctx.assistantMessage.summary &&
               isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
             ) {
@@ -619,7 +622,7 @@ const layer = Layer.effect(
         })
         const error = parse(e)
         if (SessionV1.ContextOverflowError.isInstance(error)) {
-          if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
+          if (input.economy || ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary)) {
             ctx.assistantMessage.error = error
             ctx.assistantMessage.finish = "error"
             yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
@@ -651,7 +654,7 @@ const layer = Layer.effect(
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream(streamInput)
+            const stream = llm.stream(input.economy ? { ...streamInput, economy: true, retries: 0 } : streamInput)
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
@@ -671,21 +674,26 @@ const layer = Layer.effect(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
             ),
-            Effect.retry(
-              SessionRetry.policy({
-                provider: input.model.providerID,
-                parse,
-                set: (info) => {
-                  return status.set(ctx.sessionID, {
-                    type: "retry",
-                    attempt: info.attempt,
-                    message: info.message,
-                    action: info.action,
-                    next: info.next,
-                  })
-                },
-              }),
-            ),
+            (attempt) =>
+              input.economy
+                ? attempt
+                : attempt.pipe(
+                    Effect.retry(
+                      SessionRetry.policy({
+                        provider: input.model.providerID,
+                        parse,
+                        set: (info) => {
+                          return status.set(ctx.sessionID, {
+                            type: "retry",
+                            attempt: info.attempt,
+                            message: info.message,
+                            action: info.action,
+                            next: info.next,
+                          })
+                        },
+                      }),
+                    ),
+                  ),
             Effect.catch(halt),
             Effect.ensuring(cleanup()),
           )
