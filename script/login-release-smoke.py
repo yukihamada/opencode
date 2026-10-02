@@ -15,6 +15,7 @@ binary = str(Path(sys.argv[1]).resolve())
 session_token = "fixture-session-token"
 key = "te_durable_fixture_12345678"
 calls = []
+authenticated_calls = []
 
 class API(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -28,7 +29,10 @@ class API(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         calls.append(self.path)
-        self.reply({"authenticated": self.headers.get("Authorization") == "Bearer " + key,
+        authenticated = self.headers.get("Authorization") == "Bearer " + key
+        if self.path == "/api/v1/auth/me" and authenticated:
+            authenticated_calls.append(self.path)
+        self.reply({"authenticated": authenticated,
                     "email": "fixture@example.com", "credits_remaining": 0})
 
     def do_POST(self):
@@ -119,10 +123,25 @@ try:
         for _ in range(2):
             result = subprocess.run([binary, "debug", "config"], env=env, cwd=home, capture_output=True, text=True, timeout=45)
             assert result.returncode == 0, result.stderr[-1000:]
-            assert json.loads(result.stdout)["provider"]["teai"]["options"]["apiKey"] == key
+            assert json.loads(result.stdout)["provider"]["teai"]["options"]["apiKey"] == "***"
+            assert key not in result.stdout, "debug config must not disclose the saved key"
+            authenticated_before = len(authenticated_calls)
+            tmux("new-session", "-d", "-s", "login", "-x", "120", "-y", "38", "-c", directory, command)
+            wait_for("Ask anything")
+            send("/account")
+            wait_for("Logged in")
+            wait_for("Insufficient credits")
+            assert len(authenticated_calls) > authenticated_before, "fresh TUI must use the saved key"
+            tmux("send-keys", "-t", "login:0.0", "Escape")
+            time.sleep(0.5)
+            send("/exit")
+            end = time.monotonic() + 15
+            while tmux("has-session", "-t", "login", check=False).returncode == 0:
+                assert time.monotonic() < end, "restarted TUI failed to exit"
+                time.sleep(0.2)
         assert calls.count("/api/v1/apikeys") == 1, "key creation must not repeat on restart"
         assert (conf / "credentials").stat().st_mode & 0o777 == 0o600
-        print("PASS: email -> durable key -> /account (authenticated, zero credits) -> /exit -> two fresh processes")
+        print("PASS: email -> durable key -> /account -> /exit -> two authenticated fresh TUIs; debug key redacted")
 finally:
     tmux("kill-server", check=False)
     server.shutdown()
