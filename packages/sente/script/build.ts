@@ -206,6 +206,12 @@ for (const item of targets) {
     },
   })
 
+  // Embedding the bundle invalidates the linker's ad-hoc signature, and macOS 27+
+  // SIGKILLs binaries with invalid pages. Re-sign the Sente binary ad-hoc.
+  if (item.os === "darwin" && process.platform === "darwin") {
+    await $`codesign --force --sign - dist/${name}/bin/sente`
+  }
+
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
     const binaryPath = `dist/${name}/bin/sente`

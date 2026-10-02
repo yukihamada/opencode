@@ -49,6 +49,12 @@ process.env["SENTE_TEST_HOME"] = testHome
 const testManagedConfigDir = path.join(dir, "managed")
 process.env["SENTE_TEST_MANAGED_CONFIG_DIR"] = testManagedConfigDir
 
+// Explicit config overrides bypass XDG isolation when tests run from Sente.
+delete process.env["SENTE_CONFIG"]
+delete process.env["SENTE_CONFIG_DIR"]
+delete process.env["SENTE_CONFIG_CONTENT"]
+delete process.env["SENTE_TUI_CONFIG"]
+
 // Write the cache version file to prevent global/index.ts from clearing the cache
 const cacheDir = path.join(dir, "cache", "sente")
 await fs.mkdir(cacheDir, { recursive: true })
@@ -75,6 +81,7 @@ delete process.env["DEEPSEEK_API_KEY"]
 delete process.env["FIREWORKS_API_KEY"]
 delete process.env["CEREBRAS_API_KEY"]
 delete process.env["SAMBANOVA_API_KEY"]
+delete process.env["TEAI_API_KEY"]
 delete process.env["SENTE_SERVER_PASSWORD"]
 delete process.env["SENTE_SERVER_USERNAME"]
 delete process.env["SENTE_EXPERIMENTAL"]

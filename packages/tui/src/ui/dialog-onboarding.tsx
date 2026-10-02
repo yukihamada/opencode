@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { For } from "solid-js"
-import open from "open"
+import { openUrl } from "@sente-ai/core/open"
 import { useTheme } from "../context/theme"
 import { useKV } from "../context/kv"
 import { useDialog } from "./dialog"
@@ -27,7 +27,7 @@ export function DialogOnboarding() {
   const enroll = () => {
     // 声の登録はブラウザで完結する(録音が要るため TUI 内ではできない)。
     // CLI の `te voice enroll` と同じ URL を開く。
-    open("https://koe.live/enroll").catch(() => {})
+    openUrl("https://koe.live/enroll").catch(() => {})
   }
 
   useBindings(() => ({
