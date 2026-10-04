@@ -15,6 +15,8 @@ import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@sente-ai/tui/terminal-win32"
 import { ExitCode } from "@/cli/exit-code"
+import { randomBytes } from "node:crypto"
+import { registerRemote } from "../tui/remote"
 
 declare global {
   const SENTE_WORKER_PATH: string
@@ -121,6 +123,11 @@ export const TuiThreadCommand = cmd({
         hidden: true,
         default: false,
       })
+      .option("remote", {
+        type: "boolean",
+        describe: "allow the authenticated local bridge to access this running TUI",
+        default: false,
+      })
       .option("mini", {
         type: "boolean",
         describe: "start the minimal interactive interface",
@@ -208,10 +215,14 @@ export const TuiThreadCommand = cmd({
       }
       const cwd = Filesystem.resolve(process.cwd())
 
+      const remotePassword = args.remote ? randomBytes(32).toString("hex") : undefined
       const worker = new Worker(file, {
-        env: Object.fromEntries(
-          Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-        ),
+        env: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+          ),
+          ...(remotePassword ? { SENTE_SERVER_PASSWORD: remotePassword, SENTE_SERVER_USERNAME: "sente" } : {}),
+        },
       })
       const client = Rpc.client<typeof rpc>(worker)
       const reload = () => {
@@ -219,11 +230,13 @@ export const TuiThreadCommand = cmd({
       }
       process.on("SIGUSR2", reload)
 
+      let unregister: (() => Promise<void>) | undefined
       let stopped = false
       const stop = async () => {
         if (stopped) return
         stopped = true
         process.off("SIGUSR2", reload)
+        await unregister?.()
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
         worker.terminate()
       }
@@ -231,10 +244,14 @@ export const TuiThreadCommand = cmd({
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
 
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
+      const network = args.remote
+        ? { port: 0, hostname: "127.0.0.1", mdns: false, cors: [] }
+        : resolveNetworkOptionsNoConfig(args)
+      const external = args.remote || hasArg("--port") || hasArg("--hostname") || network.mdns
 
-      const headers = external ? ServerAuth.headers() : undefined
+      const headers = external
+        ? ServerAuth.headers(remotePassword ? { password: remotePassword, username: "sente" } : undefined)
+        : undefined
 
       const transport = external
         ? {
@@ -250,6 +267,9 @@ export const TuiThreadCommand = cmd({
           }
 
       try {
+        if (args.remote && headers) {
+          unregister = await registerRemote({ url: transport.url, directory: cwd, authorization: headers.Authorization })
+        }
         await validateSession({
           url: transport.url,
           sessionID: args.session,
@@ -260,6 +280,7 @@ export const TuiThreadCommand = cmd({
       } catch (error) {
         UI.error(errorMessage(error))
         process.exitCode = ExitCode.User
+        await stop()
         return
       }
 
