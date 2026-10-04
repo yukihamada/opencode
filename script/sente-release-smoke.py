@@ -8,6 +8,7 @@ Checks, in a throwaway HOME so no user config or credentials are read:
   2. `sente debug config` exits 0 and prints the resolved config as JSON.
 No network login or paid inference is performed.
 """
+import fnmatch
 import json
 import os
 import subprocess
@@ -45,3 +46,27 @@ with tempfile.TemporaryDirectory(prefix="sente-smoke-") as home:
     parsed = json.loads(text[start:])
     assert isinstance(parsed, dict), "debug config JSON is not an object"
     print(f"PASS debug config exit 0 ({len(parsed)} top-level keys)")
+
+    agents = run("agent", "list")
+    assert agents.returncode == 0, f"agent list exit {agents.returncode}: {agents.stderr[-2000:]}"
+    marker = "delivery (primary)\n"
+    assert marker in agents.stdout, "packaged binary is missing the delivery agent"
+    rules, _ = json.JSONDecoder().raw_decode(agents.stdout.split(marker, 1)[1].lstrip())
+
+    def action(permission: str, pattern: str = "*") -> str:
+        matches = [
+            rule for rule in rules
+            if fnmatch.fnmatchcase(permission, rule["permission"])
+            and fnmatch.fnmatchcase(pattern, rule["pattern"])
+        ]
+        assert matches, f"no permission rule for {permission}"
+        return matches[-1]["action"]
+
+    for tool in ["read", "glob", "grep", "question"]:
+        assert action(tool) == "allow", f"delivery cannot review with {tool}"
+    for tool in ["edit", "bash"]:
+        assert action(tool) == "ask", f"delivery must ask before {tool}"
+    for tool in ["task", "skill", "webfetch", "mcp_send_message", "browser_click"]:
+        assert action(tool) == "deny", f"delivery must deny {tool}"
+    assert action("read", ".env") == "ask", "delivery must ask before reading secrets"
+    print("PASS packaged delivery agent and human-review permission gates")

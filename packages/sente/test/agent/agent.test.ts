@@ -58,6 +58,55 @@ it.instance("returns default native agents when no config", () =>
   }),
 )
 
+it.instance("delivery agent is a visible human-reviewed primary agent", () =>
+  Effect.gen(function* () {
+    const agent = yield* load((svc) => svc.get("delivery"))
+    expect(agent.mode).toBe("primary")
+    expect(agent.native).toBe(true)
+    expect(agent.hidden).not.toBe(true)
+    expect(agent.description).toContain("納品番 / Delivery Guard")
+    expect(agent.prompt).toContain("requirement-by-requirement checklist")
+    expect(agent.prompt).toContain("pass/fail/unverified")
+    expect(agent.prompt).toContain("previous evidence and approval do not apply to a new version")
+    expect(agent.prompt).toContain("exact artifact and exact message")
+    expect(agent.prompt).toContain("does not send messages or publish deliveries, even after approval")
+    expect(agent.prompt).toContain("do not provide financial compensation")
+    expect(yield* load((svc) => svc.defaultAgent())).toBe("build")
+  }),
+)
+
+it.instance("delivery agent allows review but gates mutations and denies delivery tools", () =>
+  Effect.gen(function* () {
+    const agent = yield* load((svc) => svc.get("delivery"))
+    for (const tool of ["read", "glob", "grep", "list", "question", "todowrite"]) {
+      expect(evalPerm(agent, tool)).toBe("allow")
+    }
+    for (const tool of ["edit", "bash"]) {
+      expect(evalPerm(agent, tool)).toBe("ask")
+    }
+    for (const tool of ["task", "skill", "webfetch", "websearch", "mcp_send_message", "browser_click"]) {
+      expect(evalPerm(agent, tool)).toBe("deny")
+    }
+    expect(Permission.evaluate("read", ".env", agent.permission).action).toBe("ask")
+    expect(Permission.evaluate("read", ".env.production", agent.permission).action).toBe("ask")
+    expect(Permission.evaluate("read", ".env.example", agent.permission).action).toBe("allow")
+    expect(Permission.evaluate("external_directory", "/some/other/path", agent.permission).action).toBe("ask")
+  }),
+)
+
+it.instance(
+  "delivery safety gates survive permissive global configuration",
+  () =>
+    Effect.gen(function* () {
+      const agent = yield* load((svc) => svc.get("delivery"))
+      expect(evalPerm(agent, "mcp_send_message")).toBe("deny")
+      expect(evalPerm(agent, "task")).toBe("deny")
+      expect(evalPerm(agent, "bash")).toBe("ask")
+      expect(evalPerm(agent, "edit")).toBe("ask")
+    }),
+  { config: { permission: { "*": "allow", bash: "allow", edit: "allow" } } },
+)
+
 it.instance("build agent has correct default properties", () =>
   Effect.gen(function* () {
     const build = yield* load((svc) => svc.get("build"))
@@ -749,6 +798,7 @@ it.instance(
       agent: {
         build: { disable: true },
         plan: { disable: true },
+        delivery: { disable: true },
       },
     },
   },

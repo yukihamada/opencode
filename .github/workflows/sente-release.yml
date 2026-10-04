@@ -72,6 +72,10 @@ jobs:
         with:
           bun-version: "1.4.0"
 
+      - name: Check delivery agent review gates
+        run: bun test test/agent --timeout 30000 --only-failures
+        working-directory: packages/sente
+
       - name: Build CLI (all darwin/linux/windows targets)
         # --skip-embed-web-ui: don't bundle the browser UI; serve proxies teai.io/sente/app.
         # 142MB -> 107MB. Fallback: serve still works via upstream proxy.

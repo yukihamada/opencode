@@ -14,6 +14,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_DELIVERY from "./prompt/delivery.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@sente-ai/core/global"
@@ -175,6 +176,36 @@ const layer = Layer.effect(
                 },
               }),
               user,
+            ),
+            mode: "primary",
+            native: true,
+          },
+          delivery: {
+            name: "delivery",
+            description:
+              "納品番 / Delivery Guard — 依頼とAI成果物を照合し、修正と納品メッセージの下書きを支援。責任者の最終確認が必要。 / Reviews AI work against the request and drafts a handoff for human approval; does not send or offer financial compensation.",
+            prompt: PROMPT_DELIVERY,
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              user,
+              Permission.fromConfig({
+                "*": "deny",
+                glob: "allow",
+                grep: "allow",
+                list: "allow",
+                question: "allow",
+                todowrite: "allow",
+                edit: "ask",
+                bash: "ask",
+                external_directory: readonlyExternalDirectory,
+                read: {
+                  "*": "allow",
+                  "*.env": "ask",
+                  "*.env.*": "ask",
+                  "*.env.example": "allow",
+                },
+              }),
             ),
             mode: "primary",
             native: true,
