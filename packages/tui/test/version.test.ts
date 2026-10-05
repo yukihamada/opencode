@@ -7,6 +7,7 @@ test("preview build displays date and UTC time without branch noise", () => {
 
 test("release and local builds remain distinguishable", () => {
   expect(versionLabel("1.18.30")).toBe("v1.18.30")
+  expect(versionLabel("2026.10.5-42")).toBe("v2026.10.5-42")
   expect(versionLabel("local")).toBe("local")
 })
 
