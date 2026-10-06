@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, stat } from "fs/promises"
+import { mkdir, mkdtemp, readFile, rm, stat } from "fs/promises"
 import os from "os"
 import path from "path"
 import {
@@ -159,8 +159,10 @@ describe("util.teai keys", () => {
   test("read errors are not silently reported as a missing login", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "teai-unreadable-"))
     temps.push(dir)
-    await Bun.write(path.join(dir, "not-a-directory"), "x")
-    await expect(loadCredentials({ TE_CONFIG_DIR: path.join(dir, "not-a-directory") })).rejects.toThrow()
+    // A directory where the credentials file should be: unreadable on every platform. (A config
+    // dir that is really a file reads as ENOENT on Windows, i.e. a legitimately missing login.)
+    await mkdir(path.join(dir, "credentials"))
+    await expect(loadCredentials({ TE_CONFIG_DIR: dir })).rejects.toThrow()
   })
 })
 
