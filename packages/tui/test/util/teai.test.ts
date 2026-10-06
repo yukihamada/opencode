@@ -4,6 +4,7 @@ import os from "os"
 import path from "path"
 import {
   apiBase,
+  authErrorText,
   accountStatus,
   accountText,
   durableKey,
@@ -235,6 +236,28 @@ describe("util.teai hints", () => {
     expect(loginHint(text, en)).toContain("balance is separate")
     expect(classifyAuthError("Insufficient credits")).toBe("credits")
     expect(loginHint("Insufficient credits", en)).toContain("balance is empty")
+  })
+
+  test("engine-rewritten 402 text still gets its cause line through quotaCode", () => {
+    // What the engine stores since it rewrites teai 402s: a localized sentence + machine-readable code.
+    const monthly = {
+      name: "APIError",
+      data: { message: "この API キーの月間の利用上限に達したため停止しました", metadata: { quotaCode: "api_key_monthly_limit_exceeded" } },
+    }
+    const balance = {
+      name: "APIError",
+      data: { message: "teai.io の残高が不足したため停止しました", metadata: { quotaCode: "insufficient_credits" } },
+    }
+    expect(loginHint(monthly.data.message, env)).toBeUndefined()
+    const monthlyHint = loginHint(authErrorText(monthly, "teai", monthly.data.message), env)
+    expect(monthlyHint).toContain("月次上限")
+    expect(monthlyHint).toContain("te key rotate")
+    const balanceHint = loginHint(authErrorText(balance, "teai", balance.data.message), env)
+    expect(balanceHint).toContain("残高不足")
+    expect(balanceHint).toContain("/pricing")
+    // Another provider's 402 gets no teai advice.
+    expect(loginHint(authErrorText(balance, "openrouter", balance.data.message), env)).toBeUndefined()
+    expect(authErrorText(undefined, "teai", undefined)).toBeUndefined()
   })
 
   test("self-revoke 409 points at te key rotate", () => {

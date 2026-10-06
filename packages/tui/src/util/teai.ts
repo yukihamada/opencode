@@ -321,6 +321,20 @@ export function classifyAuthError(message: string | undefined): AuthErrorKind | 
   return undefined
 }
 
+/**
+ * Text to classify for an assistant error. The engine rewrites teai 402s into a
+ * localized "stopped, resume at …" sentence, which no longer carries the server's
+ * wording; the machine-readable `quotaCode` it attaches does, so classify on that too.
+ * Other providers are left to their own message (no teai advice for their 402s).
+ */
+export function authErrorText(error: unknown, providerID: string | undefined, message: string | undefined) {
+  if (!message) return undefined
+  if (!providerID?.startsWith("teai")) return message
+  const data = (error as { data?: { metadata?: Record<string, unknown> } } | undefined)?.data
+  const code = data?.metadata?.quotaCode
+  return typeof code === "string" && code ? `${message}\n${code}` : message
+}
+
 function isJa(env: TeaiEnv) {
   return /^(ja)(_|-|\b)/i.test(env.LC_ALL || env.LC_MESSAGES || env.LANG || "en")
 }
