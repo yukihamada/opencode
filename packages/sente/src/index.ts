@@ -9,7 +9,7 @@ import { UpgradeCommand } from "./cli/cmd/upgrade"
 import { UninstallCommand } from "./cli/cmd/uninstall"
 import { ModelsCommand } from "./cli/cmd/models"
 import { UI } from "./cli/ui"
-import { InstallationVersion } from "@sente-ai/core/installation/version"
+import { InstallationDev, InstallationVersion } from "@sente-ai/core/installation/version"
 import { FormatError } from "./cli/error"
 import { ServeCommand } from "./cli/cmd/serve"
 import { DebugCommand } from "./cli/cmd/debug"
@@ -42,6 +42,45 @@ function show(out: string) {
   process.stderr.write(out)
 }
 
+// Developer builds only: refuse to apply new migrations to a database that already holds
+// conversations (see @sente-ai/core/database/guard). Release builds return immediately.
+// Runs before any command opens the database, so the TUI never starts on a blocked build.
+async function guardDatabase(json: boolean) {
+  if (!InstallationDev) return
+  if (args[0] === "db" && args[1] === "path") return
+  const { Database } = await import("@sente-ai/core/database/database")
+  const { DatabaseGuard } = await import("@sente-ai/core/database/guard")
+  const { DatabaseSibling } = await import("@sente-ai/core/database/sibling")
+  const { ExitCode } = await import("./cli/exit-code")
+  const blocked = await DatabaseGuard.startup(Database.path()).catch((error) => {
+    // Cannot tell what would be applied, so a developer build does not guess.
+    UI.error(
+      `could not check pending migrations for ${Database.path()}: ${errorMessage(error)}${EOL}` +
+        `Start anyway with ${DatabaseGuard.ALLOW}=1, or use another database with SENTE_DB=<other>.db`,
+    )
+    return process.exit(ExitCode.User)
+  })
+  if (!blocked) return
+  const message = DatabaseGuard.message(blocked, DatabaseSibling.japanese())
+  if (json)
+    process.stderr.write(
+      JSON.stringify({
+        type: "error",
+        level: "fatal",
+        timestamp: Date.now(),
+        exitCode: ExitCode.User,
+        code: "database_migration_blocked",
+        message,
+        database: blocked.database,
+        sessions: blocked.sessions,
+        migrations: blocked.migrations,
+        allow: `${DatabaseGuard.ALLOW}=1`,
+      }) + EOL,
+    )
+  else UI.error(message)
+  process.exit(ExitCode.User)
+}
+
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
   .scriptName("sente")
@@ -65,12 +104,17 @@ const cli = yargs(args)
   })
   .middleware(async (opts) => {
     const { loadCredentials } = await import("@sente-ai/tui/util/teai")
+    // Before loadCredentials fills the env: remember whether the key was an explicit override.
+    const { ProviderKeyReload } = await import("@/provider/key-reload")
+    await ProviderKeyReload.markSource()
     await loadCredentials()
     if (opts.printLogs) process.env.SENTE_PRINT_LOGS = "1"
     if (opts.logLevel) process.env.SENTE_LOG_LEVEL = opts.logLevel
     if (opts.pure) {
       process.env.SENTE_PURE = "1"
     }
+
+    await guardDatabase(opts.format === "json")
 
     Heap.start()
 

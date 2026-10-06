@@ -7,7 +7,7 @@ import { Global } from "../global"
 import { Flag } from "../flag/flag"
 import { isAbsolute, join } from "path"
 import { DatabaseMigration } from "./migration"
-import { InstallationChannel } from "../installation/version"
+import { InstallationChannel, InstallationDefaultChannel } from "../installation/version"
 import { makeGlobalNode } from "../effect/app-node"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
@@ -45,13 +45,20 @@ export function path() {
     if (Flag.SENTE_DB === ":memory:" || isAbsolute(Flag.SENTE_DB)) return Flag.SENTE_DB
     return join(Global.Path.data, Flag.SENTE_DB)
   }
-  if (
-    ["latest", "beta", "prod"].includes(InstallationChannel) ||
-    process.env.SENTE_DISABLE_CHANNEL_DB === "1" ||
-    process.env.SENTE_DISABLE_CHANNEL_DB === "true"
+  return join(
+    Global.Path.data,
+    channelFile(InstallationChannel, {
+      shared: process.env.SENTE_DISABLE_CHANNEL_DB === "1" || process.env.SENTE_DISABLE_CHANNEL_DB === "true",
+    }),
   )
-    return join(Global.Path.data, "sente.db")
-  return join(Global.Path.data, `sente-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
+}
+
+/** Database file name for a build channel. Never yields `sente-.db`. */
+export function channelFile(channel: string, options: { shared?: boolean } = {}) {
+  if (options.shared || ["latest", "beta", "prod"].includes(channel)) return "sente.db"
+  const name = channel.replace(/[^a-zA-Z0-9._-]/g, "-")
+  if (!name) return `sente-${InstallationDefaultChannel}.db`
+  return `sente-${name}.db`
 }
 
 export const node = makeGlobalNode({ service: Service, layer: layerFromPath(path()), deps: [] })

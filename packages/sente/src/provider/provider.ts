@@ -31,6 +31,7 @@ import { ModelV2 } from "@sente-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { ProviderKeyReload } from "./key-reload"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -1876,6 +1877,11 @@ const layer = Layer.effect(
         const existing = s.sdk.get(key)
         if (existing) return existing
 
+        // teai: 認証・上限系の失敗時に保存済みキーを読み直し、変わっていれば1回だけ再送する。
+        // タイムアウトの内側に置く(再送も同じ制限時間に含める)。
+        if (model.providerID.startsWith("teai")) {
+          options["fetch"] = ProviderKeyReload.wrap(options["fetch"] ?? fetch)
+        }
         options["fetch"] = timeoutFetch(options)
         delete options["chunkTimeout"]
         delete options["headerTimeout"]

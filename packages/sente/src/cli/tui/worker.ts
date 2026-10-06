@@ -60,6 +60,12 @@ export const rpc = {
     await InstanceRuntime.load({ directory: input.directory })
     await upgrade().catch(() => {})
   },
+  /** Startup check for a sibling session database with far more sessions. Never rejects. */
+  async databaseNotice() {
+    const { Database } = await import("@sente-ai/core/database/database")
+    const { DatabaseSibling } = await import("@sente-ai/core/database/sibling")
+    return AppRuntime.runPromise(DatabaseSibling.startupNotice(Database.path()))
+  },
   async reload() {
     await AppRuntime.runPromise(
       Effect.gen(function* () {
@@ -81,6 +87,8 @@ export const rpc = {
       if (!/^[A-Z][A-Z0-9_]*$/.test(name)) continue
       process.env[name] = value
     }
+    // /login is an explicit choice of the saved key: later rotations may follow it.
+    if (input.env.TEAI_API_KEY) process.env.SENTE_TEAI_KEY_SOURCE = "saved"
     await rpc.reload()
   },
   async shutdown() {
