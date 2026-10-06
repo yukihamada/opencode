@@ -74,6 +74,11 @@ function isolatedEnv(home: string, configJson: string): Record<string, string> {
     SENTE_DISABLE_AUTOCOMPACT: "1",
     SENTE_DISABLE_MODELS_FETCH: "1",
     SENTE_AUTH_CONTENT: "{}",
+    // yargs localizes help labels ("[boolean]", "Options:") from the caller's locale, so pin
+    // it: a developer shell with LANG=ja_JP must produce the same output as CI.
+    LC_ALL: "en_US.UTF-8",
+    LANG: "en_US.UTF-8",
+    LANGUAGE: "en_US",
   }
 }
 

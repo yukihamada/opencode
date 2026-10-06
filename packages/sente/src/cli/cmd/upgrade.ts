@@ -6,7 +6,7 @@ import { InstallationVersion } from "@sente-ai/core/installation/version"
 
 export const UpgradeCommand = {
   command: "upgrade [target]",
-  describe: "upgrade opencode to the latest or a specific version",
+  describe: "upgrade sente to the latest or a specific version",
   builder: (yargs: Argv) => {
     return yargs
       .positional("target", {

@@ -290,7 +290,19 @@ test.each([80, 140])("selects by click and slash in the real prompt at %i column
     app.mockInput.pressKey("s", { ctrl: true })
     await app.renderOnce()
     expect(app.captureCharFrame()).toContain(modelBrowseText().price)
+    // Price order moves the current model (the most expensive preset) to the last row, and
+    // the dialog scrolls it back into view two animation frames later. Wait for that settled
+    // frame, then jump to the first row, so the ordering check does not depend on whether the
+    // frame was captured before or after the scroll.
+    const selectedRow = `● ${presetName("expert")}`
+    for (const start = Date.now(); !app.captureCharFrame().includes(selectedRow); await app.renderOnce()) {
+      if (Date.now() - start > 2000) throw new Error("price order never scrolled the current model into view")
+      await Bun.sleep(10)
+    }
+    app.mockInput.pressKey("HOME")
+    await app.renderOnce()
     const sorted = app.captureCharFrame()
+    expect(sorted).toContain(modelPresets[0].seed)
     expect(sorted.indexOf(modelPresets[0].seed)).toBeLessThan(sorted.indexOf(next.id))
     const sortToggle = app.renderer.root.findDescendantById("model-sort-toggle")!
     await app.mockMouse.click(sortToggle.x + 1, sortToggle.y)

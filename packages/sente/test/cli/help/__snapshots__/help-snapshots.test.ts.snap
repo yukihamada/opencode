@@ -16,7 +16,7 @@ Options:
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
       --mdns-domain  custom domain name for mDNS service (default: sente.local)
-                                                                [string] [default: "sente.local"]
+                                                                   [string] [default: "sente.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]
       --cwd          working directory [string] [default: "<HOME>"]"
 `;
@@ -28,7 +28,7 @@ manage MCP (Model Context Protocol) servers
 
 Commands:
   sente mcp add [name]     add an MCP server
-  sente mcp list           list MCP servers and their status                        [aliases: ls]
+  sente mcp list           list MCP servers and their status                           [aliases: ls]
   sente mcp auth [name]    authenticate with an OAuth-enabled MCP server
   sente mcp logout [name]  remove OAuth credentials for an MCP server
   sente mcp debug <name>   debug OAuth connection for an MCP server
@@ -59,9 +59,8 @@ Options:
   -c, --continue      continue the last session                                            [boolean]
   -s, --session       session id to continue                                                [string]
       --fork          fork the session when continuing (use with --continue or --session)  [boolean]
-  -p, --password      basic auth password (defaults to SENTE_SERVER_PASSWORD)            [string]
-  -u, --username      basic auth username (defaults to SENTE_SERVER_USERNAME or 'sente')
-                                                                                            [string]
+  -p, --password      basic auth password (defaults to SENTE_SERVER_PASSWORD)               [string]
+  -u, --username      basic auth username (defaults to SENTE_SERVER_USERNAME or 'sente')    [string]
       --mini          start the minimal interactive interface             [boolean] [default: false]
       --no-replay     disable mini session history replay on resume and after resize       [boolean]
       --replay-limit  cap visible mini replay to the newest N messages                      [number]"
@@ -76,35 +75,42 @@ Positionals:
   message  message to send                                                     [array] [default: []]
 
 Options:
-  -h, --help         show help                                                             [boolean]
-  -v, --version      show version number                                                   [boolean]
-      --print-logs   print logs to stderr                                                  [boolean]
-      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure         run without external plugins                                          [boolean]
-      --command      the command to run, use message for args                               [string]
-  -c, --continue     continue the last session                                             [boolean]
-  -s, --session      session id to continue                                                 [string]
-      --fork         fork the session before continuing (requires --continue or --session) [boolean]
-      --share        share the session                                                     [boolean]
-  -m, --model        model to use in the format of provider/model                           [string]
-      --agent        agent to use                                                           [string]
-      --format       format: default (formatted) or json (raw JSON events)
+  -h, --help               show help                                                       [boolean]
+  -v, --version            show version number                                             [boolean]
+      --print-logs         print logs to stderr                                            [boolean]
+      --log-level          log level            [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure               run without external plugins                                    [boolean]
+      --command            the command to run, use message for args                         [string]
+  -c, --continue           continue the last session                                       [boolean]
+  -s, --session            session id to continue                                           [string]
+      --fork               fork the session before continuing (requires --continue or --session)
+                                                                                           [boolean]
+      --share              share the session                                               [boolean]
+  -m, --model              model to use in the format of provider/model                     [string]
+      --agent              agent to use                                                     [string]
+      --format             format: default (formatted) or json (raw JSON events)
                                           [string] [choices: "default", "json"] [default: "default"]
-  -f, --file         file(s) to attach to message                                            [array]
-      --title        title for the session (uses truncated prompt if no value provided)     [string]
-      --attach       attach to a running sente server (e.g., http://localhost:4096)      [string]
-  -p, --password     basic auth password (defaults to SENTE_SERVER_PASSWORD)             [string]
-  -u, --username     basic auth username (defaults to SENTE_SERVER_USERNAME or 'sente')
+  -f, --file               file(s) to attach to message                                      [array]
+      --title              title for the session (uses truncated prompt if no value provided)
                                                                                             [string]
-      --dir          directory to run in, path on remote server if attaching                [string]
-      --port         port for the local server (defaults to random port if no value provided)
+      --attach             attach to a running sente server (e.g., http://localhost:4096)   [string]
+  -p, --password           basic auth password (defaults to SENTE_SERVER_PASSWORD)          [string]
+  -u, --username           basic auth username (defaults to SENTE_SERVER_USERNAME or 'sente')
+                                                                                            [string]
+      --dir                directory to run in, path on remote server if attaching          [string]
+      --port               port for the local server (defaults to random port if no value provided)
                                                                                             [number]
-      --variant      model variant (provider-specific reasoning effort, e.g., high, max, minimal)
-                                                                                            [string]
-      --thinking     show thinking blocks                                                  [boolean]
-  -i, --interactive  run in direct interactive split-footer mode          [boolean] [default: false]
-      --auto         auto-approve permissions that are not explicitly denied (dangerous!)
-                                                                          [boolean] [default: false]"
+      --variant            model variant (provider-specific reasoning effort, e.g., high, max,
+                           minimal)                                                         [string]
+      --thinking           show thinking blocks                                            [boolean]
+  -i, --interactive        run in direct interactive split-footer mode    [boolean] [default: false]
+      --auto               auto-approve permissions that are not explicitly denied (dangerous!)
+                                                                          [boolean] [default: false]
+      --unattended         no one is watching: auto-approve only what the unattended policy allows
+                           (~/.config/sente/unattended.json, agent frontmatter sente.permissions;
+                           read-only by default), refuse the rest and exit 7
+                                                                          [boolean] [default: false]
+      --unattended-policy  policy file for --unattended (implies --unattended)              [string]"
 `;
 
 exports[`sente CLI help-text snapshots every documented command emits stable help text: sente debug --help 1`] = `
@@ -141,7 +147,7 @@ exports[`sente CLI help-text snapshots every documented command emits stable hel
 manage AI providers and credentials
 
 Commands:
-  sente providers list               list providers and credentials                 [aliases: ls]
+  sente providers list               list providers and credentials                    [aliases: ls]
   sente providers login [url]        log in to a provider
   sente providers logout [provider]  log out from a configured provider
 
@@ -221,7 +227,7 @@ Options:
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
       --mdns-domain  custom domain name for mDNS service (default: sente.local)
-                                                                [string] [default: "sente.local"]
+                                                                   [string] [default: "sente.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]"
 `;
 
@@ -241,7 +247,7 @@ Options:
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
       --mdns-domain  custom domain name for mDNS service (default: sente.local)
-                                                                [string] [default: "sente.local"]
+                                                                   [string] [default: "sente.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]"
 `;
 
@@ -388,7 +394,7 @@ exports[`sente CLI help-text snapshots every documented command emits stable hel
 database tools
 
 Commands:
-  sente db [query]     open an interactive sqlite3 shell or run a query                 [default]
+  sente db [query]     open an interactive sqlite3 shell or run a query                    [default]
   sente db path        print the database path
 
 Positionals:
@@ -441,7 +447,7 @@ exports[`sente CLI help-text snapshots every documented command emits stable hel
 authenticate with an OAuth-enabled MCP server
 
 Commands:
-  sente mcp auth list  list OAuth-capable MCP servers and their auth status         [aliases: ls]
+  sente mcp auth list  list OAuth-capable MCP servers and their auth status            [aliases: ls]
 
 Positionals:
   name  name of the MCP server                                                              [string]
@@ -489,7 +495,7 @@ exports[`sente CLI help-text snapshots every documented command emits stable hel
 log in to a provider
 
 Positionals:
-  url  sente auth provider                                                               [string]
+  url  sente auth provider                                                                  [string]
 
 Options:
   -h, --help        show help                                                              [boolean]
