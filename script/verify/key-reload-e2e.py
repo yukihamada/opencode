@@ -173,7 +173,8 @@ class Bench:
         }
         try:
             done = subprocess.run(
-                [*self.command, "run", "--pure", "-m", "teai/check", "check"],
+                # --dir: when run from source, bun's --cwd would otherwise make the repo the project.
+                [*self.command, "run", "--pure", "--dir", project, "-m", "teai/check", "check"],
                 cwd=project, env=env, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
             )
             return done.returncode, done.stdout + done.stderr
