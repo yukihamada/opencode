@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { formatYen, spendLabel, startOfDay, todayCost, turnCost, yen } from "../../src/util/spend"
+import { formatSpend, formatUsd, formatYen, spendLabel, startOfDay, todayCost, turnCost, yen } from "../../src/util/spend"
 
 const NOW = new Date(2026, 9, 6, 15, 0, 0).getTime()
 const TODAY = startOfDay(NOW)
@@ -14,7 +14,7 @@ function assistant(created: number, cost: number) {
 }
 
 describe("util.spend", () => {
-  test("converts recorded USD to yen at 900cr/USD and ¥1 = 6cr", () => {
+  test("converts recorded USD to yen at the top-up rate (900cr/USD, ¥1 = 6cr)", () => {
     expect(yen(1)).toBe(150)
     expect(yen(0.04)).toBeCloseTo(6)
   })
@@ -83,12 +83,30 @@ describe("util.spend", () => {
     expect(formatYen(0.08, "ja-JP")).toBe("¥12")
     expect(formatYen(10, "ja-JP")).toBe("¥1,500")
     expect(formatYen(0, "ja-JP")).toBe("¥0")
-    expect(formatYen(0.08, "en-US")).toBe("¥12")
+  })
+
+  test("USD formatting does not flatten sub-cent turns to $0.00", () => {
+    expect(formatUsd(0.06, "en-US")).toBe("$0.06")
+    expect(formatUsd(2.2, "en-US")).toBe("$2.20")
+    expect(formatUsd(1234.5, "en-US")).toBe("$1,234.50")
+    expect(formatUsd(0.0042, "en-US")).toBe("$0.0042")
+    expect(formatUsd(0.00004, "en-US")).toBe("$0.00004")
+    expect(formatUsd(0, "en-US")).toBe("$0.00")
+  })
+
+  test("currency follows the locale: yen for Japanese, recorded USD elsewhere", () => {
+    expect(formatSpend(0.08, "ja-JP")).toBe("¥12")
+    expect(formatSpend(0.08, "ja")).toBe("¥12")
+    expect(formatSpend(0.08, "en-US")).toBe("$0.08")
+    expect(formatSpend(0.08, "en-GB")).toContain("0.08")
+    expect(formatSpend(0.08, "en-GB")).not.toContain("¥")
+    expect(formatSpend(0.08, "de-DE")).not.toContain("¥")
   })
 
   test("label: turn / today in ja and en, with + for a lower bound", () => {
     expect(spendLabel({ turn: 0.08, today: { usd: 2.2, partial: false } }, "ja-JP")).toBe("今回 ¥12 / 今日 ¥330")
-    expect(spendLabel({ turn: 0.08, today: { usd: 2.2, partial: true } }, "en-US")).toBe("turn ¥12 / today ¥330+")
+    expect(spendLabel({ turn: 0.08, today: { usd: 2.2, partial: true } }, "en-US")).toBe("turn $0.08 / today $2.20+")
+    expect(spendLabel({ turn: 0.004, today: { usd: 0.004, partial: false } }, "en-US")).toBe("turn $0.004 / today $0.004")
     expect(spendLabel({ turn: undefined, today: { usd: 2.2, partial: false } }, "ja-JP")).toBe("今日 ¥330")
   })
 

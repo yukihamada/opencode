@@ -1,11 +1,14 @@
 import { terminalLocale } from "./locale"
 
 /**
- * Status-line spend: "this turn / today", shown in yen.
+ * Status-line spend: "this turn / today".
  *
- * Costs are recorded per assistant message in USD from the configured model rate
- * (an estimate, not a billed amount). teai.io sells credits at ¥1 = 6cr and prices
- * usage at 900cr per USD of model rate, so one USD of recorded cost is about ¥150.
+ * Costs are recorded per assistant message in USD from the configured model rate.
+ * They are an estimate, not the amount teai.io bills (which includes its own margin).
+ *
+ * Currency follows the terminal locale: Japanese shows yen, everything else stays in
+ * the recorded USD. The yen figure uses teai.io's top-up conversion (900cr per USD,
+ * ¥1 = 6cr, so about ¥150 per USD) and is therefore an estimate as well.
  */
 export const CREDITS_PER_YEN = 6
 export const CREDITS_PER_USD = 900
@@ -84,14 +87,31 @@ export function formatYen(usd: number, locale = terminalLocale()) {
   return `¥${number.format(value)}`
 }
 
-/** "今回 ¥12 / 今日 ¥340" — undefined when nothing has been spent (free or unpriced models). */
+export function formatUsd(usd: number, locale = terminalLocale()) {
+  // Sub-cent turns are common on cheap models; keep two significant digits so they
+  // do not all read "$0.00" (e.g. $0.0042), and plain cents everywhere else.
+  const small = usd > 0 && usd < 0.01
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
+    currencyDisplay: "narrowSymbol",
+    ...(small ? { maximumSignificantDigits: 2 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+  }).format(usd)
+}
+
+/** The one place that decides which currency a locale reads spend in. */
+export function formatSpend(usd: number, locale = terminalLocale()) {
+  return locale.startsWith("ja") ? formatYen(usd, locale) : formatUsd(usd, locale)
+}
+
+/** ja: "今回 ¥12 / 今日 ¥340", otherwise "turn $0.08 / today $2.27". Undefined when nothing has been spent. */
 export function spendLabel(
   input: { turn: number | undefined; today: { usd: number; partial: boolean } },
   locale = terminalLocale(),
 ) {
   if (cost(input.turn) === 0 && input.today.usd === 0 && !input.today.partial) return undefined
   const text = labels[locale.startsWith("ja") ? "ja" : "en"]
-  const today = `${text.today} ${formatYen(input.today.usd, locale)}${input.today.partial ? "+" : ""}`
+  const today = `${text.today} ${formatSpend(input.today.usd, locale)}${input.today.partial ? "+" : ""}`
   if (input.turn === undefined) return today
-  return `${text.turn} ${formatYen(input.turn, locale)} / ${today}`
+  return `${text.turn} ${formatSpend(input.turn, locale)} / ${today}`
 }

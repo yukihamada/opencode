@@ -280,7 +280,7 @@ export function Prompt(props: PromptProps) {
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
     return {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      // This turn / today, in yen. The session total stays in the sidebar.
+      // This turn / today, in the locale's currency. The session total stays in the sidebar.
       cost: spendLabel({
         turn: turnCost(msg),
         today: todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() }),
