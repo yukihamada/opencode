@@ -7,6 +7,8 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { reply } from "../../lib/llm-server"
 import { cliIt } from "../../lib/cli-process"
+import { AUTO_REJECT_LIMIT } from "../../../src/cli/cmd/run"
+import { ExitCode } from "../../../src/cli/exit-code"
 
 describe("sente run (non-interactive subprocess)", () => {
   // Happy path: prompt completes, output reaches stdout, process exits 0.
@@ -254,12 +256,16 @@ describe("sente run (non-interactive subprocess)", () => {
     "rejects requested permissions by default and allows them with the dangerous flag",
     ({ home, llm, sente }) =>
       Effect.gen(function* () {
+        // Nobody can answer the prompt, so the action is refused — but the model
+        // is told why and gets to finish, the same as with an explicit deny.
+        yield* Effect.promise(() => Bun.write(`${home}/denied-file`, "keep"))
         yield* llm.tool("bash", { command: "rm -f denied-file", description: "Remove a test file" })
         yield* llm.text("continued after rejection")
         const denied = yield* sente.run("request permission", { permission: { bash: "ask" } })
         sente.expectExit(denied, 0)
         expect(denied.stderr).toContain("permission requested: bash")
-        expect(denied.stdout).toBe("")
+        expect(denied.stdout).toBe("continued after rejection\n")
+        expect(yield* Effect.promise(() => Bun.file(`${home}/denied-file`).exists())).toBe(true)
 
         yield* llm.reset
         yield* llm.tool("bash", { command: "rm -f allowed-file", description: "Remove a test file" })
@@ -282,6 +288,23 @@ describe("sente run (non-interactive subprocess)", () => {
         sente.expectExit(explicitlyDenied, 0)
         expect(explicitlyDenied.stdout).toContain("continued after explicit denial")
         expect(yield* Effect.promise(() => Bun.file(`${home}/explicitly-denied`).exists())).toBe(false)
+      }),
+    60_000,
+  )
+
+  cliIt.concurrent(
+    "stops with the permission exit code when the model keeps asking for refused actions",
+    ({ home, llm, sente }) =>
+      Effect.gen(function* () {
+        for (let i = 0; i <= AUTO_REJECT_LIMIT; i++) {
+          yield* llm.tool("bash", { command: `touch refused-${i}`, description: "Create a marker" })
+        }
+        yield* llm.text("never reached")
+        const result = yield* sente.run("keep asking", { permission: { bash: "ask" } })
+        sente.expectExit(result, ExitCode.PermissionDenied)
+        expect(result.stdout).not.toContain("never reached")
+        expect(result.stderr).toContain(`stopped after ${AUTO_REJECT_LIMIT + 1} actions`)
+        expect(yield* Effect.promise(() => Bun.file(`${home}/refused-0`).exists())).toBe(false)
       }),
     60_000,
   )

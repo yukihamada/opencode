@@ -41,7 +41,42 @@ import { withTransientReadRetry } from "@/util/effect-http-client"
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
 function mergeConfig(target: Info, source: Info): Info {
-  return mergeDeep(target, source) as Info
+  const merged = mergeDeep(target, source) as Info
+  if (target.permission !== undefined && source.permission !== undefined) {
+    merged.permission = mergePermission(target.permission, source.permission) as Info["permission"]
+  }
+  if (target.agent && source.agent) {
+    for (const [name, agent] of Object.entries(source.agent)) {
+      const lower = target.agent[name]?.permission
+      if (lower === undefined || agent?.permission === undefined || !merged.agent?.[name]) continue
+      merged.agent[name] = { ...merged.agent[name], permission: mergePermission(lower, agent.permission) as never }
+    }
+  }
+  return merged
+}
+
+/**
+ * Merge permission config so the higher-precedence side really wins.
+ *
+ * Rules are evaluated last-match-wins, which makes key order part of the
+ * meaning. A plain deep merge keeps the lower file's position for every key
+ * both files define, so a later file's `"*": "ask"` lands *after* its own
+ * `bash` rules whenever an earlier file already mentioned `bash`, and silently
+ * overrides them. Here every key of `source` is placed after the keys only
+ * `target` has, in `source`'s own order — at the top level and inside each
+ * pattern map.
+ */
+export function mergePermission(target: unknown, source: unknown): unknown {
+  if (source === undefined) return target
+  if (!isRecord(target) || !isRecord(source)) return source
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(target)) {
+    if (!(key in source)) result[key] = value
+  }
+  for (const [key, value] of Object.entries(source)) {
+    result[key] = mergePermission(target[key], value)
+  }
+  return result
 }
 
 function mergeConfigConcatArrays(target: Info, source: Info): Info {
@@ -572,7 +607,7 @@ const layer = Layer.effect(
 
         if (Flag.SENTE_PERMISSION) {
           try {
-            result.permission = mergeDeep(result.permission ?? {}, JSON.parse(Flag.SENTE_PERMISSION))
+            result.permission = mergePermission(result.permission ?? {}, JSON.parse(Flag.SENTE_PERMISSION)) as Info["permission"]
           } catch (err) {
             yield* Effect.logWarning("SENTE_PERMISSION contains invalid JSON, skipping", { err })
           }
