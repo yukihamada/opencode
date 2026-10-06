@@ -157,6 +157,8 @@ export type TuiInput = {
   onSnapshot?: () => Promise<string[]>
   /** Push environment variables into the engine and reload it (used by /login). */
   onEnv?: (env: Record<string, string>) => Promise<void>
+  /** One-time startup warning (e.g. another session database holds far more sessions). */
+  notice?: Promise<string | undefined>
   directory?: string
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
@@ -358,6 +360,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                     <App
                                                                       onSnapshot={input.onSnapshot}
                                                                       onEnv={input.onEnv}
+                                                                      notice={input.notice}
                                                                       pluginHost={input.pluginHost}
                                                                     />
                                                                   </LocationProvider>
@@ -408,6 +411,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
 function App(props: {
   onSnapshot?: () => Promise<string[]>
   onEnv?: (env: Record<string, string>) => Promise<void>
+  notice?: Promise<string | undefined>
   pluginHost: TuiPluginHost
 }) {
   const startup = useTuiStartup()
@@ -528,6 +532,12 @@ function App(props: {
   })
 
   const args = useArgs()
+  onMount(() => {
+    // The promise never rejects: the worker logs failures and resolves undefined.
+    void props.notice?.then((message) => {
+      if (message) toast.show({ variant: "warning", message, duration: 30000 })
+    })
+  })
   onMount(() => {
     batch(() => {
       if (args.agent) local.agent.set(args.agent)

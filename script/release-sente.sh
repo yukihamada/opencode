@@ -12,6 +12,12 @@ WT="${SENTE_WT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$WT/packages/sente"
 VERSION="$(python3 -c "import json;print(json.load(open('dist/sente-darwin-arm64/package.json'))['version'])")"
 [ -n "$VERSION" ]
+# A developer build refuses to apply new migrations to a database that already has
+# conversations. Shipping one would stop every user's startup, so refuse to package it.
+if grep -l '"senteDevBuild": true' dist/sente-*/package.json >/dev/null 2>&1; then
+  echo "error: dist/ holds a developer build. Rebuild with SENTE_OFFICIAL_BUILD=1 before releasing." >&2
+  exit 1
+fi
 OUT="dist/release"; rm -rf "$OUT"; mkdir -p "$OUT"
 for d in dist/sente-*/; do
   key="$(basename "$d")"; [ -d "$d/bin" ] || continue

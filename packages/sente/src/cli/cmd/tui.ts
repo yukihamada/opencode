@@ -303,6 +303,9 @@ export const TuiThreadCommand = cmd({
             async onEnv(env) {
               await client.call("credentials", { env })
             },
+            // Runs in the worker so a slow disk cannot delay the first frame. The worker logs
+            // failures and resolves undefined; it never rejects.
+            notice: (async () => await client.call("databaseNotice", undefined))(),
             config,
             pluginHost: createLegacyTuiPluginHost(),
             directory: cwd,

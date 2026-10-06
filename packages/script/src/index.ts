@@ -1,6 +1,7 @@
 import { $ } from "bun"
 import semver from "semver"
 import path from "path"
+import { devBuild, previewLabel, resolveChannel } from "./channel"
 
 const rootPkgPath = path.resolve(import.meta.dir, "../../../package.json")
 const rootPkg = await Bun.file(rootPkgPath).json()
@@ -23,23 +24,18 @@ const env = {
   SENTE_VERSION: process.env["SENTE_VERSION"],
   SENTE_RELEASE: process.env["SENTE_RELEASE"],
 }
-const CHANNEL = await (async () => {
-  if (env.SENTE_CHANNEL) return env.SENTE_CHANNEL
-  if (env.SENTE_BUMP) return "latest"
-  if (env.SENTE_VERSION && !env.SENTE_VERSION.startsWith("0.0.0-")) return "latest"
-  return await $`git branch --show-current`.text().then((x) => x.trim())
-})()
-// A detached HEAD yields an empty channel, which silently switches the session DB to
-// `sente-.db` and hides every existing session. Refuse instead of shipping that build.
-if (!CHANNEL)
-  throw new Error(
-    "SENTE_CHANNEL is empty (detached HEAD?). Set SENTE_CHANNEL=headless-model-fallback to keep sente-<channel>.db.",
-  )
+// The channel names the session database (sente-<channel>.db). It used to fall back to the
+// git branch name (or "" on a detached HEAD), so every local build opened its own empty
+// database and existing conversations looked lost. It is now stable unless set explicitly.
+const CHANNEL = resolveChannel(env)
 const IS_PREVIEW = CHANNEL !== "latest"
 
 const VERSION = await (async () => {
   if (env.SENTE_VERSION) return env.SENTE_VERSION
-  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+  if (IS_PREVIEW) {
+    const branch = env.SENTE_CHANNEL ? "" : await $`git branch --show-current`.nothrow().quiet().text()
+    return `0.0.0-${previewLabel(CHANNEL, branch)}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+  }
   const version = await fetch("https://registry.npmjs.org/opencode-ai/latest")
     .then((res) => {
       if (!res.ok) throw new Error(res.statusText)
@@ -69,6 +65,10 @@ export const Script = {
   },
   get version() {
     return VERSION
+  },
+  /** Stamped into the binary as SENTE_DEV_BUILD; see devBuild. */
+  get dev() {
+    return devBuild({ version: VERSION, env: process.env })
   },
   get preview() {
     return IS_PREVIEW
