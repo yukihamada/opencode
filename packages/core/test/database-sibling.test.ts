@@ -29,7 +29,10 @@ function seed(name: string, sessions: number) {
   db.transaction(() => {
     for (let index = 0; index < sessions; index++) insert.run(`ses_${index}`)
   })()
-  db.close()
+  // Finalize before closing: a pending statement keeps the handle open and Windows then
+  // refuses to delete the file (EBUSY). close(true) throws if anything is still pending.
+  insert.finalize()
+  db.close(true)
   return file
 }
 
@@ -123,7 +126,7 @@ describe("sibling session databases", () => {
     await fs.writeFile(path.join(dir, "sente-broken.db"), "this is not a sqlite database, just text ".repeat(200))
     const schema = new Sqlite(path.join(dir, "sente-noschema.db"))
     schema.run("CREATE TABLE unrelated (id TEXT)")
-    schema.close()
+    schema.close(true)
     const result = await DatabaseSibling.scan({ current })
     expect(result.notice).toBeUndefined()
     expect(result.skipped.map((item) => item.file).sort()).toEqual(["sente-broken.db", "sente-noschema.db"])
@@ -166,6 +169,18 @@ describe("sibling session databases", () => {
     const before = await fs.readFile(file)
     expect(await DatabaseSibling.countSessions(file)).toBe(25)
     expect((await fs.readFile(file)).equals(before)).toBe(true)
+  })
+
+  test("counting releases the file, readable or not, so it can be removed right away", async () => {
+    // On Windows an open handle makes rm fail with EBUSY; elsewhere this always holds.
+    const good = seed("sente-headless-model-fallback.db", 25)
+    const broken = path.join(dir, "sente-broken.db")
+    await fs.writeFile(broken, "this is not a sqlite database, just text ".repeat(200))
+    expect(await DatabaseSibling.countSessions(good)).toBe(25)
+    await expect(DatabaseSibling.countSessions(broken)).rejects.toThrow()
+    await fs.rm(good)
+    await fs.rm(broken)
+    expect(await fs.readdir(dir).then((names) => names.filter((name) => name.endsWith(".db")))).toEqual([])
   })
 
   test("message names both databases, counts and how to switch, in ja and en", async () => {

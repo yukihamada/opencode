@@ -72,7 +72,14 @@ export async function countSessions(file: string): Promise<number> {
     const db = new Database(file, { readonly: true })
     try {
       db.run("PRAGMA busy_timeout = 200")
-      return Number((db.query(query).get() as { n: number }).n)
+      // prepare + finalize, not the cached db.query(): an unfinalized statement keeps the
+      // file handle open after close(), which on Windows locks the user's database file.
+      const statement = db.prepare(query)
+      try {
+        return Number((statement.get() as { n: number }).n)
+      } finally {
+        statement.finalize()
+      }
     } finally {
       db.close()
     }
