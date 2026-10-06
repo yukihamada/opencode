@@ -15,6 +15,10 @@ run-name: "sente release (${{ github.ref_name }})"
 #     manually (workflow_dispatch) from that branch.
 #   - The macOS arm64 binary must pass `--version` and `debug config` on a real
 #     Apple Silicon runner before anything is published.
+#   - Both the linux and the Apple Silicon binary must pass script/verify/release-e2e.py:
+#     `db path` resolves to sente-<RELEASE_BRANCH>.db (a build that opens another session
+#     database makes every existing conversation look lost), and a real `run` + TUI turn
+#     against a local fake model server completes in a throwaway HOME.
 #   - The publish job runs in the `sente-release` environment; add required
 #     reviewers there (Settings > Environments) for a second approval click.
 on:
@@ -121,6 +125,11 @@ jobs:
           python3 script/sente-release-smoke.py release-smoke/sente "$VERSION"
           python3 script/login-release-smoke.py release-smoke/sente
 
+      # Required gate, no network or credentials: packaged binary + fake model server +
+      # throwaway HOME (tmux is installed by the step above).
+      - name: Session database and end-to-end gate (linux)
+        run: python3 script/verify/release-e2e.py --binary release-smoke/sente --channel "$RELEASE_BRANCH"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sente-release
@@ -152,6 +161,11 @@ jobs:
           tar -xzf out/sente-darwin-arm64.tar.gz -C smoke
           file smoke/sente
           python3 script/sente-release-smoke.py smoke/sente "$VERSION"
+      - name: Session database and end-to-end gate (Apple Silicon)
+        run: |
+          set -eu
+          command -v tmux >/dev/null || brew install tmux
+          python3 script/verify/release-e2e.py --binary smoke/sente --channel "$RELEASE_BRANCH"
 
   release:
     needs: [build, smoke-macos-arm64]

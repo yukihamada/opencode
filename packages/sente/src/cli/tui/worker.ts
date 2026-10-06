@@ -60,6 +60,12 @@ export const rpc = {
     await InstanceRuntime.load({ directory: input.directory })
     await upgrade().catch(() => {})
   },
+  /** Startup check for a sibling session database with far more sessions. Never rejects. */
+  async databaseNotice() {
+    const { Database } = await import("@sente-ai/core/database/database")
+    const { DatabaseSibling } = await import("@sente-ai/core/database/sibling")
+    return AppRuntime.runPromise(DatabaseSibling.startupNotice(Database.path()))
+  },
   async reload() {
     await AppRuntime.runPromise(
       Effect.gen(function* () {

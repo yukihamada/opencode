@@ -280,6 +280,19 @@ export const RunCommand = effectCmd({
     const agentSvc = yield* Agent.Service
     const flags = yield* RuntimeFlags.Service
     const localInstance = yield* InstanceRef
+    // `--attach` talks to another machine's database; only warn about the local one.
+    if (!args.attach) {
+      const { Database } = yield* Effect.promise(() => import("@sente-ai/core/database/database"))
+      const { DatabaseSibling } = yield* Effect.promise(() => import("@sente-ai/core/database/sibling"))
+      const notice = yield* DatabaseSibling.startupNotice(Database.path())
+      // stderr only: stdout stays the answer (or a pure event stream under --format json).
+      if (notice)
+        process.stderr.write(
+          (args.format === "json"
+            ? JSON.stringify({ type: "warning", level: "warn", timestamp: Date.now(), message: notice })
+            : UI.Style.TEXT_WARNING_BOLD + "! " + UI.Style.TEXT_NORMAL + notice) + EOL,
+        )
+    }
     yield* Effect.promise(async () => {
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const interactive = args.mini
