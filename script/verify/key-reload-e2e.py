@@ -169,6 +169,8 @@ class Bench:
             "XDG_CACHE_HOME": os.path.join(home, ".cache"),
             "LANG": "ja_JP.UTF-8",
             "SENTE_DISABLE_AUTOUPDATE": "1",
+            # The fake server stands in for the official teai API: keys are only reloaded for that host.
+            "TEAI_API": self.url.removesuffix("/v1"),
             **(extra or {}),
         }
         try:
@@ -234,7 +236,18 @@ def case_override(bench):
     bench.check("override", "明示指定したキーは保存済みキーへ勝手に差し替えない", ok, f"exit={code} main_calls={seen}\n{out}")
 
 
-CASES = {"rotated": case_rotated, "unchanged": case_unchanged, "override": case_override}
+def case_foreign(bench):
+    """A provider merely named teai… that points at another host never receives the saved key."""
+    home, project, credentials = bench.home(OLD)
+    bench.fake.reset(accept=NEW, failure="revoked", rotate=credentials)
+    # TEAI_API left at its default (https://api.teai.io): the fake server is now "some other host".
+    code, out = bench.run(home, project, {"TEAI_API": ""})
+    seen = labels(bench.fake.keys)
+    ok = code not in (0, -1) and seen == ["old"] and OK_TEXT not in out
+    bench.check("foreign", "teai の公式ホスト以外には保存済みキーを送らない", ok, f"exit={code} main_calls={seen}\n{out}")
+
+
+CASES = {"rotated": case_rotated, "unchanged": case_unchanged, "override": case_override, "foreign": case_foreign}
 
 
 def main():

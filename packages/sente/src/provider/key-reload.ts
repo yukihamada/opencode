@@ -10,10 +10,14 @@
  * - 再送は1リクエストにつき1回。再送結果が失敗でもそれ以上は試さない。
  * - 起動時に env のキーが保存済みキーと違っていた場合(`TEAI_API_KEY=… te` や
  *   プロジェクト別キーの明示指定)は差し替えない。別のキーで勝手に課金しないため。
+ * - 送信先が teai の公式 API ホスト(既定 https://api.teai.io、TEAI_API で上書きされた接続先)と
+ *   一致するときだけ。`teai-xxx` という名前で別ホストを指す設定には、保存済みキーを送らない。
  * - 保護モード(SENTE_SCRUB_KEY)では実キーを読まない。
  * - キーの値はログにも例外にも出さない。
  */
-import { credentialsPath, parseCredentials, TEAI_KEY_ENV } from "@sente-ai/tui/util/teai"
+import { Effect } from "effect"
+import * as Observability from "@sente-ai/core/observability"
+import { apiBase, credentialsPath, parseCredentials, TEAI_KEY_ENV } from "@sente-ai/tui/util/teai"
 
 type Env = Record<string, string | undefined>
 
@@ -63,6 +67,28 @@ export async function savedKey(env: Env = process.env, home?: string) {
   return parseCredentials(text)
 }
 
+/**
+ * 送信先が teai の公式 API か(スキーム・ホスト・ポートの一致)。保存済みキーは teai のものなので、
+ * プロバイダ名が teai で始まっていても、別ホストへは載せない。
+ */
+export function official(input: string | URL, env: Env = process.env) {
+  try {
+    return new URL(String(input)).origin === new URL(apiBase(env)).origin
+  } catch {
+    // URL として読めない送信先は公式ではない。
+    return false
+  }
+}
+
+/** 既定のログ出力(ファイルログ。キーや応答本文は渡さない)。 */
+function warn(message: string, fields: Record<string, string | number>) {
+  Effect.runFork(Effect.logWarning(message, fields).pipe(Effect.provide(Observability.layer)))
+}
+
+function errorName(error: unknown) {
+  return error instanceof Error ? error.name : typeof error
+}
+
 function bearer(headers: Headers) {
   const match = /^Bearer\s+(.*)$/i.exec(headers.get("authorization") ?? "")
   return match?.[1]?.trim() ?? ""
@@ -80,6 +106,8 @@ export type Options = {
   home?: string
   /** 保存済みキーの読み出し(テスト用の差し替え口)。 */
   read?: () => Promise<string | undefined>
+  /** 読み捨てた失敗を1行残す先(既定はファイルログ)。キーや応答本文は渡さない。 */
+  log?: (message: string, fields: Record<string, string | number>) => void
   /** 差し替えが起きたときの通知。キーの値は渡さない。 */
   onSwap?: (info: { reason: Failure; status: number }) => void
 }
@@ -91,11 +119,14 @@ export type Options = {
 export function wrap(fetchFn: FetchLike, opts: Options = {}): FetchLike {
   const env = opts.env ?? process.env
   const read = opts.read ?? (() => savedKey(env, opts.home))
+  const log = opts.log ?? warn
   const swapped = new Map<string, string>()
 
   return async (input, init) => {
     // Request オブジェクトで渡された場合は中身を作り直せないので素通し。
     if (typeof input !== "string" && !(input instanceof URL)) return fetchFn(input, init)
+    // 公式の teai API 以外(名前だけ teai-… の別ホスト)には保存済みキーを一切載せない。
+    if (!official(input, env)) return fetchFn(input, init)
 
     const send = (key: string | undefined) => {
       if (key === undefined) return fetchFn(input, init)
@@ -113,7 +144,17 @@ export function wrap(fetchFn: FetchLike, opts: Options = {}): FetchLike {
     if (env[SOURCE_ENV] === "env" || env.SENTE_SCRUB_KEY) return response
     if (!replayable(init?.body)) return response
     // 401 は本文なしで判定できる。それ以外は複製して本文から原因を読む(元の応答は消費しない)。
-    const text = response.status === 401 ? "" : await response.clone().text().catch(() => "")
+    const text =
+      response.status === 401
+        ? ""
+        : // clone() は本文が使用済みだと同期的に投げるので、Promise の中で呼ぶ。
+          await Promise.resolve()
+            .then(() => response.clone().text())
+            .catch((error: unknown) => {
+              // 本文が読めなければ原因を本文から判定できない。状態コードだけで続ける。
+              log("teai key reload: could not read failure body", { status: response.status, error: errorName(error) })
+              return ""
+            })
     const reason = failure(response.status, text)
     if (!reason) return response
 
@@ -121,7 +162,10 @@ export function wrap(fetchFn: FetchLike, opts: Options = {}): FetchLike {
     if (!fresh || fresh === used) return response
 
     // ここから先は1回だけ。結果が何であれ再々送はしない。
-    await response.body?.cancel().catch(() => {})
+    await response.body?.cancel().catch((error: unknown) => {
+      // 捨てる側の応答を閉じられなかっただけ。再送は続ける。
+      log("teai key reload: could not release failed response", { status: response.status, error: errorName(error) })
+    })
     swapped.set(original, fresh)
     env[TEAI_KEY_ENV] = fresh
     opts.onSwap?.({ reason, status: response.status })

@@ -10,7 +10,7 @@ import { ProviderKeyReload } from "@/provider/key-reload"
 
 const OLD = "te_old_key_0000000000"
 const NEW = "te_new_key_1111111111"
-const URL_ = "https://api.teai.example/v1/chat/completions"
+const URL_ = "https://api.teai.io/v1/chat/completions"
 
 type Call = { key: string; body: unknown }
 
@@ -147,6 +147,100 @@ describe("ProviderKeyReload.wrap", () => {
     expect((await fetch(URL_, request(OLD))).status).toBe(402)
     expect(up.calls.map((call) => call.key)).toEqual([OLD])
     expect(env.TEAI_API_KEY).toBe(OLD)
+  })
+
+  test("another host under a teai-… provider name never receives the saved key", async () => {
+    for (const url of [
+      "https://llm.example.com/v1/chat/completions",
+      "https://api.teai.io.example.com/v1/chat/completions",
+      "http://api.teai.io/v1/chat/completions",
+      "https://api.teai.io:8443/v1/chat/completions",
+    ]) {
+      const up = upstream((key) => (key === NEW ? ok() : revoked()))
+      let reads = 0
+      const env: Record<string, string | undefined> = { TEAI_API_KEY: OLD }
+      const fetch = ProviderKeyReload.wrap(up.fetch, {
+        env,
+        read: async () => {
+          reads++
+          return NEW
+        },
+      })
+
+      expect((await fetch(url, request(OLD))).status).toBe(401)
+      expect(up.calls.map((call) => call.key)).toEqual([OLD])
+      expect(reads).toBe(0)
+      expect(env.TEAI_API_KEY).toBe(OLD)
+    }
+  })
+
+  test("a key learned on the official host is not carried to another host", async () => {
+    const up = upstream((key) => (key === NEW ? ok() : revoked()))
+    const fetch = ProviderKeyReload.wrap(up.fetch, { env: {}, read: async () => NEW })
+
+    await fetch(URL_, request(OLD))
+    await fetch("https://llm.example.com/v1/chat/completions", request(OLD))
+
+    expect(up.calls.map((call) => call.key)).toEqual([OLD, NEW, OLD])
+  })
+
+  test("an official endpoint overridden with TEAI_API is followed, the default host then is not", async () => {
+    const env: Record<string, string | undefined> = { TEAI_API: "http://127.0.0.1:4567/" }
+    expect(ProviderKeyReload.official("http://127.0.0.1:4567/v1/chat/completions", env)).toBe(true)
+    expect(ProviderKeyReload.official(URL_, env)).toBe(false)
+    expect(ProviderKeyReload.official(URL_, {})).toBe(true)
+    expect(ProviderKeyReload.official("not a url", {})).toBe(false)
+
+    const up = upstream((key) => (key === NEW ? ok() : revoked()))
+    const fetch = ProviderKeyReload.wrap(up.fetch, { env, read: async () => NEW })
+    expect((await fetch("http://127.0.0.1:4567/v1/chat/completions", request(OLD))).status).toBe(200)
+    expect(up.calls.map((call) => call.key)).toEqual([OLD, NEW])
+  })
+
+  test("a failure body that cannot be read is logged, without key or body, and the retry still happens", async () => {
+    const lines: Array<{ message: string; fields: Record<string, string | number> }> = []
+    const broken = () => {
+      const response = monthly()
+      response.clone = () => {
+        throw new TypeError("body already used: " + OLD)
+      }
+      return response
+    }
+    const up = upstream((key) => (key === NEW ? ok() : broken()))
+    const fetch = ProviderKeyReload.wrap(up.fetch, {
+      env: {},
+      read: async () => NEW,
+      log: (message, fields) => lines.push({ message, fields }),
+    })
+
+    expect((await fetch(URL_, request(OLD))).status).toBe(200)
+    expect(lines).toHaveLength(1)
+    expect(lines[0].fields).toEqual({ status: 402, error: "TypeError" })
+    expect(JSON.stringify(lines)).not.toContain("te_")
+    expect(JSON.stringify(lines)).not.toContain("monthly limit")
+  })
+
+  test("a failed response that cannot be released is logged and the retry still happens", async () => {
+    const lines: Array<{ message: string; fields: Record<string, string | number> }> = []
+    const stuck = () =>
+      new Response(
+        new ReadableStream({
+          cancel() {
+            throw new Error("cannot cancel")
+          },
+        }),
+        { status: 401 },
+      )
+    const up = upstream((key) => (key === NEW ? ok() : stuck()))
+    const fetch = ProviderKeyReload.wrap(up.fetch, {
+      env: {},
+      read: async () => NEW,
+      log: (message, fields) => lines.push({ message, fields }),
+    })
+
+    expect((await fetch(URL_, request(OLD))).status).toBe(200)
+    expect(up.calls.map((call) => call.key)).toEqual([OLD, NEW])
+    expect(lines.map((line) => line.fields)).toEqual([{ status: 401, error: "Error" }])
   })
 
   test("protected mode never reads the real key", async () => {
