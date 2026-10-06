@@ -125,6 +125,18 @@ async function toolError(part: ToolPart) {
   }
 }
 
+// How many refusals a non-interactive run answers with feedback before it gives up.
+// The model normally adapts after one or two; past this it is retrying the same thing.
+export const AUTO_REJECT_LIMIT = 8
+
+export function autoRejectFeedback(what: string) {
+  return [
+    `Not executed: ${what} needs approval, and this run is non-interactive so nobody can approve it.`,
+    "Do not retry it or an equivalent command. Continue with the tools that are allowed (reading, searching and editing files in the working directory).",
+    "When you finish, say plainly what you could not run or verify because of this.",
+  ].join(" ")
+}
+
 export const RunCommand = effectCmd({
   command: "run [message..]",
   describe: "run opencode with a message",
@@ -491,9 +503,11 @@ export const RunCommand = effectCmd({
           ]
 
       function title() {
-        if (args.title === undefined) return
-        if (args.title !== "") return args.title
-        return message.slice(0, 50) + (message.length > 50 ? "..." : "")
+        // A one-shot run has no session list to pick from, so naming the session
+        // must not cost a second model request. `--title <text>` still wins.
+        if (args.title === undefined && interactive) return
+        if (args.title) return args.title
+        return message.slice(0, 50) + (message.length > 50 ? "..." : "") || undefined
       }
 
       async function session(sdk: SenteClient): Promise<SessionInfo | undefined> {
@@ -746,6 +760,7 @@ export const RunCommand = effectCmd({
           // caller can branch on. The first fatal error wins — later ones are
           // still printed, but they don't downgrade the classification.
           let code: ExitCode | undefined
+          let refused = 0
 
           for await (const event of events.stream) {
             if (event.type === "session.created" && event.properties.info.parentID) {
@@ -857,11 +872,28 @@ export const RunCommand = effectCmd({
                   reply: "once",
                 })
               } else {
-                diag(
-                  "warn",
-                  `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-rejecting`,
-                  { permission: permission.permission, patterns: permission.patterns },
-                )
+                refused++
+                const what = `${permission.permission} (${permission.patterns.join(", ")})`
+                diag("warn", `permission requested: ${what}; auto-rejecting`, {
+                  permission: permission.permission,
+                  patterns: permission.patterns,
+                })
+                // A bare reject ends the turn: the run would exit 0 having done
+                // nothing, with no word from the model. Nobody is here to ask, so
+                // tell the model why and let it finish the work another way.
+                if (refused <= AUTO_REJECT_LIMIT) {
+                  await client.permission.reply({
+                    requestID: permission.id,
+                    reply: "reject",
+                    message: autoRejectFeedback(what),
+                  })
+                  continue
+                }
+                const stopped = `stopped after ${refused} actions this run is not allowed to take; last: ${what}`
+                error = error ? error + EOL + stopped : stopped
+                code = code ?? ExitCode.PermissionDenied
+                if (!emit("error", { error: { name: "PermissionDenied", data: { message: stopped } }, exitCode: code }))
+                  UI.error(stopped)
                 await client.permission.reply({
                   requestID: permission.id,
                   reply: "reject",
