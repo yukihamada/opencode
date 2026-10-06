@@ -4,6 +4,7 @@ import fs from "fs"
 import { basename, dirname, join } from "path"
 import { Effect } from "effect"
 import { Flag } from "../flag/flag"
+import { DatabaseReadonly } from "./readonly"
 
 // Every build channel has its own session database (sente-<channel>.db) in the same
 // directory. Opening a nearly empty one while another holds thousands of sessions looks
@@ -66,32 +67,7 @@ export function candidates(current: string, limit = 6) {
  * (measured: ~70ms cold on a 14GB file with 2600 sessions).
  */
 export async function countSessions(file: string): Promise<number> {
-  const query = "SELECT count(*) AS n FROM session"
-  if (typeof Bun !== "undefined") {
-    const { Database } = await import("bun:sqlite")
-    const db = new Database(file, { readonly: true })
-    try {
-      db.run("PRAGMA busy_timeout = 200")
-      // prepare + finalize, not the cached db.query(): an unfinalized statement keeps the
-      // file handle open after close(), which on Windows locks the user's database file.
-      const statement = db.prepare(query)
-      try {
-        return Number((statement.get() as { n: number }).n)
-      } finally {
-        statement.finalize()
-      }
-    } finally {
-      db.close()
-    }
-  }
-  const { DatabaseSync } = await import("node:sqlite")
-  const db = new DatabaseSync(file, { readOnly: true })
-  try {
-    db.exec("PRAGMA busy_timeout = 200")
-    return Number((db.prepare(query).get() as { n: number }).n)
-  } finally {
-    db.close()
-  }
+  return DatabaseReadonly.open(file, (query) => Number(query<{ n: number }>("SELECT count(*) AS n FROM session")[0].n))
 }
 
 /** "Clearly more": at least 20 sessions more and at least double. */

@@ -30,6 +30,9 @@ spec.loader.exec_module(base)
 COST_CASES = ["gate-off", "gate-settles", "no-resume"]
 SEED = "sente-seed-many.db"
 SEED_SESSIONS = 50
+# A migration that only deletes derived rows, so applying it a second time is harmless. The
+# db-migrate case makes it look unapplied to prove what a build does with a pending migration.
+MIGRATION = "20260622202450_simplify_session_input"
 
 
 def data_dir(home):
@@ -60,7 +63,7 @@ def sessions(path):
         db.close()
 
 
-def cases(bench, channel):
+def cases(bench, channel, dev_guard=False):
     fake = bench.fake
     expected = "sente.db" if channel in ("latest", "beta", "prod") else f"sente-{channel}.db"
 
@@ -183,7 +186,84 @@ def cases(bench, channel):
             problems.append("案内が出たまま会話が完了していない")
         bench.check("db-notice-tui", "TUI でも同じ案内が画面に出て、そのまま会話できる", not problems, "\n".join(problems) + f"\n画面: {path}\n{screen}")
 
+    def db_migrate():
+        # An existing database with a conversation and one migration this build still has to
+        # apply. A release build must apply it and carry on: if it stopped here, the shipped
+        # binary would stop every user's startup after an update. A developer build
+        # (--expect-dev-guard) must stop instead, until the developer consents.
+        fake.reset()
+        home, project = bench.home()
+        first = run(home, project)
+        path = os.path.join(data_dir(home), expected)
+
+        def journal():
+            db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                return {row[0] for row in db.execute("SELECT id FROM migration")}
+            finally:
+                db.close()
+
+        problems = []
+        if first.returncode != 0 or MIGRATION not in journal():
+            problems.append(f"準備の run が失敗、または {MIGRATION} が記録されていない exit={first.returncode}")
+            bench.check("db-migrate", "未適用マイグレーションのある既存DB", False, "\n".join(problems) + first.stdout + first.stderr)
+            return
+        db = sqlite3.connect(path)
+        db.execute("DELETE FROM migration WHERE id = ?", (MIGRATION,))
+        db.commit()
+        db.close()
+        before = sessions(path)
+        fake.reset()
+        second = run(home, project)
+        out = second.stdout + second.stderr
+        if dev_guard:
+            title = "開発ビルドは会話のある既存DBへ新しいマイグレーションを黙って適用せず、承知の指定で適用する"
+            if second.returncode != 1 or fake.main != 0:
+                problems.append(f"止まっていない exit={second.returncode} main={fake.main}")
+            for word in (MIGRATION, path, f"{before}件", "SENTE_DB=", "SENTE_CHANNEL=", "SENTE_ALLOW_DEV_MIGRATION=1"):
+                if word not in second.stderr:
+                    problems.append(f"stderr に「{word}」が無い")
+            if MIGRATION in journal():
+                problems.append("止めたのに適用されている")
+            as_json = run(home, project, "--format", "json")
+            record = None
+            for line in as_json.stderr.splitlines():
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(item, dict) and item.get("code") == "database_migration_blocked":
+                    record = item
+            if as_json.returncode != 1 or as_json.stdout.strip() or not record:
+                problems.append(f"--format json で構造化されていない exit={as_json.returncode} stdout={as_json.stdout[:80]!r}")
+            elif record.get("migrations") != [MIGRATION] or record.get("sessions") != before or record.get("exitCode") != 1:
+                problems.append(f"JSON の中身が違う: {record}")
+            tui_env = bench.env(home)
+            tui = subprocess.run([bench.binary, "--pure", "-m", "fake/pricey"], cwd=project, env=tui_env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            if tui.returncode != 1 or MIGRATION not in tui.stderr:
+                problems.append(f"TUI 起動が止まらない、または案内が無い exit={tui.returncode}")
+            listed = call(home, project, "db", "path", timeout=60)
+            if listed.returncode != 0:
+                problems.append("止まっている間も db path は使えるはず")
+            fake.reset()
+            allowed = run(home, project, extra={"SENTE_ALLOW_DEV_MIGRATION": "1"})
+            if allowed.returncode != 0 or base.OK_TEXT not in allowed.stdout or MIGRATION not in journal():
+                problems.append(f"SENTE_ALLOW_DEV_MIGRATION=1 で適用・実行されない exit={allowed.returncode}")
+            out += as_json.stderr + tui.stderr + allowed.stdout + allowed.stderr
+        else:
+            title = "リリースビルドは既存DBの未適用マイグレーションを止まらずに適用して動く"
+            if second.returncode != 0 or base.OK_TEXT not in second.stdout:
+                problems.append(f"run が完了していない exit={second.returncode}")
+            if "SENTE_ALLOW_DEV_MIGRATION" in out:
+                problems.append("リリースビルドが開発ビルド用の安全弁で止まっている")
+            if MIGRATION not in journal():
+                problems.append("マイグレーションが適用されていない")
+            if sessions(path) < before:
+                problems.append("会話が減っている")
+        bench.check("db-migrate", title, not problems, "\n".join(problems) + f"\n{out}")
+
     return {
+        "db-migrate": db_migrate,
         "db-path": db_path,
         "db-persist": db_persist,
         "db-notice-quiet": db_notice_quiet,
@@ -198,6 +278,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--channel", default="headless-model-fallback", help="build channel the binary must use for its database")
+    parser.add_argument("--expect-dev-guard", action="store_true", help="the binary is a developer build: db-migrate must stop instead of applying (never pass this for a release)")
     parser.add_argument("--only", default="")
     parser.add_argument("--all", action="store_true", help="also run every cost-resume-e2e.py case")
     parser.add_argument("--keep", action="store_true")
@@ -206,7 +287,7 @@ def main():
     bench = base.Bench(os.path.abspath(args.binary), args.keep)
     cost = base.cases(bench)
     missing = [name for name in COST_CASES if name not in cost]
-    table = {**cases(bench, args.channel), **cost}
+    table = {**cases(bench, args.channel, args.expect_dev_guard), **cost}
     default = [name for name in table if name.startswith("db-")] + COST_CASES
     if args.list:
         print("\n".join(f"{name}{'' if name in default else ' (--all)'}" for name in table))

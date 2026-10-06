@@ -18,7 +18,9 @@ run-name: "sente release (${{ github.ref_name }})"
 #   - Both the linux and the Apple Silicon binary must pass script/verify/release-e2e.py:
 #     `db path` resolves to sente-<RELEASE_BRANCH>.db (a build that opens another session
 #     database makes every existing conversation look lost), and a real `run` + TUI turn
-#     against a local fake model server completes in a throwaway HOME.
+#     against a local fake model server completes in a throwaway HOME. Its db-migrate case
+#     also proves the shipped binary applies a pending migration to an existing database
+#     instead of stopping: only developer builds (SENTE_DEV_BUILD stamp) stop there.
 #   - The publish job runs in the `sente-release` environment; add required
 #     reviewers there (Settings > Environments) for a second approval click.
 on:

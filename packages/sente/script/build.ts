@@ -201,6 +201,7 @@ for (const item of targets) {
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
       SENTE_WORKER_PATH: workerPath,
       SENTE_CHANNEL: `'${Script.channel}'`,
+      SENTE_DEV_BUILD: String(Script.dev),
       SENTE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
     },
@@ -231,6 +232,8 @@ for (const item of targets) {
       {
         name,
         version: Script.version,
+        // Read by script/release-sente.sh: a developer build must never be published.
+        senteDevBuild: Script.dev,
         preferUnplugged: true,
         os: [item.os],
         cpu: [item.arch],

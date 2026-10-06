@@ -1,7 +1,7 @@
 import { $ } from "bun"
 import semver from "semver"
 import path from "path"
-import { previewLabel, resolveChannel } from "./channel"
+import { devBuild, previewLabel, resolveChannel } from "./channel"
 
 const rootPkgPath = path.resolve(import.meta.dir, "../../../package.json")
 const rootPkg = await Bun.file(rootPkgPath).json()
@@ -65,6 +65,10 @@ export const Script = {
   },
   get version() {
     return VERSION
+  },
+  /** Stamped into the binary as SENTE_DEV_BUILD; see devBuild. */
+  get dev() {
+    return devBuild({ version: VERSION, env: process.env })
   },
   get preview() {
     return IS_PREVIEW

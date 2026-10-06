@@ -21,3 +21,17 @@ export function resolveChannel(env: { SENTE_CHANNEL?: string; SENTE_BUMP?: strin
 export function previewLabel(channel: string, branch: string) {
   return (branch.trim() || channel).replace(/[^a-zA-Z0-9.-]/g, "-")
 }
+
+/**
+ * Whether to stamp the binary as a developer build. A developer build shares the stable
+ * session database, so at startup it refuses to apply migrations the database has not seen
+ * (packages/core/src/database/guard.ts). A shipped binary must never carry this stamp, so it
+ * needs every one of: a `0.0.0-` preview version, not built on CI, and no explicit
+ * SENTE_OFFICIAL_BUILD=1 (for the emergency manual release in script/release-sente.sh).
+ */
+export function devBuild(input: { version: string; env: Record<string, string | undefined> }) {
+  if (!input.version.startsWith("0.0.0-")) return false
+  if (input.env.CI || input.env.GITHUB_ACTIONS) return false
+  if (input.env.SENTE_OFFICIAL_BUILD || input.env.SENTE_RELEASE) return false
+  return true
+}
