@@ -53,6 +53,7 @@ import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
 import { useUsageMode } from "../dialog-mode"
 import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
+import { spendLabel, todayCost, turnCost } from "../../util/spend"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import { SENTE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
@@ -102,11 +103,6 @@ export type PromptRef = {
   focus(): void
   submit(): void
 }
-
-const money = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-})
 
 const DRAFT_RETENTION_MIN_CHARS = 20
 
@@ -272,7 +268,6 @@ export function Prompt(props: PromptProps) {
 
   const usage = createMemo(() => {
     if (!props.sessionID) return
-    const session = sync.session.get(props.sessionID)
     const msg = sync.data.message[props.sessionID] ?? []
     const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
     if (!last) return
@@ -283,10 +278,13 @@ export function Prompt(props: PromptProps) {
 
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
-    const cost = session?.cost ?? 0
     return {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      cost: cost > 0 ? money.format(cost) : undefined,
+      // This turn / today, in yen. The session total stays in the sidebar.
+      cost: spendLabel({
+        turn: turnCost(msg),
+        today: todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() }),
+      }),
     }
   })
 
