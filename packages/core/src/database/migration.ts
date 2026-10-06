@@ -23,19 +23,24 @@ export function apply(db: Database) {
       )
       if (tables.some((table) => table.name === "session")) return yield* applyOnly(db, migrations)
       if (tables.length > 0) return yield* Effect.die("Database is not empty and has no session table")
-      yield* db.transaction((tx) =>
+      const created = yield* db.transaction((tx) =>
         Effect.gen(function* () {
-          yield* schema.up(tx)
+          // Write first so this process holds the write lock before it looks again: another process starting at the
+          // same moment may have created the schema after the check above, and CREATE TABLE would then fail.
           yield* tx.run(
-            sql`CREATE TABLE ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
+            sql`CREATE TABLE IF NOT EXISTS ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
           )
+          if (yield* tx.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ${"session"}`)) return false
+          yield* schema.up(tx)
           yield* Effect.forEach(migrations, (migration) =>
             tx.run(
               sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
             ),
           )
+          return true
         }),
       )
+      if (!created) yield* applyOnly(db, migrations)
     }),
   )
 }
@@ -97,10 +102,15 @@ export function applyOnly(db: Database, input: Migration[]) {
       if (completed.has(migration.id)) continue
       yield* db.transaction((tx) =>
         Effect.gen(function* () {
+          // Claim the migration before running it. The insert takes the write lock, so a process that lost the race
+          // sees the row the winner committed and skips instead of replaying the same DDL.
+          const claimed = yield* tx.all<{ id: string }>(sql`
+            INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})
+            ON CONFLICT (id) DO NOTHING
+            RETURNING id
+          `)
+          if (claimed.length === 0) return
           yield* migration.up(tx)
-          yield* tx.run(
-            sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
-          )
         }),
       )
     }
