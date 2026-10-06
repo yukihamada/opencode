@@ -113,6 +113,22 @@ describe("DatabaseMigration", () => {
       ),
     )
   })
+  test("initializes one fresh database from several processes started at once", async () => {
+    // Regression: several `run` processes starting together on a machine with no database yet each saw an empty
+    // file, and all but the first died on CREATE TABLE ... already exists.
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "first-run.sqlite")
+    const worker = fileURLToPath(new URL("./fixture/database-init-worker.ts", import.meta.url))
+    const results = await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        const proc = Bun.spawn(["bun", worker, filename], { stdout: "ignore", stderr: "pipe" })
+        const stderr = await new Response(proc.stderr).text()
+        return { code: await proc.exited, stderr }
+      }),
+    )
+    expect(results.filter((result) => result.code !== 0).map((result) => result.stderr.split("\n").filter((line) => /error|SQLITE|locked/i.test(line)).join(" | ").slice(0, 400))).toEqual([])
+  }, 60_000)
+
   if (process.platform === "linux") {
     test("declared schema has no ungenerated migrations", async () => {
       const result = await $`bun ${fileURLToPath(new URL("../script/migration.ts", import.meta.url))} --check`
