@@ -65,6 +65,9 @@ const cli = yargs(args)
   })
   .middleware(async (opts) => {
     const { loadCredentials } = await import("@sente-ai/tui/util/teai")
+    // Before loadCredentials fills the env: remember whether the key was an explicit override.
+    const { ProviderKeyReload } = await import("@/provider/key-reload")
+    await ProviderKeyReload.markSource()
     await loadCredentials()
     if (opts.printLogs) process.env.SENTE_PRINT_LOGS = "1"
     if (opts.logLevel) process.env.SENTE_LOG_LEVEL = opts.logLevel

@@ -81,6 +81,8 @@ export const rpc = {
       if (!/^[A-Z][A-Z0-9_]*$/.test(name)) continue
       process.env[name] = value
     }
+    // /login is an explicit choice of the saved key: later rotations may follow it.
+    if (input.env.TEAI_API_KEY) process.env.SENTE_TEAI_KEY_SOURCE = "saved"
     await rpc.reload()
   },
   async shutdown() {
