@@ -24,6 +24,17 @@ const sourcemapsFlag = process.argv.includes("--sourcemaps")
 // ~100MB bundle on every launch (measured: TUI first draw ~1.1s -> lower). Opt-in while we
 // validate it across platforms; bytecode is ESM-compatible in bun >= 1.3.
 const bytecodeFlag = process.argv.includes("--bytecode")
+// Bytecode is only switched on for the two binaries the release pipeline actually runs
+// end to end before publishing (Apple Silicon, linux x64 glibc). The other targets are
+// cross-compiled and never executed in CI, so a bytecode-only breakage there would ship
+// unnoticed. `--bytecode-all` forces it everywhere (local experiments).
+const bytecodeAll = process.argv.includes("--bytecode-all")
+const bytecodeFor = (item: { os: string; arch: string; abi?: string; avx2?: false }) =>
+  bytecodeAll ||
+  (bytecodeFlag &&
+    !item.abi &&
+    item.avx2 !== false &&
+    ((item.os === "darwin" && item.arch === "arm64") || (item.os === "linux" && item.arch === "x64")))
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
 
@@ -173,7 +184,7 @@ for (const item of targets) {
     minify: true,
     sourcemap: sourcemapsFlag ? "linked" : "none",
     splitting: true,
-    bytecode: bytecodeFlag,
+    bytecode: bytecodeFor(item),
     compile: {
       autoloadBunfig: false,
       autoloadDotenv: false,

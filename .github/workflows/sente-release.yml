@@ -86,7 +86,10 @@ jobs:
       - name: Build CLI (all darwin/linux/windows targets)
         # --skip-embed-web-ui: don't bundle the browser UI; serve proxies teai.io/sente/app.
         # 142MB -> 107MB. Fallback: serve still works via upstream proxy.
-        run: bun --version && ./packages/sente/script/build.ts --skip-embed-web-ui
+        # --bytecode: precompiled JS for the two binaries the gates below execute (Apple
+        # Silicon, linux x64). Process start 0.55s -> 0.31s, one headless request 2.6s -> 1.75s
+        # (measured 2026-10-07). Costs size: 108MB -> 294MB on disk, 35MB -> 86MB download.
+        run: bun --version && ./packages/sente/script/build.ts --skip-embed-web-ui --bytecode
         env:
           SENTE_CHANNEL: ${{ env.RELEASE_BRANCH }}
           SENTE_VERSION: ${{ steps.version.outputs.version }}
