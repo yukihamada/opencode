@@ -67,9 +67,12 @@ import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
 import { ToastProvider, useToast, type ToastContext } from "./ui/toast"
+import { execFile } from "node:child_process"
 import {
   terminalIsRunning,
+  terminalHandBackScript,
   terminalNeedsAttention,
+  terminalShouldRing,
   terminalTaskProgress,
   terminalTaskState,
   terminalTaskTitle,
@@ -567,8 +570,17 @@ function App(props: {
   // Ring once when a running task hands the turn back (done / approval / question / error).
   // The short delay skips states that only flash by while the last message is still arriving.
   let terminalBellArmed = false
+  let terminalFocused: boolean | undefined
+  const onTerminalFocus = () => {
+    terminalFocused = true
+  }
+  const onTerminalBlur = () => {
+    terminalFocused = false
+  }
+  renderer.on("focus", onTerminalFocus)
+  renderer.on("blur", onTerminalBlur)
   let terminalBellTimer: ReturnType<typeof setTimeout> | undefined
-  const terminalBell = (state: TerminalTaskState) => {
+  const terminalBell = (state: TerminalTaskState, title?: string) => {
     clearTimeout(terminalBellTimer)
     terminalBellTimer = undefined
     if (terminalIsRunning(state)) {
@@ -578,11 +590,25 @@ function App(props: {
     if (!terminalBellArmed || !terminalNeedsAttention(state)) return
     terminalBellTimer = setTimeout(() => {
       terminalBellArmed = false
-      if (process.env.TE_NO_BELL !== "1") process.stdout.write("\x07")
+      if (!terminalShouldRing(terminalFocused)) return
+      const ring = () => process.stdout.write("\x07")
+      if (process.platform !== "darwin") return ring()
+      // macOS: show a banner naming the state, and skip the bell when this Terminal.app tab is in view.
+      const script = terminalHandBackScript({
+        state,
+        title,
+        pid: process.pid,
+        appleTerminal: process.env.TERM_PROGRAM === "Apple_Terminal",
+      })
+      execFile("osascript", ["-e", script], { timeout: 3000 }, (_error, stdout) => {
+        if (!String(stdout).includes("focused")) ring()
+      })
     }, 600)
   }
   onCleanup(() => {
     clearInterval(terminalClockTimer)
+    renderer.off("focus", onTerminalFocus)
+    renderer.off("blur", onTerminalBlur)
     clearTimeout(terminalBellTimer)
   })
 
@@ -616,7 +642,7 @@ function App(props: {
         ? terminalTaskProgress({ now: terminalClock(), messages: sync.data.message[id], todos: sync.data.todo[id] })
         : undefined
       renderer.setTerminalTitle(terminalTaskTitle(state, session?.title, progress))
-      terminalBell(state)
+      terminalBell(state, session?.title)
       return
     }
 

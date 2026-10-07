@@ -93,6 +93,15 @@ export function terminalNeedsAttention(state: TerminalTaskState) {
   return ["permission", "question", "done", "incomplete", "error"].includes(state)
 }
 
+/**
+ * Whether to ring now. A terminal that reports focus stays quiet while the user is looking at it;
+ * one that does not report focus always rings, because a missed hand-back costs more than a beep.
+ */
+export function terminalShouldRing(focused: boolean | undefined, env: Record<string, string | undefined> = process.env) {
+  if (env.TE_NO_BELL === "1") return false
+  return focused !== true
+}
+
 export function terminalIsRunning(state: TerminalTaskState) {
   return state === "working" || state === "retry"
 }
@@ -186,11 +195,44 @@ export function terminalTaskProgress(
   return parts.length ? parts.join(" · ") : undefined
 }
 
-export function terminalTaskTitle(state: TerminalTaskState, title?: string, progress?: string, locale = defaultLocale()) {
+function sessionName(title?: string) {
   const clean = stripAnsi(title ?? "")
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
     .trim()
-  const name = !clean || isDefaultTitle(clean) ? "Sente" : clean
+  return !clean || isDefaultTitle(clean) ? "Sente" : clean
+}
+
+/**
+ * AppleScript run when the turn is handed back on macOS. Terminal.app tabs only show the end of a
+ * long title, so a banner carries the words that tell "done" from "approval needed". It prints
+ * "focused" and stays silent when this tab is the one the user is looking at in Terminal.app.
+ */
+export function terminalHandBackScript(input: {
+  state: TerminalTaskState
+  title?: string
+  pid: number
+  appleTerminal: boolean
+  locale?: string
+}) {
+  const quote = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+  const lang = language(input.locale ?? defaultLocale())
+  const heading = `${icons[input.state].replace("🔔", "")} ${labels[lang][input.state]} — Sente`
+  const lines = input.appleTerminal
+    ? [
+        "try",
+        `set here to "/dev/" & (do shell script "ps -o tty= -p ${Math.trunc(input.pid)} | tr -d ' '")`,
+        'tell application "Terminal"',
+        'if frontmost and (tty of selected tab of front window) is here then return "focused"',
+        "end tell",
+        "end try",
+      ]
+    : []
+  lines.push(`display notification ${quote(sessionName(input.title))} with title ${quote(heading)}`, 'return "notified"')
+  return lines.join("\n")
+}
+
+export function terminalTaskTitle(state: TerminalTaskState, title?: string, progress?: string, locale = defaultLocale()) {
+  const name = sessionName(title)
   const chars = Array.from(name)
   const short = chars.length > 40 ? chars.slice(0, 39).join("") + "…" : name
   const detail = progress ? ` ${progress}` : ""

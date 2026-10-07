@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import type { Message, Todo } from "@sente-ai/sdk/v2"
 import {
   terminalIsRunning,
+  terminalHandBackScript,
   terminalNeedsAttention,
+  terminalShouldRing,
   terminalTaskProgress,
   terminalTaskState,
   terminalTaskTitle,
@@ -54,6 +56,33 @@ describe("util.terminal-title", () => {
     expect(terminalIsRunning("working")).toBe(true)
     expect(terminalIsRunning("retry")).toBe(true)
     expect(terminalIsRunning("done")).toBe(false)
+  })
+
+  test("stays quiet while the user is looking at the tab, rings when away or when focus is unknown", () => {
+    expect(terminalShouldRing(true, {})).toBe(false)
+    expect(terminalShouldRing(false, {})).toBe(true)
+    expect(terminalShouldRing(undefined, {})).toBe(true)
+    expect(terminalShouldRing(false, { TE_NO_BELL: "1" })).toBe(false)
+  })
+
+  describe("terminalHandBackScript", () => {
+    test("the banner tells done from approval and names the session", () => {
+      const done = terminalHandBackScript({ state: "done", title: "請求書の整理", pid: 42, appleTerminal: false, locale: "ja" })
+      expect(done).toBe('display notification "請求書の整理" with title "✅ 完了 — Sente"\nreturn "notified"')
+      const ask = terminalHandBackScript({ state: "permission", title: "請求書の整理", pid: 42, appleTerminal: false, locale: "ja" })
+      expect(ask).toContain('with title "❓ 確認待ち — Sente"')
+    })
+
+    test("Terminal.app first checks whether this tab is the one in view", () => {
+      const script = terminalHandBackScript({ state: "done", title: "x", pid: 42.9, appleTerminal: true, locale: "ja" })
+      expect(script).toContain("ps -o tty= -p 42 ")
+      expect(script.indexOf('return "focused"')).toBeLessThan(script.indexOf("display notification"))
+    })
+
+    test("a session title cannot break out of the script", () => {
+      const script = terminalHandBackScript({ state: "done", title: 'a" & b & "\\', pid: 1, appleTerminal: false, locale: "en-US" })
+      expect(script).toContain('display notification "a\\" & b & \\"\\\\" with title')
+    })
   })
 
   describe("terminalTaskProgress", () => {
