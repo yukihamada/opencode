@@ -6,6 +6,7 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createSignal, onCleanup, Show } from "solid-js"
 import type { Model } from "@sente-ai/sdk/v2"
 import path from "node:path"
+import { readdir } from "node:fs/promises"
 import { ArgsProvider } from "../../../src/context/args"
 import { KVProvider } from "../../../src/context/kv"
 import { ProjectProvider } from "../../../src/context/project"
@@ -131,7 +132,19 @@ async function mount(state: string, width: number, withPrompt = false) {
   }
   const app = await testRender(() => <Harness />, { width, height: 40, kittyKeyboard: true })
   await wait(() => !!ctx && ctx.local.model.ready && ctx.sync.status === "complete")
-  return { app, ctx, seed, next, prompt, setDisabled, requests }
+  async function persisted() {
+    // Keep the fixture alive until asynchronous saves and atomic renames finish.
+    const expected = JSON.stringify({ recent: ctx.local.model.recent(), favorite: ctx.local.model.favorite() })
+    const deadline = Date.now() + 2000
+    while (true) {
+      const saved = await Bun.file(path.join(state, "model.json")).json()
+      const pending = (await readdir(state)).some((name) => name.startsWith("model.json.") && name.endsWith(".tmp"))
+      if (!pending && JSON.stringify({ recent: saved.recent, favorite: saved.favorite }) === expected) return
+      if (Date.now() > deadline) throw new Error("model selection was not persisted")
+      await Bun.sleep(10)
+    }
+  }
+  return { app, ctx, seed, next, prompt, setDisabled, requests, persisted }
 }
 
 test.each([80, 140])("migrates saved favorites, renders and selects the successor at %i columns", async (width) => {
@@ -144,7 +157,7 @@ test.each([80, 140])("migrates saved favorites, renders and selects the successo
   }
   await Bun.write(file, JSON.stringify(original))
   await Bun.write(path.join(tmp.path, "kv.json"), "{}")
-  const { app, ctx, seed, next } = await mount(tmp.path, width)
+  const { app, ctx, seed, next, persisted } = await mount(tmp.path, width)
   try {
     await wait(() => ctx.local.model.favorite()[0]?.modelID === next.id)
     expect(ctx.local.model.current()).toEqual(original.recent[0])
@@ -181,19 +194,20 @@ test.each([80, 140])("migrates saved favorites, renders and selects the successo
     await wait(() => ctx.local.model.current()?.modelID === next.id)
     expect(ctx.local.model.current()).toEqual({ providerID: "teai", modelID: next.id })
 
-    // A later catalog price increase must be visible but not selectable.
+    // A later catalog price increase must be visible and the preset stays selectable.
     ctx.local.model.set({ providerID: "teai", modelID: seed.id })
     ctx.sync.set("provider", 0, "models", next.id, "cost", "output", 2)
     ctx.dialog.replace(() => <DialogModel />)
     await wait(() => app.renderer.currentFocusedRenderable instanceof InputRenderable)
     await app.renderOnce()
-    expect(app.captureCharFrame()).toContain(presetLabels().unavailable)
+    expect(app.captureCharFrame()).toContain(modelCostDetail(ctx.sync.data.provider[0].models[next.id].cost))
+    expect(app.captureCharFrame()).not.toContain(presetLabels().unavailable)
     app.mockInput.pressArrow("up")
     app.mockInput.pressEnter()
-    await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(seed.id)
+    await wait(() => ctx.local.model.current()?.modelID === next.id)
   } finally {
     app.renderer.destroy()
+    await persisted()
   }
 })
 
@@ -204,7 +218,7 @@ test.each([80, 140])("selects by click and slash in the real prompt at %i column
     recent: [{ providerID: "teai", modelID: "deepseek/deepseek-v4.1-flash" }],
   }))
   await Bun.write(path.join(tmp.path, "kv.json"), "{}")
-  const { app, ctx, seed, next, prompt, setDisabled, requests } = await mount(tmp.path, width, true)
+  const { app, ctx, seed, next, prompt, setDisabled, requests, persisted } = await mount(tmp.path, width, true)
   try {
     if (!prompt) throw new Error("prompt not mounted")
     prompt.focus()
@@ -322,26 +336,26 @@ test.each([80, 140])("selects by click and slash in the real prompt at %i column
     prompt.reset()
     ctx.local.model.selectPreset("everyday")
     await app.renderOnce()
+    // Repriced presets stay selectable by arrow, click and slash.
     app.mockInput.pressArrow("right")
-    await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(modelPresets[2].seed)
-    await wait(() => ctx.local.model.current()?.modelID === modelPresets[2].seed)
+    await wait(() => ctx.local.model.current()?.modelID === next.id)
     ctx.local.model.set({ providerID: "teai", modelID: seed.id })
     prompt.set(draft)
     await app.renderOnce()
-    const unavailable = app.renderer.root.findDescendantById("model-preset-coding")!
-    await app.mockMouse.click(unavailable.x + 1, unavailable.y)
-    expect(ctx.local.model.current()?.modelID).toBe(seed.id)
+    const repriced = app.renderer.root.findDescendantById("model-preset-coding")!
+    await app.mockMouse.click(repriced.x + 1, repriced.y)
+    expect(ctx.local.model.current()?.modelID).toBe(next.id)
     expect(prompt.current).toEqual(draft)
+    ctx.local.model.set({ providerID: "teai", modelID: seed.id })
     prompt.reset()
     await app.mockInput.typeText("/2")
     await app.renderOnce()
     app.mockInput.pressEnter()
-    await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(seed.id)
-    expect(app.captureCharFrame()).toContain(presetLabels().unavailable)
+    await wait(() => ctx.local.model.current()?.modelID === next.id)
+    expect(app.captureCharFrame()).not.toContain(presetLabels().unavailable)
   } finally {
     prompt?.reset()
     app.renderer.destroy()
+    await persisted()
   }
 })

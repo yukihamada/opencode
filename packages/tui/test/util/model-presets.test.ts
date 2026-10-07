@@ -77,12 +77,21 @@ describe("task favorites", () => {
     expect(updateModelFavorite(favorite, { [next.id]: next }, now).modelID).toBe(seed.id)
   })
 
-  test("a later price increase disables the preset instead of silently raising its budget", () => {
+  test("a catalog reprice keeps every saved preset selectable", () => {
+    const saved = [["z-ai/glm-5.3-flash", 0.07343, 0.26225, 0.15, 0.5], ["deepseek/deepseek-v4.1-flash", 0.294, 1.176, 0.044, 0.3],
+      ["tencent/hy4-preview", 0.81732, 2.45098, 0.834, 2.501], ["moonshotai/kimi-k3", 2.94, 14.7, 0.69, 15], ["openai/gpt-6-astra", 9.8, 49, 10, 50]] as const
+    expect(saved.filter(([id, input, output, nextInput, nextOutput]) => {
+      const before = { ...model(id), cost: { input, output, cache: { read: 0, write: 0 } } }
+      const stored = updateModelFavorite({ providerID: "teai", modelID: id }, { [id]: before }, now)
+      return availableFavorite(stored, { ...before, cost: { ...before.cost, input: nextInput, output: nextOutput } })
+    }).length).toBe(5)
+  })
+
+  test("a later price increase never moves the preset to a successor above its saved budget", () => {
     const seed = model()
     const stored = updateModelFavorite(favorite, { [seed.id]: seed }, now)
-    const expensive = { ...seed, cost: { ...seed.cost, output: 12 } }
-    expect(availableFavorite(stored, expensive)).toBe(false)
-    expect(availableFavorite(stored, seed)).toBe(true)
+    const next = { ...model("deepseek/deepseek-v5-flash"), cost: { ...seed.cost, output: 12 } }
+    expect(updateModelFavorite(stored, { [seed.id]: seed, [next.id]: next }, now).modelID).toBe(seed.id)
   })
 
   test("HY4 preview can graduate to the stable release without changing its role", () => {
@@ -91,11 +100,14 @@ describe("task favorites", () => {
     expect(updateModelFavorite({ providerID: "teai", modelID: seed.id }, { [seed.id]: seed, [next.id]: next }, now).modelID).toBe(next.id)
   })
 
-  test("capability changes to the current model also make the preset unavailable", () => {
+  test("capability changes to the current model keep the preset selectable but block successors", () => {
     const seed = model()
     const stored = updateModelFavorite(favorite, { [seed.id]: seed }, now)
     seed.capabilities.input.image = false
-    expect(availableFavorite(stored, seed)).toBe(false)
+    expect(availableFavorite(stored, seed)).toBe(true)
+    const next = model("deepseek/deepseek-v5-flash")
+    next.capabilities.input.image = false
+    expect(updateModelFavorite(stored, { [seed.id]: seed, [next.id]: next }, now).modelID).toBe(seed.id)
   })
 
   test("successor metadata updates cannot mutate the saved baseline", () => {
@@ -107,13 +119,20 @@ describe("task favorites", () => {
     expect(stored.modelID).toBe(next.id)
     expect(availableFavorite(stored, next)).toBe(true)
     next.cost.output = 1.1
-    expect(availableFavorite(stored, next)).toBe(false)
+    expect(availableFavorite(stored, next)).toBe(true)
     next.cost.output = 1
     next.capabilities.input.image = false
-    expect(availableFavorite(stored, next)).toBe(false)
+    expect(availableFavorite(stored, next)).toBe(true)
     next.capabilities.input.image = true
     next.limit.context = 32000
-    expect(availableFavorite(stored, next)).toBe(false)
+    expect(availableFavorite(stored, next)).toBe(true)
     expect(stored.baseline).toEqual(snapshot)
+  })
+
+  test("missing, deprecated and alpha models remain unavailable for manual selection", () => {
+    expect(availableFavorite(favorite, undefined)).toBe(false)
+    for (const status of ["deprecated", "alpha"] as const) {
+      expect(availableFavorite(favorite, { ...model(), status })).toBe(false)
+    }
   })
 })
