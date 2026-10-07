@@ -29,6 +29,9 @@ import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { DialogTeaiLogin } from "./component/dialog-teai-login"
 import { DialogTeaiAccount } from "./component/dialog-teai-account"
+import { DialogTaskBudget } from "./component/dialog-task-budget"
+import { TaskBudget } from "./util/task-budget"
+import { taskText } from "./util/task-budget-text"
 import { accountText } from "./util/teai"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
@@ -437,6 +440,20 @@ function App(props: {
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
+  const taskBudget = TaskBudget.create()
+  const taskSession = () => route.data.type === "session" ? route.data.sessionID : ""
+  createEffect(() => { taskBudget.authorized(taskSession()) })
+  const taskTimer = setInterval(() => {
+    void taskBudget.tick(taskSession(), (task, error) => {
+      const text = taskText(language.current())
+      toast.show({ variant: error ? "error" : "info", duration: 8000,
+        message: `${task.card.goal}: ${error ? text.failed : text.notified}` })
+    }).catch(() => {
+      taskBudget.clear()
+      toast.show({ variant: "error", message: taskText(language.current()).failed })
+    })
+  }, 5000)
+  onCleanup(() => { clearInterval(taskTimer); taskBudget.clear() })
   useKeyboard((event) => {
     // Leave existing dialog/input Escape handling intact; stopping output never mutes.
     if (event.name === "escape") stopSpeaking()
@@ -889,6 +906,13 @@ function App(props: {
         slashName: "account",
         run: () => dialog.replace(() => <DialogTeaiAccount remote={!props.onEnv} />),
         category: "Provider",
+      },
+      {
+        name: "sente.tasks",
+        title: taskText(language.current()).title,
+        slashName: "tasks",
+        run: () => dialog.replace(() => <DialogTaskBudget client={taskBudget} session={taskSession()} />),
+        category: "Session",
       },
       ...(sync.data.console_state.switchableOrgCount > 1
         ? [
