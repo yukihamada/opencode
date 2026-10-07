@@ -67,7 +67,14 @@ import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
 import { ToastProvider, useToast, type ToastContext } from "./ui/toast"
-import { isDefaultTitle } from "./util/session"
+import {
+  terminalIsRunning,
+  terminalNeedsAttention,
+  terminalTaskProgress,
+  terminalTaskState,
+  terminalTaskTitle,
+  type TerminalTaskState,
+} from "./util/terminal-title"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
@@ -544,29 +551,77 @@ function App(props: {
     kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary),
   )
 
+  const [terminalErrors, setTerminalErrors] = createSignal<Record<string, string | undefined>>({})
+  event.on("session.error", (evt, { workspace }) => {
+    if (workspace !== project.workspace.current() || !evt.properties.sessionID) return
+    const id = evt.properties.sessionID
+    setTerminalErrors((errors) => ({ ...errors, [id]: evt.properties.error?.name ?? "UnknownError" }))
+  })
+  event.on("session.status", (evt, { workspace }) => {
+    if (workspace !== project.workspace.current() || evt.properties.status.type === "idle") return
+    setTerminalErrors((errors) => ({ ...errors, [evt.properties.sessionID]: undefined }))
+  })
+  // The title shows elapsed time while a task runs, so it needs a slow clock of its own.
+  const [terminalClock, setTerminalClock] = createSignal(Date.now())
+  const terminalClockTimer = setInterval(() => setTerminalClock(Date.now()), 10_000)
+  // Ring once when a running task hands the turn back (done / approval / question / error).
+  // The short delay skips states that only flash by while the last message is still arriving.
+  let terminalBellArmed = false
+  let terminalBellTimer: ReturnType<typeof setTimeout> | undefined
+  const terminalBell = (state: TerminalTaskState) => {
+    clearTimeout(terminalBellTimer)
+    terminalBellTimer = undefined
+    if (terminalIsRunning(state)) {
+      terminalBellArmed = true
+      return
+    }
+    if (!terminalBellArmed || !terminalNeedsAttention(state)) return
+    terminalBellTimer = setTimeout(() => {
+      terminalBellArmed = false
+      if (process.env.TE_NO_BELL !== "1") process.stdout.write("\x07")
+    }, 600)
+  }
+  onCleanup(() => {
+    clearInterval(terminalClockTimer)
+    clearTimeout(terminalBellTimer)
+  })
+
   // Update terminal window title based on current route and session
   createEffect(() => {
     if (!terminalTitleEnabled() || Flag.SENTE_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("Sente")
+      terminalBellArmed = false
+      renderer.setTerminalTitle(terminalTaskTitle("ready"))
       return
     }
 
     if (route.data.type === "session") {
-      const session = sync.session.get(route.data.sessionID)
-      if (!session || isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("Sente")
-        return
-      }
-
-      const title = session.title.length > 40 ? session.title.slice(0, 37) + "…" : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
+      const id = route.data.sessionID
+      const session = sync.session.get(id)
+      const family = sync.data.session.filter((item) => item.id === id || item.parentID === id)
+      const state = terminalTaskState({
+        status: sync.data.session_status[id],
+        messages: sync.data.message[id],
+        todos: sync.data.todo[id],
+        permission:
+          (sync.data.permission[id]?.length ?? 0) > 0 ||
+          family.some((item) => (sync.data.permission[item.id]?.length ?? 0) > 0),
+        question:
+          (sync.data.question[id]?.length ?? 0) > 0 ||
+          family.some((item) => (sync.data.question[item.id]?.length ?? 0) > 0),
+        error: terminalErrors()[id],
+      })
+      const progress = terminalIsRunning(state)
+        ? terminalTaskProgress({ now: terminalClock(), messages: sync.data.message[id], todos: sync.data.todo[id] })
+        : undefined
+      renderer.setTerminalTitle(terminalTaskTitle(state, session?.title, progress))
+      terminalBell(state)
       return
     }
 
     if (route.data.type === "plugin") {
-      renderer.setTerminalTitle(`OC | ${route.data.id}`)
+      renderer.setTerminalTitle(`Sente | ${route.data.id}`)
     }
   })
 

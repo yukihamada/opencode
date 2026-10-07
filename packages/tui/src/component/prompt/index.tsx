@@ -65,6 +65,7 @@ import { useLocation } from "../../context/location"
 import { PromptRecovery } from "./recovery"
 import { ModelPresets } from "../model-presets"
 import { modelBrowseText } from "../../util/model-browse"
+import { terminalTaskProgress } from "../../util/terminal-title"
 
 registerOpencodeSpinner()
 
@@ -164,6 +165,24 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
+  // Elapsed time and a rough remaining-time estimate, shown beside the spinner while a task runs.
+  const [progressClock, setProgressClock] = createSignal(Date.now())
+  createEffect(() => {
+    if (status().type === "idle") return
+    setProgressClock(Date.now())
+    const timer = setInterval(() => setProgressClock(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+  const progress = createMemo(() => {
+    const id = props.sessionID
+    if (!id || status().type === "idle") return
+    return terminalTaskProgress({
+      now: progressClock(),
+      messages: sync.data.message[id],
+      todos: sync.data.todo[id],
+      exact: true,
+    })
+  })
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
@@ -1556,6 +1575,11 @@ export function Prompt(props: PromptProps) {
                       <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
                     </Show>
                   </box>
+                  <Show when={progress()}>
+                    <text fg={theme.textMuted} flexShrink={0}>
+                      {progress()}
+                    </text>
+                  </Show>
                   <box flexDirection="row" gap={1} flexShrink={0}>
                     {(() => {
                       const retry = createMemo(() => {
