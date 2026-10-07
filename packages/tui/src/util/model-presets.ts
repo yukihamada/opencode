@@ -58,11 +58,10 @@ export function updateModelFavorite(item: ModelFavorite, models: Record<string, 
   }
 }
 
-export function availableFavorite(item: ModelFavorite, model: Model | undefined) {
-  if (!model || model.status === "deprecated" || model.status === "alpha") return false
-  const preset = modelPresets.find((preset) => preset.id === item.presetID)
-  if (!preset) return true
-  return withinBudget(model, Math.min(preset.input, item.baseline?.cost.input ?? preset.input), Math.min(preset.output, item.baseline?.cost.output ?? preset.output)) && (!item.baseline || compatible(model, item.baseline))
+// A saved role stays selectable while its model is offered. The baseline only limits
+// automatic moves to a successor: a catalog reprice once left a single usable preset.
+export function availableFavorite(_item: ModelFavorite, model: Model | undefined) {
+  return !!model && model.status !== "deprecated" && model.status !== "alpha"
 }
 
 function compatible(model: Model, baseline: Baseline) {
