@@ -93,6 +93,7 @@ import { createTuiAttention } from "./attention"
 import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
+import { Hibernate } from "./util/hibernate"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { setVoiceMuted, stopSpeaking, voiceLabel, voiceState } from "./util/voice"
 import { DialogVoiceStyle } from "./component/dialog-voice-style"
@@ -440,6 +441,44 @@ function App(props: {
     // Leave existing dialog/input Escape handling intact; stopping output never mutes.
     if (event.name === "escape") stopSpeaking()
   })
+
+  const hibernate = Hibernate.settings(process.env)
+  if (hibernate) {
+    let last = Date.now()
+    useKeyboard(() => {
+      last = Date.now()
+    })
+    const timer = setInterval(
+      () => {
+        const busy = Object.values(sync.data.session_status).some((status) => status.type !== "idle")
+        // Work that just finished counts as activity, so the wait starts from when the session went quiet.
+        if (busy) last = Date.now()
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (
+          !Hibernate.ready({
+            now: Date.now(),
+            last,
+            after: hibernate.after,
+            sessionID,
+            busy,
+            pending: [...Object.values(sync.data.permission), ...Object.values(sync.data.question)].some(
+              (requests) => requests.length > 0,
+            ),
+            draft: promptRef.current?.current.input ?? "",
+            dialog: dialog.stack.length > 0,
+          })
+        )
+          return
+        clearInterval(timer)
+        void Bun.write(hibernate.file, sessionID ?? "").then(() => {
+          process.exitCode = hibernate.code
+          void exit()
+        })
+      },
+      Math.min(60_000, hibernate.after),
+    )
+    onCleanup(() => clearInterval(timer))
+  }
 
   const api = createTuiApi(
     createTuiApiAdapters({
