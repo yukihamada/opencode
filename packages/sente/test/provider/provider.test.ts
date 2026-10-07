@@ -1178,6 +1178,24 @@ it.instance("ModelNotFoundError includes suggestions for typos", () =>
   }),
 )
 
+// With `enabled_providers` set, the catalog is only built for those providers (the rest of
+// models.dev is never converted). A request for a provider outside the list must therefore be
+// answered with the providers that can be used, not with models of one that cannot.
+it.instance(
+  "a provider outside enabled_providers is not found, and only usable providers are suggested",
+  Effect.gen(function* () {
+    yield* setProcessEnv("ANTHROPIC_API_KEY", "test-api-key")
+    yield* setProcessEnv("OPENAI_API_KEY", "test-openai-key")
+    const provider = yield* Provider.Service
+    const error = yield* provider.getModel(ProviderV2.ID.openai, ModelV2.ID.make("gpt-4o")).pipe(Effect.flip)
+    expect(error._tag).toBe("ProviderModelNotFoundError")
+    const suggestions = (error as { suggestions?: string[] }).suggestions ?? []
+    expect(suggestions.some((item) => item.startsWith("gpt"))).toBe(false)
+    for (const item of suggestions) expect(item).toBe("anthropic")
+  }),
+  { config: { enabled_providers: ["anthropic"] } },
+)
+
 it.instance("ModelNotFoundError for provider includes suggestions", () =>
   Effect.gen(function* () {
     yield* set("ANTHROPIC_API_KEY", "test-api-key")

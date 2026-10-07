@@ -1484,8 +1484,6 @@ const layer = Layer.effect(
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
         const modelsDev = yield* modelsDevSvc.get()
-        const catalog = mapValues(modelsDev, fromModelsDevProvider)
-        const database = mapValues(catalog, toPublicInfo)
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
         const languages = new Map<string, LanguageModelV3>()
@@ -1532,6 +1530,19 @@ const layer = Layer.effect(
           if (disabled.has(providerID)) return false
           return true
         }
+
+        // Build the catalog only for providers this config can actually use. models.dev lists
+        // every provider and several thousand models; converting all of them on each start cost
+        // about 120MB and 0.2s even when `enabled_providers` names a single provider, and the
+        // entries for the others were thrown away further down anyway.
+        const usable =
+          enabled || disabled.size > 0
+            ? Object.fromEntries(
+                Object.entries(modelsDev).filter(([providerID]) => isProviderAllowed(ProviderV2.ID.make(providerID))),
+              )
+            : modelsDev
+        const catalog = mapValues(usable, fromModelsDevProvider)
+        const database = mapValues(catalog, toPublicInfo)
 
         for (const hook of plugins) {
           const p = hook.provider

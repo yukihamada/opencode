@@ -24,6 +24,8 @@ import { LocationServiceMap, locationServiceMapLayer } from "@sente-ai/core/loca
 import { Reference } from "@sente-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@sente-ai/core/v1/permission"
+import { Config } from "@/config/config"
+import { PluginV2 } from "@sente-ai/core/plugin"
 
 export function provider(model: Provider.Model) {
   if (model.api.id.includes("muse")) {
@@ -64,13 +66,29 @@ const layer = Layer.effect(
     const skill = yield* Skill.Service
     const mcp = yield* MCP.Service
     const locations = yield* LocationServiceMap.Service
+    const config = yield* Config.Service
 
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
         const ctx = yield* InstanceState.context
-        const references = yield* Effect.gen(function* () {
-          return (yield* (yield* Reference.Service).list()).filter((reference) => reference.description !== undefined)
-        }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))
+        const cfg = yield* config.get()
+        // References only exist when the config declares them (same rule as Agent.state).
+        // Asking the location services for an always-empty list boots that whole service
+        // graph — including a catalog entry for every model models.dev knows — on every
+        // prompt: about 100MB and 0.2s before the first model call.
+        const references =
+          Object.keys(cfg.references ?? cfg.reference ?? {}).length > 0
+            ? yield* Effect.gen(function* () {
+                // The plugin that registers config references loads in the background; without
+                // waiting, the first prompt of a run was built before any reference existed.
+                yield* (yield* PluginV2.Service).wait(PluginV2.ID.make("core/config-reference"))
+                return (yield* (yield* Reference.Service).list()).filter(
+                  (reference) => reference.description !== undefined,
+                )
+              }).pipe(
+                Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
+              )
+            : []
         return [
           [
             `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
@@ -148,7 +166,7 @@ const locationServiceMapNode = LayerNode.make({
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Skill.node, MCP.node, locationServiceMapNode],
+  deps: [Config.node, Skill.node, MCP.node, locationServiceMapNode],
 })
 
 export * as SystemPrompt from "./system"
