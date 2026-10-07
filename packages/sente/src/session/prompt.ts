@@ -4,6 +4,7 @@ import path from "path"
 import { SessionV1 } from "@sente-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
+import { SessionAutoResume } from "./auto-resume"
 import { MessageV2 } from "./message-v2"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
@@ -1083,6 +1084,8 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        // Consecutive automatic resumes of this request; a turn that gets through resets it.
+        let autoResumes = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1210,11 +1213,15 @@ const layer = Layer.effect(
             yield* sessions.updateMessage(msg)
           })
 
+          // How long to wait before running this turn again after `error`; undefined = do not resume.
+          const resumeWait = (error: SessionV1.Assistant["error"]) =>
+            SessionAutoResume.recoverable(error) ? SessionAutoResume.resumeDelay(autoResumes + 1) : undefined
           const handle = yield* processor
             .create({
               assistantMessage: msg,
               sessionID,
               model,
+              resumes: (error) => resumeWait(error) !== undefined,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1316,7 +1323,24 @@ const layer = Layer.effect(
               }
             }
 
-            if (result === "stop") return "break" as const
+            if (result === "stop") {
+              // The request's own retries ran out on a transient failure. Wait, then run the
+              // turn again; while waiting the session shows as retrying, not as failed.
+              const wait = resumeWait(handle.message.error)
+              if (wait === undefined) return "break" as const
+              autoResumes++
+              yield* Effect.logInfo("auto resume", { "session.id": sessionID, attempt: autoResumes, wait })
+              yield* status.set(sessionID, {
+                type: "retry",
+                attempt: autoResumes,
+                message: SessionAutoResume.resumeNote(autoResumes),
+                next: Date.now() + wait,
+              })
+              yield* Effect.sleep(`${wait} millis`)
+              yield* status.set(sessionID, { type: "busy" })
+              return "continue" as const
+            }
+            if (result === "continue") autoResumes = 0
             if (result === "compact") {
               // A compaction message would replace lastUser and bypass the loop's
               // finished-turn check, causing an unsolicited summary/continue loop.
