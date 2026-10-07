@@ -309,6 +309,58 @@ describe("sente run (non-interactive subprocess)", () => {
     60_000,
   )
 
+  // This failure is one the request-level retry does not pick up (status and wording are both
+  // outside its lists), so the turn stops at once — exactly the state automatic resume starts
+  // from, without first sitting through a minute of built-in backoff.
+  cliIt.concurrent(
+    "resumes by itself after a transient failure stops the turn, and reports success",
+    ({ llm, sente }) =>
+      Effect.gen(function* () {
+        yield* llm.error(418, { error: { message: "socket closed by peer" } })
+        yield* llm.error(418, { error: { message: "socket closed by peer" } })
+        yield* llm.text("recovered after resume")
+        const result = yield* sente.run("survive an outage", { env: { SENTE_AUTO_RESUME_BASE_MS: "50" } })
+        sente.expectExit(result, 0)
+        expect(result.stdout).toBe("recovered after resume\n")
+      }),
+    60_000,
+  )
+
+  cliIt.concurrent(
+    "does not resume when it is switched off, or when the failure cannot be fixed by waiting",
+    ({ llm, sente }) =>
+      Effect.gen(function* () {
+        yield* llm.error(418, { error: { message: "socket closed by peer" } })
+        yield* llm.text("must not be reached")
+        const off = yield* sente.run("no resume", { env: { SENTE_AUTO_RESUME_BASE_MS: "0" } })
+        expect(off.exitCode).not.toBe(0)
+        expect(off.stdout).not.toContain("must not be reached")
+
+        yield* llm.reset
+        yield* llm.error(401, { error: { message: "invalid api key" } })
+        yield* llm.text("must not be reached")
+        const auth = yield* sente.run("bad key", { env: { SENTE_AUTO_RESUME_BASE_MS: "50" } })
+        expect(auth.exitCode).not.toBe(0)
+        expect(auth.stdout).not.toContain("must not be reached")
+      }),
+    60_000,
+  )
+
+  cliIt.concurrent(
+    "gives up after five resumes and exits with the error",
+    ({ llm, sente }) =>
+      Effect.gen(function* () {
+        for (let i = 0; i < 8; i++) yield* llm.error(418, { error: { message: "socket closed by peer" } })
+        yield* llm.text("must not be reached")
+        const result = yield* sente.run("outage that never ends", { env: { SENTE_AUTO_RESUME_BASE_MS: "20" } })
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stdout).not.toContain("must not be reached")
+        // 1 original + 5 resumes, then it stops: two queued failures are left untouched.
+        expect(yield* llm.pending).toBe(3)
+      }),
+    60_000,
+  )
+
   cliIt.live(
     "attach mode sends client-local file contents without a shared path",
     ({ home, llm, sente }) =>

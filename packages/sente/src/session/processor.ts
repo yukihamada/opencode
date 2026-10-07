@@ -51,6 +51,8 @@ type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
+  /** True when the caller will run the turn again after this error (see SessionAutoResume). */
+  resumes?: (error: NonNullable<SessionV1.Assistant["error"]>) => boolean
 }
 
 export interface Interface {
@@ -649,6 +651,9 @@ const layer = Layer.effect(
           return
         }
         ctx.assistantMessage.error = error
+        // The caller is about to run this turn again (automatic resume). Keep the error on the
+        // message, but do not announce a failure or go idle for something that is being retried.
+        if (input.resumes?.(error)) return
         yield* events.publish(Session.Event.Error, {
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,

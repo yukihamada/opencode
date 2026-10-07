@@ -26,8 +26,9 @@ base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
 # cost-resume-e2e.py cases that exercise behaviour present on the release branch today:
-# a plain run, a tool-call round trip (two model calls), and "401 is not retried".
-COST_CASES = ["gate-off", "gate-settles", "no-resume"]
+# a plain run, a tool-call round trip (two model calls), "401 is not retried", and
+# "a turn stopped by repeated 503s resumes by itself" (automatic resume, 2026-10-07).
+COST_CASES = ["gate-off", "gate-settles", "no-resume", "resume"]
 SEED = "sente-seed-many.db"
 SEED_SESSIONS = 50
 # A migration that only deletes derived rows, so applying it a second time is harmless. The
