@@ -7,6 +7,7 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { reply } from "../../lib/llm-server"
 import { cliIt } from "../../lib/cli-process"
+import { testProviderConfig } from "../../lib/test-provider"
 import { AUTO_REJECT_LIMIT } from "../../../src/cli/cmd/run"
 import { ExitCode } from "../../../src/cli/exit-code"
 
@@ -357,6 +358,39 @@ describe("sente run (non-interactive subprocess)", () => {
         expect(result.stdout).not.toContain("must not be reached")
         // 1 original + 5 resumes, then it stops: two queued failures are left untouched.
         expect(yield* llm.pending).toBe(3)
+      }),
+    60_000,
+  )
+
+  // The environment prompt only asks the location services for references when the config
+  // declares some (asking unconditionally booted that whole service graph on every prompt).
+  // Declared references must still reach the model.
+  cliIt.concurrent(
+    "lists declared references in the system prompt, and nothing when none are declared",
+    ({ home, llm, sente }) =>
+      Effect.gen(function* () {
+        const system = (input: Record<string, unknown> | undefined) => JSON.stringify(input ?? {})
+        yield* llm.text("plain")
+        sente.expectExit(yield* sente.run("no references"), 0)
+        expect(system((yield* llm.inputs).at(-1))).not.toContain("available_references")
+
+        yield* llm.reset
+        yield* Effect.promise(() => Bun.write(`${home}/handbook/README.md`, "# handbook"))
+        // The test environment skips project config files, so declare it in the (isolated) global one.
+        yield* Effect.promise(() =>
+          Bun.write(
+            `${home}/.config/sente/sente.json`,
+            JSON.stringify({
+              references: { handbook: { path: `${home}/handbook`, description: "Team handbook for this test" } },
+            }),
+          ),
+        )
+        yield* llm.text("with references")
+        const result = yield* sente.run("has references")
+        sente.expectExit(result, 0)
+        const sent = system((yield* llm.inputs).at(-1))
+        expect(sent).toContain("available_references")
+        expect(sent).toContain("Team handbook for this test")
       }),
     60_000,
   )
