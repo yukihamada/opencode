@@ -34,6 +34,7 @@ import { CrossSpawnSpawner } from "@sente-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@sente-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
+import { McpLazy } from "./lazy"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -494,6 +495,112 @@ const layer = Layer.effect(
       }
     }
 
+    const idle = McpLazy.idle(process.env)
+
+    const snapshotKey = Effect.fnUntraced(function* (mcp: ConfigMCPV1.Info & { type: "local" }) {
+      const directory = yield* InstanceState.directory
+      return McpLazy.key({
+        command: mcp.command,
+        cwd: mcp.cwd ? path.resolve(directory, mcp.cwd) : directory,
+        environment: mcp.environment,
+      })
+    })
+
+    const stopLocal = Effect.fnUntraced(function* (client: MCPClient) {
+      const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
+      if (typeof pid === "number") {
+        for (const dpid of yield* descendants(pid)) {
+          try {
+            process.kill(dpid, "SIGTERM")
+          } catch {}
+        }
+      }
+      yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+    })
+
+    const capture = Effect.fnUntraced(function* (client: MCPClient, listed: MCPToolDef[], timeout?: number) {
+      const list = <T>(fn: (client: MCPClient, timeout?: number) => Promise<T[]>) =>
+        Effect.tryPromise(() => fn(client, timeout)).pipe(Effect.orElseSucceed(() => undefined))
+      const capabilities = client.getServerCapabilities()
+      return {
+        time: Date.now(),
+        capabilities,
+        instructions: client.getInstructions()?.trim(),
+        defs: listed,
+        prompts: capabilities?.prompts ? yield* list(McpCatalog.prompts) : [],
+        resources: capabilities?.resources ? yield* list(McpCatalog.resources) : [],
+        resourceTemplates: capabilities?.resources ? yield* list(McpCatalog.resourceTemplates) : [],
+      } satisfies McpLazy.Snapshot
+    })
+
+    // Local servers cost a process (often two, behind npx) per session whether or not a tool is ever
+    // called. Hand out a stand-in that starts the process on first use and stops it when idle.
+    const makeLazy = Effect.fnUntraced(function* (
+      s: State,
+      name: string,
+      mcp: ConfigMCPV1.Info & { type: "local" },
+      snapshot: McpLazy.Snapshot,
+      running?: MCPClient,
+    ) {
+      const bridge = yield* EffectBridge.make()
+      const id = yield* snapshotKey(mcp)
+
+      const refresh = (client: MCPClient) =>
+        Effect.gen(function* () {
+          const listed = client.getServerCapabilities()?.tools ? yield* McpCatalog.defs(client, mcp.timeout) : []
+          if (!listed || s.clients[name] !== lazy || !lazy.running) return
+          const next = yield* capture(client, listed, mcp.timeout)
+          const changed = JSON.stringify(s.defs[name]) !== JSON.stringify(listed)
+          lazy.snapshot = next
+          s.defs[name] = listed
+          if (next.instructions) s.instructions[name] = next.instructions
+          else delete s.instructions[name]
+          yield* Effect.tryPromise(() => McpLazy.write(id, next)).pipe(Effect.ignore)
+          if (changed) yield* events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore)
+        })
+
+      const listen = (client: MCPClient) => {
+        client.setNotificationHandler(LoggingMessageNotificationSchema, (notification) =>
+          bridge.promise(serverLog(name, notification.params)),
+        )
+        if (!client.getServerCapabilities()?.tools) return
+        client.setNotificationHandler(ToolListChangedNotificationSchema, () => bridge.promise(refresh(client)))
+      }
+
+      const lazy: McpLazy.LazyClient = new McpLazy.LazyClient(
+        {
+          snapshot,
+          idle,
+          start: () =>
+            bridge.promise(
+              Effect.gen(function* () {
+                const result = yield* connectLocal(name, mcp)
+                if (!result.client) {
+                  if (s.clients[name] === lazy) {
+                    s.status[name] = result.status
+                    yield* events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore)
+                  }
+                  return yield* Effect.fail(
+                    new Error(result.status.status === "failed" ? result.status.error : "MCP server unavailable"),
+                  )
+                }
+                listen(result.client)
+                // The snapshot may be stale; reconcile in the background so the waiting call is not delayed.
+                bridge.fork(refresh(result.client))
+                return result.client
+              }),
+            ),
+          stop: (client) => bridge.promise(stopLocal(client)),
+        },
+        running,
+      )
+      if (running) {
+        listen(running)
+        yield* Effect.tryPromise(() => McpLazy.write(id, snapshot)).pipe(Effect.ignore, Effect.forkIn(scope))
+      }
+      return lazy
+    })
+
     const state = yield* InstanceState.make<State>(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
@@ -521,14 +628,35 @@ const layer = Layer.effect(
                 return
               }
 
+              if (idle > 0 && mcp.type === "local") {
+                const id = yield* snapshotKey(mcp)
+                const snapshot = yield* Effect.promise(() => McpLazy.read(id))
+                if (snapshot) {
+                  s.status[key] = { status: "connected" }
+                  s.clients[key] = yield* makeLazy(s, key, mcp, snapshot)
+                  s.defs[key] = snapshot.defs
+                  if (snapshot.instructions) s.instructions[key] = snapshot.instructions
+                  return
+                }
+              }
+
               const result = yield* create(key, mcp)
               s.status[key] = result.status
-              if (result.mcpClient) {
-                s.clients[key] = result.mcpClient
-                s.defs[key] = result.defs!
-                if (result.instructions) s.instructions[key] = result.instructions
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
+              if (!result.mcpClient) return
+              s.defs[key] = result.defs!
+              if (result.instructions) s.instructions[key] = result.instructions
+              if (idle > 0 && mcp.type === "local") {
+                s.clients[key] = yield* makeLazy(
+                  s,
+                  key,
+                  mcp,
+                  yield* capture(result.mcpClient, result.defs!, mcp.timeout),
+                  result.mcpClient,
+                )
+                return
               }
+              s.clients[key] = result.mcpClient
+              watch(s, key, result.mcpClient, bridge, mcp.timeout)
             }),
           { concurrency: "unbounded" },
         )
@@ -541,19 +669,7 @@ const layer = Layer.effect(
             s.instructions = {}
             yield* Effect.forEach(
               clients,
-              (client) =>
-                Effect.gen(function* () {
-                  const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
-                  if (typeof pid === "number") {
-                    const pids = yield* descendants(pid)
-                    for (const dpid of pids) {
-                      try {
-                        process.kill(dpid, "SIGTERM")
-                      } catch {}
-                    }
-                  }
-                  yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
-                }),
+              stopLocal,
               { concurrency: "unbounded" },
             )
             pendingOAuthTransports.clear()
@@ -588,7 +704,7 @@ const layer = Layer.effect(
       s.defs[name] = listed
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
-      watch(s, name, client, bridge, timeout)
+      if (!(client instanceof McpLazy.LazyClient)) watch(s, name, client, bridge, timeout)
       if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
       return s.status[name]
     })
@@ -644,7 +760,17 @@ const layer = Layer.effect(
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+      const client =
+        idle > 0 && mcp.type === "local"
+          ? yield* makeLazy(
+              s,
+              name,
+              mcp,
+              yield* capture(result.mcpClient, result.defs!, mcp.timeout),
+              result.mcpClient,
+            )
+          : result.mcpClient
+      return yield* storeClient(s, name, client, result.defs!, result.instructions, mcp.timeout)
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
