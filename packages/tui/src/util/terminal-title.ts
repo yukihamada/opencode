@@ -231,10 +231,22 @@ export function terminalHandBackScript(input: {
   return lines.join("\n")
 }
 
-export function terminalTaskTitle(state: TerminalTaskState, title?: string, progress?: string, locale = defaultLocale()) {
+/**
+ * `stateLast` puts the state at the end, for terminals whose narrow tabs keep only the end of a
+ * title (Terminal.app): "請求書の整理 | 完了 🔔✅".
+ */
+export function terminalTaskTitle(
+  state: TerminalTaskState,
+  title?: string,
+  progress?: string,
+  locale = defaultLocale(),
+  stateLast = false,
+) {
   const name = sessionName(title)
   const chars = Array.from(name)
   const short = chars.length > 40 ? chars.slice(0, 39).join("") + "…" : name
+  const label = labels[language(locale)][state]
+  if (stateLast) return `${short} | ${progress ? `${progress} ` : ""}${label} ${icons[state]}`
   const detail = progress ? ` ${progress}` : ""
-  return `${icons[state]} ${labels[language(locale)][state]}${detail} | ${short}`
+  return `${icons[state]} ${label}${detail} | ${short}`
 }

@@ -143,6 +143,14 @@ describe("util.terminal-title", () => {
       )
     })
 
+    test("puts the state last for terminals that keep only the end of a tab title", () => {
+      expect(terminalTaskTitle("done", "請求書の整理", undefined, "ja", true)).toBe("請求書の整理 | 完了 🔔✅")
+      expect(terminalTaskTitle("permission", "請求書の整理", undefined, "ja", true)).toBe("請求書の整理 | 確認待ち 🔔❓")
+      expect(terminalTaskTitle("working", "請求書の整理", "3/7 · 残り約8分", "ja", true)).toBe(
+        "請求書の整理 | 3/7 · 残り約8分 実行中 ⏳",
+      )
+    })
+
     test("cleans control characters and long or default titles", () => {
       expect(terminalTaskTitle("ready", undefined, undefined, "en-US")).toBe("○ Ready | Sente")
       expect(terminalTaskTitle("done", "a\u0007b\u001b[31mc", undefined, "en-US")).toBe("🔔✅ Done | a bc")

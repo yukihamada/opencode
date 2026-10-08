@@ -605,6 +605,8 @@ function App(props: {
       })
     }, 600)
   }
+  // Terminal.app tabs keep only the end of a long title, so the state goes last there.
+  const terminalStateLast = process.env.TERM_PROGRAM === "Apple_Terminal"
   onCleanup(() => {
     clearInterval(terminalClockTimer)
     renderer.off("focus", onTerminalFocus)
@@ -618,7 +620,7 @@ function App(props: {
 
     if (route.data.type === "home") {
       terminalBellArmed = false
-      renderer.setTerminalTitle(terminalTaskTitle("ready"))
+      renderer.setTerminalTitle(terminalTaskTitle("ready", undefined, undefined, undefined, terminalStateLast))
       return
     }
 
@@ -641,7 +643,7 @@ function App(props: {
       const progress = terminalIsRunning(state)
         ? terminalTaskProgress({ now: terminalClock(), messages: sync.data.message[id], todos: sync.data.todo[id] })
         : undefined
-      renderer.setTerminalTitle(terminalTaskTitle(state, session?.title, progress))
+      renderer.setTerminalTitle(terminalTaskTitle(state, session?.title, progress, undefined, terminalStateLast))
       terminalBell(state, session?.title)
       return
     }
