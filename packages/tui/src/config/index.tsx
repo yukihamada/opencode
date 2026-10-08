@@ -58,6 +58,13 @@ export const Prompt = Schema.Struct({
   }),
 }).annotate({ description: "Prompt size settings" })
 
+// Navigation metadata lives in the TUI, not agent.options (which reaches the LLM).
+export const AgentNavigation = Schema.Struct({
+  groups: Schema.optional(
+    Schema.Record(Schema.String, Schema.Literals(["specialist", "project", "operation", "excluded"])),
+  ),
+}).annotate({ description: "Display-only agent groups; does not change execution permissions or direct selection" })
+
 export const Info = Schema.Struct({
   $schema: Schema.optional(Schema.String),
   theme: Schema.optional(Schema.String),
@@ -67,6 +74,7 @@ export const Info = Schema.Struct({
   leader_timeout: Schema.optional(LeaderTimeout),
   attention: Schema.optional(Attention),
   prompt: Schema.optional(Prompt),
+  agent_navigation: Schema.optional(AgentNavigation),
   scroll_speed: Schema.optional(ScrollSpeed).annotate({ description: "TUI scroll speed" }),
   scroll_acceleration: Schema.optional(ScrollAcceleration),
   diff_style: Schema.optional(DiffStyle),
