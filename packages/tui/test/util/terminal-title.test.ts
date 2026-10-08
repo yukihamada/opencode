@@ -7,6 +7,7 @@ import {
   terminalShouldRing,
   terminalTaskProgress,
   terminalTaskState,
+  terminalTabMarker,
   terminalTaskTitle,
 } from "../../src/util/terminal-title"
 
@@ -127,6 +128,18 @@ describe("util.terminal-title", () => {
     test("nothing to show without a user message", () => {
       expect(terminalTaskProgress({ now: 1, messages: [] }, "ja")).toBeUndefined()
       expect(terminalTaskProgress({ now: 1 }, "ja")).toBeUndefined()
+    })
+  })
+
+  describe("terminalTabMarker", () => {
+    test("names the states worth showing and fits the process-name limit", () => {
+      expect(terminalTabMarker("done", "ja")).toBe("✅完了")
+      expect(terminalTabMarker("permission", "ja")).toBe("❓確認")
+      expect(terminalTabMarker("working", "ja")).toBe("⏳実行中")
+      expect(terminalTabMarker("ready", "ja")).toBeUndefined()
+      for (const locale of ["ja", "en-US"])
+        for (const state of ["working", "retry", "permission", "question", "done", "incomplete", "error"] as const)
+          expect(Buffer.byteLength(terminalTabMarker(state, locale)!)).toBeLessThanOrEqual(16)
     })
   })
 

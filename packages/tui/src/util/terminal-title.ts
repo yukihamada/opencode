@@ -195,6 +195,21 @@ export function terminalTaskProgress(
   return parts.length ? parts.join(" · ") : undefined
 }
 
+/**
+ * Short name for a marker process. Terminal.app ends every tab label with the newest process on the
+ * tab, so a process named after the state stays readable when the title is cut off. Names must fit
+ * the 16-byte process-name limit.
+ */
+export function terminalTabMarker(state: TerminalTaskState, locale = defaultLocale()) {
+  const ja = language(locale) === "ja"
+  if (state === "working" || state === "retry") return ja ? "⏳実行中" : "⏳working"
+  if (state === "permission" || state === "question") return ja ? "❓確認" : "❓asking"
+  if (state === "done") return ja ? "✅完了" : "✅done"
+  if (state === "incomplete") return ja ? "⚠️中断" : "⚠️stopped"
+  if (state === "error") return ja ? "🔴エラー" : "🔴error"
+  return undefined
+}
+
 function sessionName(title?: string) {
   const clean = stripAnsi(title ?? "")
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")

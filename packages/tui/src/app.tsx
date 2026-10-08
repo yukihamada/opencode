@@ -67,7 +67,10 @@ import { PromptStashProvider } from "./component/prompt/stash"
 import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
 import { ToastProvider, useToast, type ToastContext } from "./ui/toast"
-import { execFile } from "node:child_process"
+import { execFile, spawn, type ChildProcess } from "node:child_process"
+import { mkdirSync, symlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import {
   terminalIsRunning,
   terminalHandBackScript,
@@ -75,6 +78,7 @@ import {
   terminalShouldRing,
   terminalTaskProgress,
   terminalTaskState,
+  terminalTabMarker,
   terminalTaskTitle,
   type TerminalTaskState,
 } from "./util/terminal-title"
@@ -607,6 +611,30 @@ function App(props: {
   }
   // Terminal.app tabs keep only the end of a long title, so the state goes last there.
   const terminalStateLast = process.env.TERM_PROGRAM === "Apple_Terminal"
+  // Terminal.app: keep a marker process named after the state, because narrow tabs show only the
+  // newest process name. It reads from a pipe, so it exits with this process even after a crash.
+  let terminalMarker: { name: string; child: ChildProcess } | undefined
+  const terminalMark = (state: TerminalTaskState) => {
+    if (!terminalStateLast || process.env.TE_NO_TAB_STATE === "1") return
+    const name = terminalTabMarker(state)
+    if (terminalMarker?.name === name) return
+    terminalMarker?.child.kill()
+    terminalMarker = undefined
+    if (!name) return
+    try {
+      const dir = path.join(tmpdir(), "sente-tab-state")
+      mkdirSync(dir, { recursive: true })
+      const file = path.join(dir, name)
+      try {
+        symlinkSync("/bin/cat", file)
+      } catch {}
+      const child = spawn(file, [], { stdio: ["pipe", "ignore", "ignore"] })
+      child.on("error", () => {})
+      child.stdin?.on("error", () => {})
+      terminalMarker = { name, child }
+    } catch {}
+  }
+  onCleanup(() => terminalMarker?.child.kill())
   onCleanup(() => {
     clearInterval(terminalClockTimer)
     renderer.off("focus", onTerminalFocus)
@@ -620,6 +648,7 @@ function App(props: {
 
     if (route.data.type === "home") {
       terminalBellArmed = false
+      terminalMark("ready")
       renderer.setTerminalTitle(terminalTaskTitle("ready", undefined, undefined, undefined, terminalStateLast))
       return
     }
@@ -644,6 +673,7 @@ function App(props: {
         ? terminalTaskProgress({ now: terminalClock(), messages: sync.data.message[id], todos: sync.data.todo[id] })
         : undefined
       renderer.setTerminalTitle(terminalTaskTitle(state, session?.title, progress, undefined, terminalStateLast))
+      terminalMark(state)
       terminalBell(state, session?.title)
       return
     }
