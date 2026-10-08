@@ -21,6 +21,8 @@ import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 import { usePermission } from "./permission"
+import { useTuiConfig } from "../config"
+import { cycleAgent } from "../util/agent-navigation"
 import {
   creditsRemaining,
   isPremiumModel,
@@ -88,6 +90,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const args = useArgs()
     const event = useEvent()
     const permission = usePermission()
+    const config = useTuiConfig()
 
     function isModelValid(model: { providerID: string; modelID: string }) {
       const provider = sync.data.provider.find((item) => item.id === model.providerID)
@@ -137,11 +140,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           batch(() => {
             const current = this.current()
             if (!current) return
-            let next = agents().findIndex((x) => x.name === current.name) + direction
-            if (next < 0) next = agents().length - 1
-            if (next >= agents().length) next = 0
-            const value = agents()[next]
-            setAgentStore("current", value.name)
+            const next = cycleAgent(agents(), current.name, direction, config.agent_navigation)
+            if (next) setAgentStore("current", next.name)
           })
         },
         color(name: string) {

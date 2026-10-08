@@ -16,6 +16,14 @@ import {
 const decodeInfo = Schema.decodeUnknownSync(Info)
 const decodePlugin = Schema.decodeUnknownSync(PluginSpec)
 
+test("validates and preserves display-only agent navigation", () => {
+  const input = { agent_navigation: { groups: { director: "excluded", door: "operation", project: "project" } } } as const
+  expect(decodeInfo(input)).toEqual(input)
+  expect(resolve(decodeInfo(input), { terminalSuspend: true }).agent_navigation).toEqual(input.agent_navigation)
+  expect(() => decodeInfo({ agent_navigation: { groups: { agent: "subagent" } } })).toThrow()
+  expect(decodeInfo({}).agent_navigation).toBeUndefined()
+})
+
 test("defines package-owned plugin specs and attention sound names", () => {
   expect(decodePlugin("example-plugin")).toBe("example-plugin")
   expect(decodePlugin(["example-plugin", { enabled: true }])).toEqual(["example-plugin", { enabled: true }])
