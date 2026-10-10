@@ -83,6 +83,7 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { SENTE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import { SessionNextActions } from "../../component/session-next-actions"
 
 addDefaultParsers(parsers.parsers)
 
@@ -252,6 +253,19 @@ export function Session() {
 
   const lastAssistant = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant")
+  })
+  const lastUser = createMemo(() => messages().findLast((x) => x.role === "user"))
+  const [nextActionsDismissedFor, setNextActionsDismissedFor] = createSignal<string>()
+  const showNextActions = createMemo(() => {
+    const assistant = lastAssistant()
+    const user = lastUser()
+    return (
+      sync.data.session_status[route.sessionID]?.type === "idle" &&
+      !!assistant?.time.completed &&
+      assistant.parentID === user?.id &&
+      !assistant.error &&
+      nextActionsDismissedFor() !== assistant.id
+    )
   })
 
   const dimensions = useTerminalDimensions()
@@ -1327,6 +1341,19 @@ export function Session() {
                     </Switch>
                   )}
                 </For>
+                <Show when={showNextActions()}>
+                  <SessionNextActions
+                    onSelect={(input) => {
+                      const current = prompt?.current
+                      prompt?.set({
+                        input: current?.input ? `${current.input}\n${input}` : input,
+                        parts: current?.parts ?? [],
+                      })
+                      prompt?.focus()
+                      setNextActionsDismissedFor(lastAssistant()?.id)
+                    }}
+                  />
+                </Show>
               </scrollbox>
               <box flexShrink={0}>
                 <Show when={permissions().length > 0}>
