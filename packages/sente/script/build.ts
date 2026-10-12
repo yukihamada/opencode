@@ -2,6 +2,7 @@
 
 import { $ } from "bun"
 import path from "path"
+import { mkdir } from "node:fs/promises"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 
@@ -26,6 +27,10 @@ const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const bytecodeFlag = process.argv.includes("--bytecode")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+const outputArg = process.argv.find((arg) => arg.startsWith("--outdir="))
+if (outputArg === "--outdir=") throw new Error("--outdir requires a directory")
+if (outputArg && Script.release) throw new Error("--outdir is only supported for local builds")
+const outputDir = outputArg ? path.resolve(dir, outputArg.slice("--outdir=".length)) : "dist"
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -138,7 +143,9 @@ const targets = singleFlag
     })
   : allTargets
 
-await $`rm -rf dist`
+// A custom output must be new: never remove or overwrite existing artifacts.
+if (outputArg) await mkdir(outputDir)
+else await $`rm -rf dist`
 
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
@@ -158,7 +165,7 @@ for (const item of targets) {
     .filter(Boolean)
     .join("-")
   console.log(`building ${name}`)
-  await $`mkdir -p dist/${name}/bin`
+  await $`mkdir -p ${outputDir}/${name}/bin`
 
   const workerPath = "./src/cli/tui/worker.ts"
   const treeSitterWorkerPath = "opentui-tree-sitter-worker.js"
@@ -180,7 +187,7 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/sente`,
+      outfile: `${outputDir}/${name}/bin/sente`,
       execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
@@ -208,7 +215,7 @@ for (const item of targets) {
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/sente`
+    const binaryPath = `${outputDir}/${name}/bin/sente`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
@@ -219,8 +226,8 @@ for (const item of targets) {
     }
   }
 
-  await $`rm -rf ./dist/${name}/bin/tui`
-  await Bun.file(`dist/${name}/package.json`).write(
+  await $`rm -rf ${outputDir}/${name}/bin/tui`
+  await Bun.file(`${outputDir}/${name}/package.json`).write(
     JSON.stringify(
       {
         name,

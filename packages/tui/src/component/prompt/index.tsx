@@ -57,10 +57,14 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { createSpaceHold, voiceMeter, type HoldState } from "../../util/space-hold"
+import { startHoldRecording } from "../../util/hold-recording"
+import { DialogVoice } from "./dialog-voice"
 
 registerOpencodeSpinner()
 
 export type PromptProps = {
+  captureVoice?: typeof startHoldRecording
   sessionID?: string
   visible?: boolean
   disabled?: boolean
@@ -593,12 +597,16 @@ export function Prompt(props: PromptProps) {
       input.blur()
     },
     set(prompt) {
+      discardVoiceReview()
+      hold.cancel()
       input.setText(prompt.input)
       setStore("prompt", prompt)
       restoreExtmarksFromParts(prompt.parts)
       input.gotoBufferEnd()
     },
     reset() {
+      discardVoiceReview()
+      hold.cancel()
       input.clear()
       input.extmarks.clear()
       setStore("prompt", {
@@ -611,6 +619,62 @@ export function Prompt(props: PromptProps) {
       void submit()
     },
   }
+
+  const [holdState, setHoldState] = createSignal<HoldState>("idle")
+  const [holdLevel, setHoldLevel] = createSignal(0)
+  let voiceReview: object | undefined
+  function discardVoiceReview() {
+    if (!voiceReview) return
+    voiceReview = undefined
+    dialog.clear()
+  }
+  const hold = createSpaceHold({
+    enabled: () => process.platform === "darwin" && !!input?.focused && !input.isDestroyed &&
+      props.visible !== false && !props.disabled && dialog.stack.length === 0 && !leader() &&
+      store.mode === "normal" && !auto()?.visible && !voiceInputPending && !submitting,
+    insert: (text) => input.insertText(text),
+    transcript: (text) => {
+      const review = {}
+      const draft = input.plainText
+      const cursor = input.cursorOffset
+      voiceReview = review
+      dialog.replace(() => <DialogVoice text={text} onSelect={() => {
+        if (voiceReview !== review) return
+        const valid = !input.isDestroyed && input.plainText === draft && props.visible !== false && !props.disabled
+        discardVoiceReview()
+        if (!valid) return
+        input.cursorOffset = cursor
+        input.insertText(text)
+      }} />, () => { if (voiceReview === review) voiceReview = undefined })
+    },
+    start: (ready, level) => (props.captureVoice ?? startHoldRecording)({
+      ready, level, language: process.env.SENTE_LANGUAGE ?? process.env.LANG ?? "ja",
+    }),
+    state: setHoldState,
+    level: setHoldLevel,
+    error: (error) => toast.show({ variant: "error", message: errorMessage(error) }),
+  })
+  createEffect(on(() => [props.sessionID, props.visible, props.disabled, dialog.stack.length, location(), store.mode], () => hold.cancel()))
+  createEffect(on(() => [props.sessionID, props.visible, props.disabled, location(), store.mode], discardVoiceReview, { defer: true }))
+  onCleanup(discardVoiceReview)
+  onMount(() => {
+    const focusChanged = (current: Renderable | null) => {
+      if (current !== input) hold.cancel()
+    }
+    renderer.keyInput.prependListener("keypress", hold.key)
+    renderer.keyInput.prependListener("keyrelease", hold.key)
+    renderer.keyInput.prependListener("paste", hold.cancel)
+    renderer.on("blur", hold.cancel)
+    renderer.on("focused_renderable", focusChanged)
+    onCleanup(() => {
+      hold.cancel()
+      renderer.keyInput.off("keypress", hold.key)
+      renderer.keyInput.off("keyrelease", hold.key)
+      renderer.keyInput.off("paste", hold.cancel)
+      renderer.off("blur", hold.cancel)
+      renderer.off("focused_renderable", focusChanged)
+    })
+  })
 
   onMount(() => {
     const saved = stashed
@@ -797,6 +861,33 @@ export function Prompt(props: PromptProps) {
     commands: stashCommands(),
   }))
 
+  useBindings(() => ({
+    target: inputTarget,
+    enabled: (() => {
+      cursorVersion()
+      return (
+        inputTarget() !== undefined &&
+        !props.disabled &&
+        props.visible !== false &&
+        dialog.stack.length === 0 &&
+        store.mode === "normal" &&
+        store.prompt.input === "/v" &&
+        store.prompt.parts.length === 0
+      )
+    })(),
+    bindings: [
+      {
+        key: "space",
+        desc: "Record voice into draft",
+        group: "Prompt",
+        cmd: () => {
+          if (voiceInputPending) return
+          startVoiceInput()
+        },
+      },
+    ],
+  }))
+
   useBindings(() => {
     return {
       target: inputTarget,
@@ -928,6 +1019,25 @@ export function Prompt(props: PromptProps) {
   })
 
   let submitting = false
+  let voiceInputPending = false
+  let voiceCommandTimer: ReturnType<typeof setTimeout> | undefined
+
+  function startVoiceInput() {
+    if (hold.busy() || voiceInputPending) return
+    voiceInputPending = true
+    auto()?.dismiss()
+    input.clear()
+    setStore("prompt", "input", "")
+    voiceCommandTimer = setTimeout(() => {
+      voiceInputPending = false
+      hold.toggle()
+    }, 0)
+  }
+
+  onCleanup(() => {
+    clearTimeout(voiceCommandTimer)
+  })
+
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
@@ -935,7 +1045,13 @@ export function Prompt(props: PromptProps) {
     // clears `store.prompt.input`, then awaits its own `session.create` and
     // ultimately reads the now-empty store — sending a phantom empty prompt
     // to a freshly created session.
-    if (submitting) return false
+    if (submitting || voiceInputPending || hold.busy() || voiceReview || dialog.stack.length) return false
+    // /v is a local recorder control, never a model command/template.
+    if (store.mode === "normal" && /^\/v(?:\s|$)/.test(input.plainText.trim())) {
+      if (input.plainText.trim() === "/v" && !props.disabled && !store.prompt.parts.length) startVoiceInput()
+      else toast.show({ variant: "info", message: "Use /v to record, Enter to transcribe, Esc to cancel." })
+      return false
+    }
     submitting = true
     try {
       return await submitInner()
@@ -1441,6 +1557,16 @@ export function Prompt(props: PromptProps) {
               cursorStyle={tuiConfig.cursor}
               syntaxStyle={syntax()}
             />
+            <Show when={holdState() !== "idle" && holdState() !== "pending"}>
+              <text fg={theme.warning}>
+                {holdState() === "recording"
+                  ? `Recording ${voiceMeter(holdLevel())} · ${hold.toggled() ? "Enter" : "Release"} to transcribe`
+                  : holdState() === "starting"
+                    ? "Preparing microphone…"
+                    : "Transcribing… (not sent)"}
+                {" · Esc cancel"}
+              </text>
+            </Show>
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
               <box flexDirection="row" gap={1}>
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
