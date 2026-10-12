@@ -22,6 +22,50 @@ const ticketScope = Effect.gen(function* () {
   return { directory: location.directory as string, workspaceID: location.workspaceID }
 })
 
+// Outbound frames waiting on a slow websocket client must stay byte-bounded: an unbounded
+// outbox lets a stalled client grow server memory without limit.
+export const MAX_PENDING_OUTPUT_BYTES = 1024 * 1024
+
+// Byte gate around the outbound queue. Once the pending byte count crosses the limit the
+// gate overflows: no chunk is dropped silently, instead the connection is terminated with a
+// close frame and the PTY attachment is detached.
+export const makeOutputGate = Effect.fnUntraced(function* (input: {
+  limit?: number
+  onEnd: () => void
+  onOverflow: () => void
+}) {
+  const limit = input.limit ?? MAX_PENDING_OUTPUT_BYTES
+  const queue = yield* Queue.unbounded<string | Uint8Array | Socket.CloseEvent>()
+  const state = { pending: 0, overflowed: false }
+  const size = (item: string | Uint8Array) =>
+    typeof item === "string" ? new TextEncoder().encode(item).byteLength : item.byteLength
+  const offer = (item: string | Uint8Array) => {
+    if (state.overflowed) return
+    state.pending += size(item)
+    if (state.pending > limit) {
+      state.overflowed = true
+      Queue.offerUnsafe(queue, new Socket.CloseEvent(1013, "output overflow"))
+      input.onOverflow()
+      return
+    }
+    Queue.offerUnsafe(queue, item)
+  }
+  const end = () => {
+    if (state.overflowed) return
+    Queue.offerUnsafe(queue, new Socket.CloseEvent(1000))
+    input.onEnd()
+  }
+  return {
+    offer,
+    end,
+    take: Effect.gen(function* () {
+      const item = yield* Queue.take(queue)
+      if (!(item instanceof Socket.CloseEvent)) state.pending = Math.max(0, state.pending - size(item))
+      return item
+    }),
+  }
+})
+
 export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
   Effect.gen(function* () {
     const tickets = yield* PtyTicket.Service
@@ -173,15 +217,20 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
                 Effect.catch(() => Effect.void),
               )
 
-          // Outbound frames flow through one queue drained by a single writer so replay, live
-          // output, and the close frame keep their order.
+          // Outbound frames flow through one byte-bounded gate drained by a single writer so
+          // replay, live output, and the close frame keep their order. Overflow terminates
+          // this websocket and detaches; the PTY session itself keeps running.
           // TODO: Integrate graceful-shutdown socket tracking before clients migrate to this route.
-          const outbox = yield* Queue.unbounded<string | Uint8Array | Socket.CloseEvent>()
+          const attachmentRef: { detach?: () => void } = {}
+          const outbox = yield* makeOutputGate({
+            onEnd: () => {},
+            onOverflow: () => attachmentRef.detach?.(),
+          })
           const attachment = yield* pty
             .attach(ctx.params.ptyID, {
               cursor,
-              onData: (chunk) => Queue.offerUnsafe(outbox, chunk),
-              onEnd: () => Queue.offerUnsafe(outbox, new Socket.CloseEvent(1000)),
+              onData: (chunk) => outbox.offer(chunk),
+              onEnd: () => outbox.end(),
             })
             .pipe(
               Effect.catchTags({
@@ -193,13 +242,14 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
             )
           if (!attachment) return HttpServerResponse.empty()
 
-          for (const chunk of PtyProtocol.chunks(attachment.replay)) Queue.offerUnsafe(outbox, chunk)
-          Queue.offerUnsafe(outbox, PtyProtocol.metaFrame(attachment.cursor))
+          attachmentRef.detach = attachment.detach
+          for (const chunk of PtyProtocol.chunks(attachment.replay)) outbox.offer(chunk)
+          outbox.offer(PtyProtocol.metaFrame(attachment.cursor))
           attachment.activate()
 
           const drain = Effect.gen(function* () {
             while (true) {
-              const item = yield* Queue.take(outbox)
+              const item = yield* outbox.take
               yield* write(item)
               if (item instanceof Socket.CloseEvent) return
             }
