@@ -78,6 +78,7 @@ export type ListInput = typeof ListInput.Type
 
 type CreateInput = {
   id?: SessionSchema.ID
+  parentID?: SessionSchema.ID
   agent?: AgentV2.ID
   model?: ModelV2.Ref
   location: Location.Ref
@@ -112,6 +113,7 @@ export type Error = NotFoundError | MessageDecodeError | OperationUnavailableErr
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
+  readonly children: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info[], NotFoundError>
   readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info>
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info, NotFoundError>
   readonly messages: (input: {
@@ -222,6 +224,7 @@ const layer = Layer.effect(
           slug: Slug.create(),
           version: InstallationVersion,
           projectID: project.id,
+          parentID: input.parentID,
           directory: input.location.directory,
           path: path.relative(project.directory, input.location.directory).replaceAll("\\", "/"),
           workspaceID: input.location.workspaceID ? WorkspaceV2.ID.make(input.location.workspaceID) : undefined,
@@ -264,6 +267,17 @@ const layer = Layer.effect(
         const session = yield* store.get(sessionID)
         if (!session) return yield* new NotFoundError({ sessionID })
         return session
+      }),
+      children: Effect.fn("V2Session.children")(function* (sessionID) {
+        yield* result.get(sessionID)
+        const rows = yield* db
+          .select()
+          .from(SessionTable)
+          .where(eq(SessionTable.parent_id, sessionID))
+          .orderBy(asc(SessionTable.time_created), asc(SessionTable.id))
+          .all()
+          .pipe(Effect.orDie)
+        return rows.map((row) => fromRow(row))
       }),
       list: Effect.fn("V2Session.list")(function* (input = {}) {
         const direction = input.anchor?.direction ?? "next"

@@ -165,6 +165,40 @@ export const SessionInputTable = sqliteTable(
   ],
 )
 
+export const SessionOrchestrationTable = sqliteTable(
+  "session_orchestration",
+  {
+    id: text().primaryKey(),
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    objective: text().notNull(),
+    status: text().notNull(),
+    evaluator: text(),
+    max_evaluations: integer().notNull(),
+    time_created: integer().notNull(),
+    time_updated: integer().notNull(),
+    time_completed: integer(),
+  },
+  (table) => [uniqueIndex("session_orchestration_session_idx").on(table.session_id)],
+)
+
+export const SessionOrchestrationEvaluationTable = sqliteTable(
+  "session_orchestration_evaluation",
+  {
+    id: text().primaryKey(),
+    orchestration_id: text()
+      .notNull()
+      .references(() => SessionOrchestrationTable.id, { onDelete: "cascade" }),
+    seq: integer().notNull(),
+    verdict: text().notNull(),
+    reason: text(),
+    time_created: integer().notNull(),
+  },
+  (table) => [uniqueIndex("session_orchestration_evaluation_run_seq_idx").on(table.orchestration_id, table.seq)],
+)
+
 export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
   session_id: text()
     .$type<SessionSchema.ID>()
