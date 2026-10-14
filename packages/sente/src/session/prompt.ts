@@ -1292,6 +1292,13 @@ const layer = Layer.effect(
               return "break" as const
             }
 
+            if (handle.message.finish === "length" && !handle.message.error) {
+              handle.message.error = new SessionV1.OutputLengthError({}).toObject()
+              yield* sessions.updateMessage(handle.message)
+              yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
+              return "break" as const
+            }
+
             const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
             if (finished && !handle.message.error) {
               // Surface any content-filter finish (e.g. Anthropic stop_reason:

@@ -65,8 +65,17 @@ export const StatsCommand = effectCmd({
       .option("project", {
         describe: "filter by project (default: all projects, empty string: current project)",
         type: "string",
+      })
+      .option("completion", {
+        describe: "show model completion rates from the run-metrics ledger",
+        type: "boolean",
+        default: false,
       }),
   handler: Effect.fn("Cli.stats")(function* (args) {
+    if (args.completion) {
+      yield* Effect.promise(() => displayCompletionRates())
+      return
+    }
     const ctx = yield* InstanceRef
     if (!ctx) return
     const stats = yield* aggregateSessionStats(args.days, args.project, ctx.project)
@@ -84,6 +93,69 @@ const getAllSessions = Effect.fnUntraced(function* () {
   const { db } = yield* Database.Service
   return (yield* db.select().from(SessionTable).all().pipe(Effect.orDie)).map((row) => Session.fromRow(row))
 })
+
+// Aggregates the append-only run ledger written by `sente run` (cli/cmd/run.ts)
+// into per-model completion rates. Missing model means the run used the
+// account default, so it is grouped under "(default)". Exported for tests.
+export type RunMetricRow = {
+  model?: string
+  outcome: string
+  durationMs?: number
+  startedAt?: number
+}
+
+export function aggregateCompletionRates(content: string) {
+  const rows = content
+    .split("\n")
+    .filter((line) => line.trim())
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as RunMetricRow]
+      } catch {
+        return []
+      }
+    })
+
+  const byModel = new Map<string, { total: number; completed: number; errored: number; totalMs: number }>()
+  for (const row of rows) {
+    const key = row.model ?? "(default)"
+    const entry = byModel.get(key) ?? { total: 0, completed: 0, errored: 0, totalMs: 0 }
+    entry.total++
+    if (row.outcome === "completed") entry.completed++
+    else entry.errored++
+    entry.totalMs += row.durationMs ?? 0
+    byModel.set(key, entry)
+  }
+  return { rows, byModel }
+}
+
+export function formatCompletionRates(content: string) {
+  const { rows, byModel } = aggregateCompletionRates(content)
+  const lines = [`Model completion rates (${rows.length} runs)`, "─".repeat(72)]
+  const sorted = [...byModel.entries()].sort((a, b) => b[1].total - a[1].total)
+  for (const [model, entry] of sorted) {
+    const rate = ((entry.completed / entry.total) * 100).toFixed(0).padStart(3)
+    const avgSec = (entry.totalMs / entry.total / 1000).toFixed(1)
+    lines.push(
+      `${rate}%  ${String(entry.completed).padStart(4)}/${String(entry.total).padEnd(4)}  avg ${avgSec.padStart(6)}s  ${model}`,
+    )
+  }
+  return lines
+}
+
+async function displayCompletionRates() {
+  const { Global } = await import("@sente-ai/core/global")
+  const path = await import("path")
+  const fs = await import("node:fs/promises")
+  const file = path.join(Global.Path.state, "run-metrics.jsonl")
+
+  const content = await fs.readFile(file, "utf8").catch(() => undefined)
+  if (!content) {
+    console.log("No run metrics recorded yet. Run `sente run` to start collecting data.")
+    return
+  }
+  for (const line of formatCompletionRates(content)) console.log(line)
+}
 
 const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
   days?: number,

@@ -88,6 +88,33 @@ function formatRunError(error: unknown) {
   return FormatError(error) ?? FormatUnknownError(error)
 }
 
+type RunMetric = {
+  sessionID: string
+  directory: string
+  model?: string
+  agent?: string
+  prompt: string
+  outcome: "completed" | "error"
+  error?: string
+  exitCode: number
+  startedAt: number
+  durationMs: number
+}
+
+// Append-only JSONL ledger for model-completion-rate analysis. Recording is
+// best-effort: a write failure must never break a run.
+async function recordRunMetric(metric: RunMetric) {
+  try {
+    const { Global } = await import("@sente-ai/core/global")
+    const file = path.join(Global.Path.state, "run-metrics.jsonl")
+    const { mkdir, appendFile } = await import("node:fs/promises")
+    await mkdir(path.dirname(file), { recursive: true })
+    await appendFile(file, JSON.stringify(metric) + EOL)
+  } catch {
+    // best-effort only
+  }
+}
+
 async function tool(part: ToolPart) {
   try {
     const { toolInlineInfo } = await import("./run/tool")
@@ -847,10 +874,32 @@ export const RunCommand = effectCmd({
             console.error(e)
             return { error: String(e), code: ExitCode.Other as ExitCode }
           })
+          const startedAt = Date.now()
+          let recorded = false
+          async function record(outcome: "completed" | "error", error?: string, exitCode = 0) {
+            if (args.attach || recorded) return
+            recorded = true
+            await recordRunMetric({
+              sessionID: sessionID!,
+              directory: cwd,
+              model: args.model,
+              agent,
+              prompt: message,
+              outcome,
+              error,
+              exitCode,
+              startedAt,
+              durationMs: Date.now() - startedAt,
+            })
+          }
           async function finish() {
-            if (args.attach) return
             const result = await completed
             if (result?.error) process.exitCode = result.code ?? ExitCode.Other
+            await record(
+              result?.error ? "error" : "completed",
+              result?.error,
+              typeof process.exitCode === "number" ? process.exitCode : 0,
+            )
           }
 
           if (args.command) {
@@ -866,6 +915,7 @@ export const RunCommand = effectCmd({
               const code = exitCodeForError(result.error)
               if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
               process.exitCode = code
+              await record("error", formatRunError(result.error), typeof code === "number" ? code : 1)
               return
             }
             await finish()
@@ -884,6 +934,7 @@ export const RunCommand = effectCmd({
             const code = exitCodeForError(result.error)
             if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
             process.exitCode = code
+            await record("error", formatRunError(result.error), typeof code === "number" ? code : 1)
             return
           }
           await finish()
