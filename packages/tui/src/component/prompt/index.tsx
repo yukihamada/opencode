@@ -810,6 +810,45 @@ export function Prompt(props: PromptProps) {
     commands: stashCommands(),
   }))
 
+  // 空のプロンプトでスペースを押すと `/v` 音声入力を開始する。日本語IMEでも
+  // 変換が始まる前のキーイベントで拾う。音声入力の停止は `/v off`。
+  useBindings(() => ({
+    target: inputTarget,
+    enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input === "",
+    bindings: [
+      {
+        key: "space",
+        desc: "Voice input",
+        group: "Prompt",
+        cmd: () => void voiceInput(),
+      },
+    ],
+  }))
+
+  async function voiceInput() {
+    try {
+      let sessionID = props.sessionID
+      if (sessionID == null) {
+        const res = await sdk.client.session.create({})
+        if (res.error) throw res.error
+        sessionID = res.data.id
+      }
+      const res = await sdk.client.session.command({
+        sessionID,
+        command: "v",
+        arguments: "",
+      })
+      if (res.error) throw res.error
+    } catch (error) {
+      toast.show({
+        title: "🎤",
+        message: errorMessage(error),
+        variant: "error",
+        duration: 6000,
+      })
+    }
+  }
+
   useBindings(() => {
     return {
       target: inputTarget,
