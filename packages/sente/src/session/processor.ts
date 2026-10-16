@@ -646,8 +646,11 @@ const layer = Layer.effect(
             yield* status.set(ctx.sessionID, { type: "idle" })
             return
           }
+          // 自動コンパクションで続行するので、利用者向けのエラーとしては知らせない。
+          // 以前はここで session.error を出していたため、teai の本文上限(413 Payload Too Large)に
+          // 当たるたびに、数十秒後に自動で復帰するのに赤いエラー表示とエラー通知が出て、
+          // しかも「失敗したセッション」扱いになり完了通知まで出なくなっていた。
           ctx.needsCompaction = true
-          yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
           return
         }
         ctx.assistantMessage.error = error
