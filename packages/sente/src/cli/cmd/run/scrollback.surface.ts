@@ -12,6 +12,7 @@ import {
   type TreeSitterClient,
   type CliRenderer,
   type ScrollbackSurface,
+  type NativeResourceOwner,
 } from "@opentui/core"
 import { entryBody, entryCanStream, entryDone, entryFlags } from "./entry.body"
 import { entryColor, entryLook, entrySyntax } from "./scrollback.shared"
@@ -112,6 +113,10 @@ export class RunScrollbackStream {
 
   private onThemeRelease: ((theme: RunTheme) => void) | undefined
 
+  private get syntaxOwner(): NativeResourceOwner {
+    return this.renderer.nativeScene
+  }
+
   private releasePendingThemes(): void {
     if (this.pendingThemes.length === 0) {
       return
@@ -143,7 +148,7 @@ export class RunScrollbackStream {
     }
 
     active.renderable.fg = entryColor(active.commit, theme)
-    active.renderable.syntaxStyle = entrySyntax(active.commit, theme)
+    active.renderable.syntaxStyle = entrySyntax(active.commit, theme, this.syntaxOwner)
   }
 
   private createEntry(commit: StreamCommit, body: ActiveBody): ActiveEntry {
@@ -164,7 +169,7 @@ export class RunScrollbackStream {
           ? new CodeRenderable(surface.renderContext, {
               content: "",
               filetype: body.filetype,
-              syntaxStyle: entrySyntax(commit, this.theme),
+              syntaxStyle: entrySyntax(commit, this.theme, this.syntaxOwner),
               width: "100%",
               wrapMode: "word",
               drawUnstyledText: false,
@@ -174,7 +179,7 @@ export class RunScrollbackStream {
             })
           : new MarkdownRenderable(surface.renderContext, {
               content: "",
-              syntaxStyle: entrySyntax(commit, this.theme),
+              syntaxStyle: entrySyntax(commit, this.theme, this.syntaxOwner),
               width: "100%",
               streaming: true,
               internalBlockMode: "top-level",

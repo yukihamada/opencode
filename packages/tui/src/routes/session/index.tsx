@@ -24,7 +24,7 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
-import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA, type NativeResourceOwner } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import type {
   AssistantMessage,
@@ -1627,6 +1627,7 @@ const INLINE_TOOL_ICON_WIDTH = 2
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme } = useTheme()
   const ctx = use()
+  const renderer = useRenderer()
   // Collapsed by default in hide mode: a single line throughout, so the
   // layout never shifts. Click to open the full markdown block, click to close.
   const [expanded, setExpanded] = createSignal(false)
@@ -1645,7 +1646,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
   })
   const summary = createMemo(() => reasoningSummary(content()))
-  const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
+  const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme, renderer.nativeScene))
 
   const toggle = () => {
     if (!inMinimal() || opaque()) return

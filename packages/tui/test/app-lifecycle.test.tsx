@@ -8,7 +8,7 @@ import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
 
 test("SIGHUP clears title and disposes scoped resources once", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const setup = await createTestRenderer({ width: 80, height: 24 })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const titles: string[] = []
@@ -61,7 +61,7 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
 })
 
 test("app.exit prints the session epilogue after scoped cleanup", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const setup = await createTestRenderer({ width: 80, height: 24 })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const events = createEventSource()

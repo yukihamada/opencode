@@ -324,11 +324,14 @@ test("run entry content updates when live commit text changes", async () => {
   })
 
   const app = await testRender(
-    () => (
-      <box width={80} height={4}>
-        <RunEntryContent commit={commit()} theme={RUN_THEME_FALLBACK} width={80} />
-      </box>
-    ),
+    () => {
+      const renderer = useRenderer()
+      return (
+        <box width={80} height={4}>
+          <RunEntryContent commit={commit()} theme={RUN_THEME_FALLBACK} width={80} renderContext={renderer} />
+        </box>
+      )
+    },
     {
       width: 80,
       height: 4,

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import type { ToolPart } from "@sente-ai/sdk/v2"
-import { RGBA, SyntaxStyle } from "@opentui/core"
+import { RGBA, SyntaxStyle, type NativeResourceOwner } from "@opentui/core"
 import { MockTreeSitterClient, createTestRenderer, type TestRenderer } from "@opentui/core/testing"
 import { RunScrollbackStream } from "@/cli/cmd/run/scrollback.surface"
 import { RUN_THEME_FALLBACK, type RunTheme } from "@/cli/cmd/run/theme"
@@ -129,9 +129,11 @@ test("turn summary starts at the left edge", async () => {
 })
 
 test("theme swaps restyle active reasoning without resetting the stream", async () => {
-  const previousSyntax = SyntaxStyle.fromStyles({ default: { fg: "#123456" } })
-  const nextSyntax = SyntaxStyle.fromStyles({ default: { fg: "#abcdef" } })
   const released: RunTheme[] = []
+  const out = await setup({ theme: RUN_THEME_FALLBACK, onThemeRelease: (theme) => released.push(theme) })
+  const owner = out.renderer.nativeScene
+  const previousSyntax = SyntaxStyle.fromStyles({ default: { fg: "#123456" } }, owner)
+  const nextSyntax = SyntaxStyle.fromStyles({ default: { fg: "#abcdef" } }, owner)
   const previous = {
     ...RUN_THEME_FALLBACK,
     block: {
@@ -146,7 +148,7 @@ test("theme swaps restyle active reasoning without resetting the stream", async 
       subtleSyntax: nextSyntax,
     },
   }
-  const out = await setup({ theme: previous, onThemeRelease: (theme) => released.push(theme) })
+  out.scrollback.setTheme(previous)
 
   try {
     await out.scrollback.append(reasoning("before"))

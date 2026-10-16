@@ -73,6 +73,7 @@ import { createTuiApiAdapters } from "./plugin/adapters"
 import { createTuiApi } from "./plugin/api"
 import { createPluginRuntime, PluginRuntimeProvider, usePluginRuntime, type TuiPluginHost } from "./plugin/runtime"
 import { CommandPaletteDialog } from "./component/command-palette"
+import { createProgramStatus, type PendingSession } from "./context/program-status"
 import {
   COMMAND_PALETTE_COMMAND,
   SENTE_BASE_MODE,
@@ -423,6 +424,48 @@ function App(props: {
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
+
+  // Mirror pending session state (working / needs-input) into OSC 7501 program status records so
+  // terminals (tmux, WezTerm, etc.) can surface which sessions are busy or blocked.
+  createProgramStatus({
+    renderer,
+    sessions: () => {
+      const result: PendingSession[] = []
+      for (const [sessionID, status] of Object.entries(sync.data.session_status)) {
+        const session = sync.session.get(sessionID)
+        const title = session && !isDefaultTitle(session.title) ? session.title : undefined
+        if (status.type === "busy") {
+          result.push({ id: sessionID, title, state: "working" })
+        }
+      }
+      for (const [sessionID, requests] of Object.entries(sync.data.permission)) {
+        if (requests.length === 0) continue
+        const session = sync.session.get(sessionID)
+        const title = session && !isDefaultTitle(session.title) ? session.title : undefined
+        const request = requests[0]
+        result.push({
+          id: sessionID,
+          title,
+          state: "blocked",
+          kind: "permission",
+          message: `Allow ${request.permission}?`,
+        })
+      }
+      for (const [sessionID, requests] of Object.entries(sync.data.question)) {
+        if (requests.length === 0) continue
+        const session = sync.session.get(sessionID)
+        const title = session && !isDefaultTitle(session.title) ? session.title : undefined
+        result.push({
+          id: sessionID,
+          title,
+          state: "blocked",
+          kind: "question",
+          message: "Question needs an answer",
+        })
+      }
+      return result
+    },
+  })
 
   const api = createTuiApi(
     createTuiApiAdapters({

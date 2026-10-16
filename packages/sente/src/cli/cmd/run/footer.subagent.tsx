@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { useKeyboard } from "@opentui/solid"
+import { useKeyboard, useRenderer } from "@opentui/solid"
 import { registerOpencodeSpinner } from "@sente-ai/tui/component/register-spinner"
 import { Show, createMemo, indexArray } from "solid-js"
 import { SPINNER_FRAMES } from "@sente-ai/tui/component/spinner"
@@ -57,6 +57,7 @@ export function RunFooterSubagentBody(props: {
   onClose: () => void
 }) {
   const theme = createMemo(() => props.theme())
+  const renderer = useRenderer()
   const footer = createMemo(() => theme().footer)
   const tab = createMemo(() => props.tab())
   const commits = createMemo(() => props.detail()?.commits ?? [])
@@ -86,7 +87,7 @@ export function RunFooterSubagentBody(props: {
   const rows = indexArray(commits, (commit, index) => (
     <box flexDirection="column" gap={0} flexShrink={0}>
       {index > 0 && separatorRows(commits()[index - 1], commit()) > 0 ? <box height={1} flexShrink={0} /> : null}
-      <RunEntryContent commit={commit()} theme={theme()} opts={opts()} width={props.width()} />
+      <RunEntryContent commit={commit()} theme={theme()} opts={opts()} width={props.width()} renderContext={renderer} />
     </box>
   ))
   let scroll: ScrollBoxRenderable | undefined
