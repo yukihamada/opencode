@@ -268,7 +268,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         Effect.sync(() => process.on("SIGHUP", onSighup)),
         () => Effect.sync(() => process.off("SIGHUP", onSighup)),
       )
-      renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
+      // OpenTUI 0.6.3 does not replay an already-emitted "destroy" to a late `once` listener, so
+      // resolve the shutdown Deferred immediately when the renderer is already destroyed.
+      if (renderer.isDestroyed) Deferred.doneUnsafe(shutdown, Effect.void)
+      else renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
       const pluginRuntime = createPluginRuntime()
 
       yield* Effect.tryPromise(async () => {
