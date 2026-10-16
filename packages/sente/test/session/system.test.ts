@@ -84,6 +84,17 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
+  test("routes GPT-6 IDs to bounded proactive delegation without the old opt-in restriction", () => {
+    for (const id of ["gpt-6-astra", "openai/gpt-6-astra"]) {
+      const prompt = SystemPrompt.provider({ api: { id } } as Provider.Model)[0]
+      expect(prompt).toContain("explicit user requests for subagents are not required")
+      expect(prompt).toContain("at most three delegated tasks active")
+      expect(prompt).toContain("approved spending limits")
+      expect(prompt).toContain("the first answer is not necessarily correct")
+      expect(prompt).not.toContain("Do not spawn subagents unless")
+    }
+  })
+
   test("selects the Meta prompt for Muse Spark model IDs", () => {
     for (const id of ["meta/muse-spark-preview", "muse-spark-1.1", "muse-spark-1.2"]) {
       const prompt = SystemPrompt.provider({ api: { id } } as Provider.Model)[0]
