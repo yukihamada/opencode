@@ -26,6 +26,7 @@ import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
+import { SessionNextActions } from "../../component/session-next-actions"
 import type {
   AssistantMessage,
   Part,
@@ -194,6 +195,7 @@ export function Session() {
   const { theme } = useTheme()
   const promptRef = usePromptRef()
   const session = createMemo(() => sync.session.get(route.sessionID))
+  const idle = createMemo(() => (sync.data.session_status[route.sessionID]?.type ?? "idle") === "idle")
   const location = createMemo(() => {
     const current = session()
     return current ? { directory: current.directory, workspaceID: current.workspaceID } : undefined
@@ -1342,6 +1344,9 @@ export function Session() {
                 </Show>
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
+                </Show>
+                <Show when={visible() && idle() && permissions().length === 0 && questions().length === 0}>
+                  <SessionNextActions onSelect={(text) => prompt?.set({ input: text, parts: [] })} />
                 </Show>
                 <Show when={visible()}>
                   <pluginRuntime.Slot
