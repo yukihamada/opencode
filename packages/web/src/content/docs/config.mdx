@@ -560,6 +560,31 @@ The default is `1`, which allows primary agents to launch subagents but prevents
 
 ---
 
+### Host resources
+
+Sente runs work through agents, often several subagents in parallel. To keep the host machine responsive, subagent admission is auto-tuned from the machine's CPU load (1-minute load average per core) and free memory: when the machine is busy, fewer subagents run concurrently; when it is idle, up to `min(CPU cores, 8)` may run. You can tune or disable this with the `resources` option.
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "resources": {
+    "max_concurrent_subagents": 4,
+    "low_memory_mb": 2048,
+    "load_factor": 1.0,
+    "disable_auto_throttle": false
+  }
+}
+```
+
+| Option                       | Default              | Description                                                                                          |
+| ---------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------- |
+| `max_concurrent_subagents`   | `min(CPU cores, 8)`  | Hard ceiling for concurrently running subagents. The effective limit auto-shrinks under host load.   |
+| `low_memory_mb`              | `1536`               | Free memory below which only one subagent may run at a time.                                         |
+| `load_factor`                | `1.0`                | Load average per CPU core above which admission shrinks. At 1.5x this value only one subagent runs.  |
+| `disable_auto_throttle`      | `false`              | Disable load/memory based auto-tuning and always allow up to the ceiling.                            |
+
+---
+
 ### Sharing
 
 You can configure the [share](/docs/share) feature through the `share` option.

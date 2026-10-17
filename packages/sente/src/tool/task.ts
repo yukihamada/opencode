@@ -12,6 +12,7 @@ import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
+import { HostResources } from "@/effect/host-resources"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@sente-ai/core/database/database"
 
@@ -199,7 +200,9 @@ export const TaskTool = Tool.define(
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         const parts = yield* ops.resolvePromptParts(params.prompt)
-        const result = yield* ops.prompt({
+        // Admit subagents through the host-resource gate so parallel agent work
+        // auto-throttles when this Mac is busy, instead of piling on load.
+        const promptInput: SessionPrompt.PromptInput = {
           messageID: MessageID.ascending(),
           sessionID: nextSession.id,
           model: {
@@ -209,7 +212,15 @@ export const TaskTool = Tool.define(
           variant: next.model ? undefined : variant,
           agent: next.name,
           parts,
-        })
+        }
+        const result = yield* Effect.serviceOption(HostResources.Service).pipe(
+          Effect.flatMap((resources) =>
+            resources._tag === "Some"
+              ? resources.value.withSlot(ops.prompt(promptInput))
+              : ops.prompt(promptInput),
+          ),
+          Effect.catch(() => ops.prompt(promptInput)),
+        )
         if (result.info.role === "assistant" && result.info.error) {
           const message =
             "message" in result.info.error.data && typeof result.info.error.data.message === "string"

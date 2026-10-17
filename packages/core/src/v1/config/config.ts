@@ -84,6 +84,27 @@ export const Info = Schema.Struct({
   subagent_depth: Schema.optional(NonNegativeInt).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
   }),
+  resources: Schema.optional(
+    Schema.Struct({
+      max_concurrent_subagents: Schema.optional(PositiveInt).annotate({
+        description:
+          "Hard ceiling for concurrently running subagents. Default: min(CPU cores, 8). The effective limit auto-shrinks under host load.",
+      }),
+      disable_auto_throttle: Schema.optional(Schema.Boolean).annotate({
+        description: "Disable host-load based auto-tuning of subagent concurrency (load average and free memory).",
+      }),
+      low_memory_mb: Schema.optional(PositiveInt).annotate({
+        description: "Free memory below which only one subagent may run at a time. Default: 1536.",
+      }),
+      load_factor: Schema.optional(Schema.Number).annotate({
+        description:
+          "Load average (1 min) per CPU core above which subagent admission shrinks. At 1.5x this value only one subagent runs. Default: 1.0.",
+      }),
+    }),
+  ).annotate({
+    description:
+      "Host resource awareness. Sente runs work through agents and auto-tunes how many subagents may run concurrently based on this Mac's CPU load and free memory.",
+  }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
   }),
