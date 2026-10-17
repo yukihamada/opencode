@@ -992,10 +992,19 @@ describe("session.compaction.process", () => {
   itCompaction.instance(
     "marks summary message as errored on compact result",
     Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
       const msg = yield* createUserMessage(session.id, "hello")
       const msgs = yield* ssn.messages({ sessionID: session.id })
+      const errors: string[] = []
+      const unsub = yield* events.listen((evt) => {
+        if (evt.type !== SessionNs.Event.Error.type) return Effect.void
+        const data = evt.data as { sessionID?: string; error?: unknown }
+        if (data.sessionID === session.id) errors.push(JSON.stringify(data.error))
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => unsub)
 
       const result = yield* SessionCompaction.use.process({
         parentID: msg.id,
@@ -1014,6 +1023,9 @@ describe("session.compaction.process", () => {
         expect(summary.info.finish).toBe("error")
         expect(JSON.stringify(summary.info.error)).toContain("Session too large to compact")
       }
+      // 圧縮できなかった時は、利用者にエラーとして知らせる(完了通知にしない)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toContain("Session too large to compact")
     }).pipe(withCompaction({ result: "compact" })),
   )
 

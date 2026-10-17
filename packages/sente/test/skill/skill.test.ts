@@ -404,6 +404,51 @@ This skill is loaded from the global home directory.
     }),
   )
 
+  it.live("ignores skills left in ~/.claude/skills/.trash", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir({ git: true })),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+
+      yield* withHome(
+        tmp.path,
+        Effect.gen(function* () {
+          yield* Effect.promise(() => createGlobalSkill(tmp.path))
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(tmp.path, ".claude", "skills", ".trash", "123-abc", "global-test-skill", "SKILL.md"),
+              `---
+name: global-test-skill
+description: An old deleted copy.
+---
+
+# Deleted
+`,
+            ),
+          )
+          yield* Effect.gen(function* () {
+            const skill = yield* Skill.Service
+            const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+            expect(list.length).toBe(1)
+            expect(list[0].description).toBe("A global skill from ~/.claude/skills for testing.")
+            expect(list[0].location).not.toContain(".trash")
+            expect((yield* skill.dirs()).some((dir) => dir.includes(".trash"))).toBe(false)
+          }).pipe(provideInstance(tmp.path))
+        }),
+      )
+    }),
+  )
+
+  it.effect("ignoredSkillPath only matches junk segments below the scan root", () =>
+    Effect.sync(() => {
+      expect(Skill.ignoredSkillPath("/h/.claude", "/h/.claude/skills/.trash/x/a/SKILL.md")).toBe(true)
+      expect(Skill.ignoredSkillPath("/h/.claude", "/h/.claude/skills/a/node_modules/b/SKILL.md")).toBe(true)
+      expect(Skill.ignoredSkillPath("/h/.claude", "/h/.claude/skills/a/SKILL.md")).toBe(false)
+      expect(Skill.ignoredSkillPath("/h/.claude", "/h/.claude/skills/.system/a/SKILL.md")).toBe(false)
+    }),
+  )
+
   it.live("discovers skills from both .claude/skills/ and .agents/skills/", () =>
     provideTmpdirInstance(
       (dir) =>

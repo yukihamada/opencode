@@ -102,7 +102,21 @@ export interface Interface {
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
 }
 
-const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
+// ゴミ箱や VCS・依存の中にある SKILL.md は読まない。~/.claude/skills は dot 込みで走査するため、
+// Claude 側で削除した古いスキル(~/.claude/skills/.trash/…)まで拾い、同名の現役スキルを
+// 上書きしてしまうことがあった(起動ごとに数十件の "duplicate skill name" も出ていた)。
+const IGNORED_SEGMENTS = new Set([".trash", ".Trash", ".git", "node_modules"])
+
+export function ignoredSkillPath(root: string, match: string) {
+  return path
+    .relative(root, match)
+    .split(/[\\/]/)
+    .some((segment) => IGNORED_SEGMENTS.has(segment))
+}
+
+type Parsed = { match: string; name: string; description?: string; content: string }
+
+const parse = Effect.fnUntraced(function* (match: string, events: EventV2Bridge.Service["Service"]) {
   const md = yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
     catch: (err) => err,
@@ -122,20 +136,27 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
 
   if (!isSkillFrontmatter(md.data)) return
 
-  if (state.skills[md.data.name]) {
-    yield* Effect.logWarning("duplicate skill name", {
-      name: md.data.name,
-      existing: state.skills[md.data.name].location,
-      duplicate: match,
+  return { match, name: md.data.name, description: md.data.description, content: md.content } satisfies Parsed
+})
+
+const add = Effect.fnUntraced(function* (state: State, item: Parsed) {
+  const existing = state.skills[item.name]
+  if (existing) {
+    // 同じ中身の複製(同期フォルダが2つある等)は害がないので警告しない
+    const log = existing.content === item.content ? Effect.logDebug : Effect.logWarning
+    yield* log("duplicate skill name", {
+      name: item.name,
+      existing: existing.location,
+      duplicate: item.match,
     })
   }
 
-  state.dirs.add(path.dirname(match))
-  state.skills[md.data.name] = {
-    name: md.data.name,
-    description: md.data.description,
-    location: match,
-    content: md.content,
+  state.dirs.add(path.dirname(item.match))
+  state.skills[item.name] = {
+    name: item.name,
+    description: item.description,
+    location: item.match,
+    content: item.content,
   }
 })
 
@@ -165,6 +186,7 @@ const scan = Effect.fnUntraced(function* (
   )
 
   for (const match of matches) {
+    if (ignoredSkillPath(root, match)) continue
     state.matches.add(match)
     state.dirs.add(path.dirname(match))
   }
@@ -237,10 +259,14 @@ const loadSkills = Effect.fnUntraced(function* (
   discovered: DiscoveryState,
   events: EventV2Bridge.Service["Service"],
 ) {
-  yield* Effect.forEach(discovered.matches, (match) => add(state, match, events), {
+  // 読み込みは並列、登録は見つけた順。完了順で登録すると同名スキルのどれが勝つかが
+  // 起動ごとに変わっていたため、後から見つかった場所(設定ディレクトリ等)が常に勝つようにする。
+  const parsed = yield* Effect.forEach(discovered.matches, (match) => parse(match, events), {
     concurrency: "unbounded",
-    discard: true,
   })
+  for (const item of parsed) {
+    if (item) yield* add(state, item)
+  }
 
   yield* Effect.logInfo("init", { count: Object.keys(state.skills).length })
 })

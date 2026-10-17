@@ -807,6 +807,61 @@ it.live("session.processor effect tests compact on structured context overflow",
   ),
 )
 
+it.live("session.processor effect tests compact on 413 payload too large without announcing an error", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+
+        yield* llm.error(413, "Payload Too Large")
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "too large")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const errs: string[] = []
+        const off = yield* events.listen((evt) => {
+          if (evt.type !== Session.Event.Error.type) return Effect.void
+          const data = evt.data as typeof Session.Event.Error.data.Type
+          if (data.sessionID !== chat.id || !data.error) return Effect.void
+          errs.push(data.error.name)
+          return Effect.void
+        })
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "too large" }],
+          tools: {},
+        })
+        yield* off
+
+        expect(value).toBe("compact")
+        expect(yield* llm.calls).toBe(1)
+        expect(handle.message.error).toBeUndefined()
+        // 自動コンパクションで続くので、利用者にはエラーとして知らせない
+        expect(errs).toEqual([])
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests complete AI SDK tool calls when native flag is off", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
