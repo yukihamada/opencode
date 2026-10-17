@@ -1,0 +1,22 @@
+# Sente quick guide
+
+## 1. Getting started
+- Sign in: new here? `te register` (email only). Already have a key? `te login` (keys: https://teai.io/dashboard#api-keys)
+- Start: run `te` in the folder you want to work in, then ask in plain words, e.g. "fix this bug"
+- Update to the latest version: `te update`
+
+## 2. Modes (how much context Sente carries)
+- `/mode saver|standard|max` (Japanese names also work): saver = summarize at 128k tokens and trim old tool output / standard = summarize at 256k (default) / max = up to the model's context window. `/mode` alone shows the current mode
+- `SENTE_MODE=saver te`: set the mode for this run only
+- `SENTE_MAX_CONTEXT=400k te`: set the summarize threshold as a number (400k tokens). Takes precedence over the mode
+- Only the timing of summaries changes; the model and per-token prices stay the same
+
+## 3. Keeping usage in check
+- In the teai dashboard (https://teai.io/dashboard#api-keys) you can set per-key limits in credits for 1 minute, 1 hour, 1 day and 1 month
+- When a limit is reached, Sente stops instead of retrying and shows which limit, when you can resume, and `te resume`
+- Limits reset on their own at the next boundary (day and month boundaries are UTC). Your work stays saved in the session
+
+## 4. If you get stuck
+- Continue stopped work: `te resume`
+- Check your setup: `te doctor`
+- Contact and bug reports: https://teai.io/contact
