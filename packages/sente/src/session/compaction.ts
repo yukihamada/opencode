@@ -456,6 +456,12 @@ const layer = Layer.effect(
         }).toObject()
         processor.message.finish = "error"
         yield* session.updateMessage(processor.message)
+        // 413 などの文脈あふれは processor 側では知らせず、ここでの圧縮に任せている。
+        // 圧縮もできなかった時だけは、利用者に失敗として知らせる(完了通知にしない)。
+        yield* events.publish(Session.Event.Error, {
+          sessionID: input.sessionID,
+          error: processor.message.error,
+        })
         return "stop"
       }
 
