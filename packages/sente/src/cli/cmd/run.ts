@@ -139,7 +139,7 @@ export function autoRejectFeedback(what: string) {
 
 export const RunCommand = effectCmd({
   command: "run [message..]",
-  describe: "run opencode with a message",
+  describe: "run sente with a message",
   // --attach connects to a remote server (no local instance needed); the
   // default path runs an in-process server and needs the project instance.
   instance: (args) => !args.attach,
@@ -203,7 +203,7 @@ export const RunCommand = effectCmd({
       })
       .option("attach", {
         type: "string",
-        describe: "attach to a running opencode server (e.g., http://localhost:4096)",
+        describe: "attach to a running sente server (e.g., http://localhost:4096)",
       })
       .option("password", {
         alias: ["p"],

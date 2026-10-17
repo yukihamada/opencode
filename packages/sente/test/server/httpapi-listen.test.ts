@@ -293,7 +293,9 @@ describe("HttpApi Server.listen", () => {
       return true
     }) as typeof process.stderr.write
     try {
-      const response = await Server.Default().app.request("/status")
+      // Use a route the server handles itself. "/status" is not one: it fell through to the
+      // web UI proxy and only returned 200 because the live site answered over the network.
+      const response = await Server.Default().app.request("/global/health")
       expect(response.status).toBe(200)
     } finally {
       process.stderr.write = original

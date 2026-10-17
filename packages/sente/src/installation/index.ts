@@ -123,8 +123,8 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
     )
 
     const getBrewFormula = Effect.fnUntraced(function* () {
-      const tapFormula = yield* text(["brew", "list", "--formula", "anomalyco/tap/opencode"])
-      if (tapFormula.includes("sente")) return "anomalyco/tap/opencode"
+      const tapFormula = yield* text(["brew", "list", "--formula", "anomalyco/tap/sente"])
+      if (tapFormula.includes("sente")) return "anomalyco/tap/sente"
       const coreFormula = yield* text(["brew", "list", "--formula", "sente"])
       if (coreFormula.includes("sente")) return "sente"
       return "sente"

@@ -30,8 +30,23 @@ export async function writeTextAtomic(filePath: string, content: string) {
     await rm(temporary, { force: true }).catch(() => undefined)
     throw error
   })
-  await rename(temporary, filePath).catch(async (error) => {
+  await replaceFile(temporary, filePath).catch(async (error) => {
     await rm(temporary, { force: true }).catch(() => undefined)
     throw error
   })
+}
+
+// Windows refuses to rename over a file that another handle has open (a concurrent read or
+// another writer's rename), so a save could fail just because the file was being read.
+async function replaceFile(temporary: string, filePath: string) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await rename(temporary, filePath)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (process.platform !== "win32" || attempt >= 9 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES"))
+        throw error
+      await Bun.sleep(10 * (attempt + 1))
+    }
+  }
 }

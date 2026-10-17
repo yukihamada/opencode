@@ -53,7 +53,7 @@ function statusWithFetch(
 ): RuntimeStatus {
   const providerID = input.model.providerID
   if (providerID !== "openai" && providerID !== "anthropic" && !providerID.startsWith("sente"))
-    return { type: "unsupported", reason: "provider is not openai, opencode, or anthropic" }
+    return { type: "unsupported", reason: "provider is not openai, sente, or anthropic" }
   const npm = input.model.api.npm
   if (npm !== "@ai-sdk/openai" && npm !== "@ai-sdk/openai-compatible" && npm !== "@ai-sdk/anthropic")
     return { type: "unsupported", reason: "provider package is not OpenAI, OpenAI-compatible, or Anthropic" }

@@ -38,7 +38,9 @@ function proxyResponseHeaders(headers: Record<string, string>) {
 }
 
 export function upstreamURL(path: string) {
-  return new URL(path, UI_UPSTREAM).toString()
+  // UI_UPSTREAM has a path prefix, and resolving an absolute request path against it would
+  // drop that prefix ("/assets/app.js" -> "https://teai.io/assets/app.js").
+  return new URL(UI_UPSTREAM.pathname.replace(/\/$/, "") + path, UI_UPSTREAM).toString()
 }
 
 export function embeddedUI(disableEmbeddedWebUi: boolean) {

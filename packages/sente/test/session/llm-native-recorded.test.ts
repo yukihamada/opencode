@@ -28,7 +28,7 @@ import { LayerNodePlatform } from "@sente-ai/core/effect/app-node-platform"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "../fixtures/recordings")
 
-const zenURL = (connection: string) => `https://console.sente.ai/proxy/connections/${connection}/v1`
+const zenURL = (connection: string) => `https://console.opencode.ai/proxy/connections/${connection}/v1`
 
 const replayOpenAIOAuth = {
   type: "oauth",
@@ -164,6 +164,9 @@ const RECORDED_SCENARIOS = [
     providerID: ProviderV2.ID.sente,
     modelID: "gpt-5.2-codex",
     cassette: "session/native-zen-tool-loop",
+    // The cassette was recorded upstream, before the provider ID was renamed: its URL and
+    // prompt_cache_key still carry "opencode". Replay must send what was recorded.
+    stableID: "opencode",
     protocol: "openai-responses",
     tags: ["sente", "zen", "native", "tool-loop"],
     canRecord: () => Boolean(process.env.SENTE_RECORD_CONSOLE_TOKEN && process.env.SENTE_RECORD_ZEN_ORG_ID),
