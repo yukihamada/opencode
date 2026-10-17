@@ -3,8 +3,12 @@ import { For, type JSX } from "solid-js"
 import { tint, useTheme } from "../context/theme"
 import { logo } from "../logo"
 
-export function Logo() {
+export function Logo(props: { compact?: boolean } = {}) {
   const { theme } = useTheme()
+
+  if (props.compact) {
+    return <text fg={theme.text} attributes={TextAttributes.BOLD} selectable={false}>Sente</text>
+  }
 
   const renderLine = (line: string, fg: RGBA, bold: boolean): JSX.Element[] => {
     const shadow = tint(theme.background, fg, 0.25)
