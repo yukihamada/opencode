@@ -839,6 +839,7 @@ export function Prompt(props: PromptProps) {
         sessionID,
         command: "v",
         arguments: "",
+        noReply: true,
       })
       if (res.error) throw res.error
     } catch (error) {
