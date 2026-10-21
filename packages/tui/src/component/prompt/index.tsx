@@ -812,13 +812,15 @@ export function Prompt(props: PromptProps) {
 
   // 空のプロンプトでスペースを押すと `/v` 音声入力を開始する。日本語IMEでも
   // 変換が始まる前のキーイベントで拾う。音声入力の停止は `/v off`。
+  // TextareaRenderable が space を insertText として消費するため、
+  // useBindings ではなく onKeyDown で先取りする。
   useBindings(() => ({
     target: inputTarget,
-    enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input === "",
+    enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input.trim() === "",
     bindings: [
       {
-        key: "space",
-        desc: "Voice input",
+        key: "ctrl+space",
+        desc: "Voice input (IME-safe)",
         group: "Prompt",
         cmd: () => void voiceInput(),
       },
@@ -1404,10 +1406,24 @@ export function Prompt(props: PromptProps) {
                 setCursorVersion((value) => value + 1)
               }}
               onCursorChange={() => setCursorVersion((value) => value + 1)}
-              onKeyDown={(e: { preventDefault(): void }) => {
+              onKeyDown={(e) => {
                 if (props.disabled) {
                   e.preventDefault()
                   return
+                }
+                // 空のプロンプトでスペースを押すと `/v` 音声入力を開始する。
+                // TextareaRenderable のデフォルト処理より先に消費する。
+                if (
+                  e.name === "space" &&
+                  !e.ctrl &&
+                  !e.meta &&
+                  !e.super &&
+                  store.prompt.input.trim() === "" &&
+                  store.mode === "normal" &&
+                  !auto()?.visible
+                ) {
+                  e.preventDefault()
+                  void voiceInput()
                 }
               }}
               onSubmit={() => {
