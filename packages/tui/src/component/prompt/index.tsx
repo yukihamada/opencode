@@ -515,6 +515,35 @@ export function Prompt(props: PromptProps) {
         },
       },
       {
+        title: "Open image attachment",
+        desc: "Open the prompt's image attachment in the system viewer",
+        name: "prompt.image.open",
+        category: "Prompt",
+        slashName: "image",
+        enabled: store.prompt.parts.some((x) => x.type === "file" && x.mime.startsWith("image/")),
+        run: async () => {
+          dialog.clear()
+          const images = store.prompt.parts.filter(
+            (x): x is Extract<typeof x, { type: "file" }> => x.type === "file" && x.mime.startsWith("image/"),
+          )
+          if (images.length === 0) return
+          const part = images[images.length - 1]
+          const match = /^data:([^;]+);base64,(.+)$/s.exec(part.url)
+          if (!match) {
+            toast.show({ variant: "error", message: "Image data is not embedded; cannot open", duration: 4000 })
+            return
+          }
+          const { writeFile } = await import("node:fs/promises")
+          const { tmpdir } = await import("node:os")
+          const { default: openExternal } = await import("open")
+          const ext = match[1].split("/")[1]?.replace("svg+xml", "svg") ?? "png"
+          const file = path.join(tmpdir(), `sente-image-${Date.now()}.${ext === "jpeg" ? "jpg" : ext}`)
+          await writeFile(file, Buffer.from(match[2], "base64"))
+          await openExternal(file)
+          toast.show({ variant: "info", message: `Opened ${part.filename ?? file}`, duration: 3000 })
+        },
+      },
+      {
         title: "Skills",
         name: "prompt.skills",
         category: "Prompt",
