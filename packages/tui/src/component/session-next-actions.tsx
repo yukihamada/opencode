@@ -49,12 +49,8 @@ export function SessionNextActions(props: { onSelect: (prompt: string) => void }
   }))
 
   return (
-    <box paddingTop={1} paddingBottom={1} paddingLeft={3} gap={1}>
-      <text fg={theme.textMuted}>
-        {japanese
-          ? "次にやること（クリック、または⌥1〜4で入力欄へ）"
-          : "What next? (Click or press Alt+1–4 to fill the prompt)"}
-      </text>
+    <box flexDirection="row" paddingLeft={3} gap={1}>
+      <text fg={theme.textMuted}>{japanese ? "次: " : "Next: "}</text>
       <For each={actions}>
         {(action, index) => (
           <box
@@ -65,8 +61,8 @@ export function SessionNextActions(props: { onSelect: (prompt: string) => void }
             paddingLeft={1}
             paddingRight={1}
           >
-            <text fg={theme.primary}>{index() + 1}. </text>
-            <text fg={theme.text}>{action.title}</text>
+            <text fg={theme.primary}>⌥{index() + 1}</text>
+            <text fg={theme.textMuted}> {action.title}</text>
           </box>
         )}
       </For>
