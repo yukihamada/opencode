@@ -1290,7 +1290,9 @@ export interface Interface {
 interface State {
   models: Map<string, LanguageModelV3>
   providers: Record<ProviderV2.ID, Info>
-  catalog: Record<ProviderV2.ID, Info>
+  /** models.dev entry for a provider, converted on demand (only used for "did you mean" suggestions). */
+  catalog: (providerID: string) => Info | undefined
+  catalogIDs: string[]
   sdk: Map<string, BundledSDK>
   modelLoaders: Record<string, CustomModelLoader>
   varsLoaders: Record<string, CustomVarsLoader>
@@ -1511,7 +1513,7 @@ const layer = Layer.effect(
             providers[providerID] = mergeDeep(existing, provider)
             return
           }
-          const match = database[providerID]
+          const match = lookup(providerID)
           if (!match) return
           // @ts-expect-error
           providers[providerID] = mergeDeep(match, provider)
@@ -1541,8 +1543,18 @@ const layer = Layer.effect(
                 Object.entries(modelsDev).filter(([providerID]) => isProviderAllowed(ProviderV2.ID.make(providerID))),
               )
             : modelsDev
-        const catalog = mapValues(usable, fromModelsDevProvider)
-        const database = mapValues(catalog, toPublicInfo)
+        // Even without enabled/disabled_providers, only the providers that end up configured (config,
+        // env key, saved auth, plugin, custom loader) are ever read. Convert a models.dev entry on its
+        // first lookup instead of all of them up front: the interactive TUI starts without either
+        // setting and was building ~9k models (and their schema checks) only to drop them.
+        const database: Record<string, Info> = {}
+        const lookup = (providerID: string): Info | undefined => {
+          if (Object.hasOwn(database, providerID)) return database[providerID]
+          if (!Object.hasOwn(usable, providerID)) return undefined
+          const info = toPublicInfo(fromModelsDevProvider(usable[providerID]))
+          database[providerID] = info
+          return info
+        }
 
         for (const hook of plugins) {
           const p = hook.provider
@@ -1552,7 +1564,7 @@ const layer = Layer.effect(
           const providerID = ProviderV2.ID.make(p.id)
           if (disabled.has(providerID)) continue
 
-          const provider = database[providerID]
+          const provider = lookup(providerID)
           if (!provider) continue
           const pluginAuth = yield* auth.get(providerID).pipe(Effect.orDie)
 
@@ -1573,7 +1585,7 @@ const layer = Layer.effect(
 
         // extend database from config
         for (const [providerID, provider] of configProviders) {
-          const existing = database[providerID]
+          const existing = lookup(providerID)
           const parsed: Info = {
             id: ProviderV2.ID.make(providerID),
             name: provider.name ?? existing?.name ?? providerID,
@@ -1674,11 +1686,13 @@ const layer = Layer.effect(
 
         // load env
         const envs = yield* env.all()
-        for (const [id, provider] of Object.entries(database)) {
+        for (const id of new Set([...Object.keys(usable), ...Object.keys(database)])) {
           const providerID = ProviderV2.ID.make(id)
           if (disabled.has(providerID)) continue
-          const apiKey = provider.env.map((item) => envs[item]).find(Boolean)
+          const names = Object.hasOwn(database, id) ? database[id].env : (usable[id].env ?? [])
+          const apiKey = names.map((item) => envs[item]).find(Boolean)
           if (!apiKey) continue
+          const provider = lookup(id)!
           mergeProvider(providerID, {
             source: "env",
             key: provider.env.length === 1 ? apiKey : undefined,
@@ -1711,7 +1725,7 @@ const layer = Layer.effect(
           const options = yield* Effect.promise(() =>
             plugin.auth!.loader!(
               () => bridge.promise(auth.get(providerID).pipe(Effect.orDie)) as any,
-              toPublicInfo(database[plugin.auth!.provider]),
+              toPublicInfo(lookup(plugin.auth!.provider)!),
             ),
           )
           const opts = options ?? {}
@@ -1722,7 +1736,7 @@ const layer = Layer.effect(
         for (const [id, fn] of Object.entries(custom(dep))) {
           const providerID = ProviderV2.ID.make(id)
           if (disabled.has(providerID)) continue
-          const data = database[providerID]
+          const data = lookup(providerID)
           if (!data) {
             continue
           }
@@ -1814,7 +1828,9 @@ const layer = Layer.effect(
         return {
           models: languages,
           providers,
-          catalog,
+          catalog: (providerID: string) =>
+            Object.hasOwn(usable, providerID) ? fromModelsDevProvider(usable[providerID]) : undefined,
+          catalogIDs: Object.keys(usable),
           sdk,
           modelLoaders,
           varsLoaders,
@@ -1942,11 +1958,14 @@ const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       const provider = s.providers[providerID]
       if (!provider) {
-        const catalogProvider = s.catalog[providerID]
+        const catalogProvider = s.catalog(providerID)
         const suggestions = catalogProvider
           ? modelSuggestions(catalogProvider, modelID, runtimeFlags.enableExperimentalModels)
           : fuzzysort
-              .go(providerID, Object.keys({ ...s.catalog, ...s.providers }), { limit: 3, threshold: -10000 })
+              .go(providerID, [...new Set([...s.catalogIDs, ...Object.keys(s.providers)])], {
+                limit: 3,
+                threshold: -10000,
+              })
               .map((m) => m.target)
         return yield* new ModelNotFoundError({ providerID, modelID, suggestions })
       }
@@ -1956,7 +1975,7 @@ const layer = Layer.effect(
         const current = modelSuggestions(provider, modelID, runtimeFlags.enableExperimentalModels)
         const suggestions = current.length
           ? current
-          : modelSuggestions(s.catalog[providerID], modelID, runtimeFlags.enableExperimentalModels)
+          : modelSuggestions(s.catalog(providerID), modelID, runtimeFlags.enableExperimentalModels)
         return yield* new ModelNotFoundError({ providerID, modelID, suggestions })
       }
       return info

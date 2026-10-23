@@ -92,6 +92,46 @@ test("refreshes resources into reactive getters", async () => {
   }
 })
 
+test("loads no location data until a list is read", async () => {
+  const events = createEventSource()
+  const paths: string[] = []
+  const calls = createFetch((url) => {
+    if (url.pathname.startsWith("/api/")) paths.push(url.pathname)
+    if (url.pathname === "/api/model")
+      return json({ location: { directory, project: { id: "proj_test", directory } }, data: [] })
+    return undefined
+  }, events)
+  let data!: ReturnType<typeof useData>
+  function Probe() {
+    data = useData()
+    return <box />
+  }
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </SDKProvider>
+    </TestTuiContexts>
+  ))
+  try {
+    await Bun.sleep(100)
+    // The first location request boots the engine's location services (~130 MB); the start screen needs none.
+    expect(paths.filter((item) => item !== "/api/session")).toEqual([])
+    emitEvent(events, { id: "evt_catalog", type: "catalog.updated", properties: {} })
+    await Bun.sleep(50)
+    expect(paths.filter((item) => item === "/api/model")).toEqual([])
+    expect(data.location.model.list()).toBeUndefined()
+    await wait(() => data.location.model.list() !== undefined)
+    expect(paths.filter((item) => item === "/api/model")).toEqual(["/api/model"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("refreshes integrations after integration updates", async () => {
   const events = createEventSource()
   const requests = { integration: 0, model: 0, provider: 0 }
@@ -146,7 +186,11 @@ test("refreshes integrations after integration updates", async () => {
 
   try {
     await mounted
+    // Lists load on first read; only loaded lists are refreshed on events.
+    data.location.model.list()
+    data.location.provider.list()
     await wait(() => data.location.integration.list() !== undefined)
+    await wait(() => requests.model > 0 && requests.provider > 0)
     expect(data.location.integration.list()).toEqual([])
     const before = { ...requests }
 
@@ -173,12 +217,18 @@ test("refreshes effective catalog data after catalog updates", async () => {
     }
   }, events)
 
+  let data!: ReturnType<typeof useData>
+  function Probe() {
+    data = useData()
+    return <box />
+  }
+
   const app = await testRender(() => (
     <TestTuiContexts>
       <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
         <ProjectProvider>
           <DataProvider>
-            <box />
+            <Probe />
           </DataProvider>
         </ProjectProvider>
       </SDKProvider>
@@ -186,6 +236,8 @@ test("refreshes effective catalog data after catalog updates", async () => {
   ))
 
   try {
+    data.location.model.list()
+    data.location.provider.list()
     await wait(() => requests.model > 0 && requests.provider > 0)
     const before = { ...requests }
     emitEvent(events, { id: "evt_catalog", type: "catalog.updated", properties: {} })
@@ -232,6 +284,7 @@ test("refreshes references after updates", async () => {
 
   try {
     await mounted
+    expect(data.location.reference.list()).toBeUndefined()
     await wait(() => requests === 1)
     emitEvent(events, { id: "evt_reference_1", type: "reference.updated", properties: {} })
     await wait(() => data.location.reference.list()?.length === 1)

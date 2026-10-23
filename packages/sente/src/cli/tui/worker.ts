@@ -10,8 +10,10 @@ import { Heap } from "@/cli/heap"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { IdleGc } from "./idle-gc"
 
 Heap.start()
+const idleGc = IdleGc.start()
 
 const onUnhandledRejection = (_error: unknown) => {}
 
@@ -22,6 +24,7 @@ process.on("uncaughtException", onUncaughtException)
 
 // Subscribe to global events and forward them via RPC
 GlobalBus.on("event", (event) => {
+  idleGc?.touch()
   Rpc.emit("global.event", event)
 })
 
@@ -29,6 +32,7 @@ let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
+    idleGc?.touch()
     const headers = { ...input.headers }
     const auth = ServerAuth.header()
     if (auth && !headers["authorization"] && !headers["Authorization"]) {
@@ -92,6 +96,7 @@ export const rpc = {
     await rpc.reload()
   },
   async shutdown() {
+    idleGc?.stop()
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
     process.off("unhandledRejection", onUnhandledRejection)
