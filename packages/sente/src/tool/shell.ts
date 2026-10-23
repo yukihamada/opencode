@@ -14,6 +14,8 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@sente-ai/core/shell"
 import { ShellID } from "./shell/id"
+import { ShellSandbox } from "./shell/sandbox"
+import { Unattended } from "@/permission/unattended"
 
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
@@ -260,7 +262,12 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
   return tree
 })
 
-const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, input: { command: string }) {
+const ask = Effect.fn("ShellTool.ask")(function* (
+  ctx: Tool.Context,
+  scan: Scan,
+  input: { command: string },
+  sandbox?: string,
+) {
   if (scan.dirs.size > 0) {
     const directories = Array.from(scan.dirs)
     const globs = directories.map((dir) => {
@@ -286,11 +293,26 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
     always: Array.from(scan.always),
     metadata: {
       command: input.command,
+      // Offered to a non-interactive run, which may approve it on the condition that it runs confined.
+      ...(sandbox ? { sandbox } : {}),
     },
   })
 })
 
-function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
+/** May this command be approved on the condition that it runs confined? Never for denied-class commands. */
+function confinable(scan: Scan, ps: boolean) {
+  if (ps || !ShellSandbox.enabled() || Unattended.current()) return false
+  if (scan.dirs.size > 0 || scan.patterns.size === 0) return false
+  return Array.from(scan.patterns).every((pattern) =>
+    Unattended.danger(pattern).every((kind) => ShellSandbox.CONTAINED.has(kind)),
+  )
+}
+
+function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv, sandbox?: string[]) {
+  if (sandbox) {
+    const confined = ShellSandbox.command(shell, command, sandbox)
+    return ChildProcess.make(confined.file, confined.args, { cwd, env, stdin: "ignore", detached: true })
+  }
   if (process.platform === "win32" && Shell.ps(shell)) {
     return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
       cwd,
@@ -432,6 +454,8 @@ export const ShellTool = Tool.define(
         cwd: string
         env: NodeJS.ProcessEnv
         timeout: number
+        /** Writable directories when the command runs confined. */
+        sandbox?: string[]
       },
       ctx: Tool.Context,
     ) {
@@ -481,7 +505,7 @@ export const ShellTool = Tool.define(
       const code: number | null = yield* Effect.scoped(
         Effect.gen(function* () {
           yield* Effect.addFinalizer(closeSink)
-          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env, input.sandbox))
 
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
@@ -565,6 +589,7 @@ export const ShellTool = Tool.define(
         )
       }
       if (aborted) meta.push("User aborted the command")
+      if (input.sandbox) meta.push(ShellSandbox.NOTE)
       const raw = list.map((item) => item.text).join("")
       const end = tail(raw, limits.maxLines, limits.maxBytes)
       if (end.cut) cut = true
@@ -617,6 +642,7 @@ export const ShellTool = Tool.define(
               }
               const timeout = params.timeout ?? defaultTimeoutMs
               const ps = Shell.ps(shell)
+              let sandbox: string[] | undefined
               yield* Effect.scoped(
                 Effect.gen(function* () {
                   const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
@@ -624,7 +650,14 @@ export const ShellTool = Tool.define(
                   )
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
-                  yield* ask(ctx, scan, params)
+                  const token = confinable(scan, ps) ? crypto.randomUUID() : undefined
+                  yield* ask(ctx, scan, params, token)
+                  // Approved by the run only on condition of confinement (an ordinary allow leaves no grant).
+                  if (token && ShellSandbox.granted.delete(token))
+                    // A project outside git reports its worktree as "/"; never make a filesystem root writable.
+                    sandbox = [...new Set([instanceCtx.directory, instanceCtx.worktree, cwd])].filter(
+                      (dir) => dir && path.parse(dir).root !== path.resolve(dir),
+                    )
                 }),
               )
 
@@ -635,6 +668,7 @@ export const ShellTool = Tool.define(
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
                   timeout,
+                  sandbox,
                 },
                 ctx,
               )

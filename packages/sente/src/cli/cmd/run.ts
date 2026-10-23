@@ -27,6 +27,8 @@ import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { ExitCode, diagnostic, exitCodeForError } from "../exit-code"
 import { Unattended } from "@/permission/unattended"
+import { ShellSandbox } from "@/tool/shell/sandbox"
+import { ShellID } from "@/tool/shell/id"
 
 type ModelInput = Parameters<SenteClient["session"]["prompt"]>[0]["model"]
 
@@ -406,6 +408,11 @@ export const RunCommand = effectCmd({
 
       if (unattended && args.attach) {
         die("--unattended cannot enforce its policy on a remote server (--attach)")
+      }
+
+      // Confined execution needs the tool to run in this process, and is only for runs nobody can answer.
+      if (process.env["SENTE_SHELL_SANDBOX"] === "1" && !interactive && !args.attach && !unattended) {
+        if (!ShellSandbox.enable()) process.stderr.write("SENTE_SHELL_SANDBOX=1 ignored: sandbox-exec is not available" + EOL)
       }
 
       if (interactive) {
@@ -892,6 +899,19 @@ export const RunCommand = effectCmd({
             if (event.type === "permission.asked") {
               const permission = event.properties
               if (!sessions.has(permission.sessionID)) continue
+
+              // A shell command the tool offered for confinement: approve it on that condition
+              // instead of refusing it, so the agent can run and check its own work.
+              const token = permission.metadata?.["sandbox"]
+              if (!auto && permission.permission === ShellID.ToolID && typeof token === "string" && ShellSandbox.enabled()) {
+                ShellSandbox.granted.add(token)
+                diag("info", `permission requested: bash (${permission.patterns.join(", ")}); running sandboxed`, {
+                  permission: permission.permission,
+                  patterns: permission.patterns,
+                })
+                await client.permission.reply({ requestID: permission.id, reply: "once" })
+                continue
+              }
 
               if (auto) {
                 await client.permission.reply({
