@@ -85,6 +85,7 @@ export function normalizeCustomProviderID(value: string) {
 
 export function createDialogProviderOptions() {
   const sync = useSync()
+  void sync.loadProviderList().catch(() => {})
   const dialog = useDialog()
   const sdk = useSDK()
   const toast = useToast()

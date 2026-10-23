@@ -277,7 +277,8 @@ export function Autocomplete(props: {
     }
   }
 
-  const references = createMemo(() => data.location.reference.list() ?? [])
+  // Read (and so load) references only once the autocomplete opens; see DataProvider.
+  const references = createMemo(() => (store.visible ? (data.location.reference.list() ?? []) : []))
 
   const referenceMatch = createMemo(() => {
     if (!store.visible || store.visible === "/") return
