@@ -411,8 +411,12 @@ export const RunCommand = effectCmd({
       }
 
       // Confined execution needs the tool to run in this process, and is only for runs nobody can answer.
-      if (process.env["SENTE_SHELL_SANDBOX"] === "1" && !interactive && !args.attach && !unattended) {
-        if (!ShellSandbox.enable()) process.stderr.write("SENTE_SHELL_SANDBOX=1 ignored: sandbox-exec is not available" + EOL)
+      // On by default where Seatbelt exists (macOS): otherwise a run refuses to execute its own checks
+      // (`python3 x.py`, `sh verify.sh`) and finishes unverified. SENTE_SHELL_SANDBOX=0 turns it off.
+      const sandbox = process.env["SENTE_SHELL_SANDBOX"]
+      if (sandbox !== "0" && !interactive && !args.attach && !unattended) {
+        if (!ShellSandbox.enable() && sandbox === "1")
+          process.stderr.write("SENTE_SHELL_SANDBOX=1 ignored: sandbox-exec is not available" + EOL)
       }
 
       if (interactive) {

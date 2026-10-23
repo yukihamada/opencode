@@ -301,7 +301,7 @@ describe("sente run (non-interactive subprocess)", () => {
           yield* llm.tool("bash", { command: `touch refused-${i}`, description: "Create a marker" })
         }
         yield* llm.text("never reached")
-        const result = yield* sente.run("keep asking", { permission: { bash: "ask" } })
+        const result = yield* sente.run("keep asking", { permission: { bash: "ask" }, env: { SENTE_SHELL_SANDBOX: "0" } })
         sente.expectExit(result, ExitCode.PermissionDenied)
         expect(result.stdout).not.toContain("never reached")
         expect(result.stderr).toContain(`stopped after ${AUTO_REJECT_LIMIT + 1} actions`)
