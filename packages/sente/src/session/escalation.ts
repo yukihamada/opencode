@@ -333,7 +333,10 @@ export function actualModel(msgs: SessionV1.WithParts[]): { providerID: string; 
     current = model
     for (const part of [...msg.parts].reverse()) {
       if (part.type !== "step-finish") continue
-      const actual = part.metadata?.actualModel
+      // step-finish parts may carry routing metadata at runtime even though the
+      // persisted schema does not declare it; read it defensively.
+      const metadata = (part as { metadata?: Record<string, unknown> }).metadata
+      const actual = metadata?.actualModel
       if (typeof actual !== "string" || actual.trim() === "") continue
       const modelID = actual.includes("/") ? actual.split("/").at(-1)! : actual
       return { providerID: msg.info.providerID, modelID }

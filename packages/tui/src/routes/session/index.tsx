@@ -26,7 +26,7 @@ import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
-import { SessionNextActions } from "../../component/session-next-actions"
+// SessionNextActions removed: no next-action suggestions after completion
 import type {
   AssistantMessage,
   Part,
@@ -1345,9 +1345,7 @@ export function Session() {
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
                 </Show>
-                <Show when={visible() && idle() && permissions().length === 0 && questions().length === 0}>
-                  <SessionNextActions onSelect={(text) => prompt?.set({ input: text, parts: [] })} />
-                </Show>
+                {/* SessionNextActions removed: no next-action suggestions after completion */}
                 <Show when={visible()}>
                   <pluginRuntime.Slot
                     name="session_prompt"

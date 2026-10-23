@@ -4,11 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import { tmpdir } from "../fixture/fixture"
 import { OfficialCli } from "@sente-ai/core/official-cli"
-import {
-  resolveSubscriptionBinary,
-  subscriptionToolCandidates,
-  subscriptionToolSpec,
-} from "../../src/cli/cmd/providers"
+
+const subscriptionToolSpec = OfficialCli.officialCliSpec
+const subscriptionToolCandidates = OfficialCli.officialCliCandidates
+const resolveSubscriptionBinary = OfficialCli.resolveOfficialCli
 
 describe("subscriptionToolSpec", () => {
   test("codex delegates to the official Codex CLI verbs", () => {

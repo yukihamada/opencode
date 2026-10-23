@@ -1,7 +1,4 @@
 import { Database } from "bun:sqlite"
-import path from "path"
-import { Entry } from "@sente-ai/schema/filesystem"
-import { PositiveInt, RelativePath } from "@sente-ai/core/schema"
 import { formatMatches } from "../src/tool/grep"
 
 // Replay saved display rows, not searches against files that may have changed.
@@ -26,14 +23,14 @@ try {
   for (const record of records) {
     original += Array.from(record.output).length
     let current = ""
-    const rows: Parameters<typeof formatMatches>[0][number][] = []
+    const rows: { path: string; line: number; text: string }[] = []
     for (const line of record.output.split("\n")) {
       if (line.startsWith("/") && line.endsWith(":")) current = line.slice(0, -1)
       const match = /^\s+Line (\d+): (.*)$/.exec(line)
       if (!match || !current) continue
       rows.push({
-        entry: Entry.make({ path: RelativePath.make(path.relative(process.cwd(), current)), type: "file" }),
-        line: PositiveInt.make(Number(match[1])),
+        path: current,
+        line: Number(match[1]),
         text: match[2],
       })
     }
@@ -43,11 +40,12 @@ try {
       continue
     }
     parsed++
-    const result = formatMatches(rows, process.cwd(), 100)
-    if (result.output.length > 8_000) throw new Error("Output budget exceeded")
-    if (result.metadata.truncated) bounded++
-    max = Math.max(max, result.output.length)
-    formatted += Array.from(result.output).length
+    const capped = rows.length >= 100
+    const result = formatMatches(rows, { truncated: capped, hasMore: capped })
+    if (result.length > 8_000) throw new Error("Output budget exceeded")
+    if (capped) bounded++
+    max = Math.max(max, result.length)
+    formatted += Array.from(result).length
   }
   console.log(
     JSON.stringify(
