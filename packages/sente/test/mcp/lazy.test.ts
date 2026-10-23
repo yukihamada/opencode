@@ -1,6 +1,9 @@
 import os from "node:os"
 import path from "node:path"
 import { afterAll, expect } from "bun:test"
+import { Server } from "@modelcontextprotocol/sdk/server/index.js"
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@sente-ai/core/effect/layer-node"
 import { Effect } from "effect"
 import { MCP } from "../../src/mcp/index"
@@ -16,6 +19,37 @@ afterAll(() => {
 })
 
 const it = testEffect(LayerNode.compile(MCP.node))
+
+// A remote server that counts the HTTP requests it receives (one MCP session each).
+const startRemote = async () => {
+  let requests = 0
+  const protocol = new Server({ name: "remote", version: "1.0.0" }, { capabilities: { tools: {} } })
+  protocol.setRequestHandler(ListToolsRequestSchema, () =>
+    Promise.resolve({ tools: [{ name: "whoami", description: "live", inputSchema: { type: "object", properties: {} } }] }),
+  )
+  protocol.setRequestHandler(CallToolRequestSchema, () => Promise.resolve({ content: [{ type: "text", text: "remote" }] }))
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: () => crypto.randomUUID(),
+    enableJsonResponse: true,
+  })
+  await protocol.connect(transport)
+  const http = Bun.serve({
+    port: 0,
+    fetch(request) {
+      requests++
+      return transport.handleRequest(request)
+    },
+  })
+  afterAll(async () => {
+    await http.stop(true)
+    await protocol.close()
+  })
+  return { url: http.url.toString(), requests: () => requests }
+}
+const remote = await startRemote()
+const remoteServer = { type: "remote" as const, url: remote.url, oauth: false as const, headers: { Authorization: "Bearer k" } }
+const stale = await startRemote()
+const staleServer = { ...remoteServer, url: stale.url }
 const fixture = path.join(import.meta.dir, "../fixture/mcp-lazy-stdio.ts")
 const cachedLog = path.join(os.tmpdir(), `mcp-lazy-${crypto.randomUUID()}.log`)
 const cachedServer = {
@@ -131,4 +165,58 @@ it.instance("a call fails and the server is reported failed when it cannot start
     expect((yield* mcp.status()).lazy.status).toBe("failed")
     expect(Object.keys(yield* mcp.tools())).toEqual([])
   }),
+)
+
+it.instance(
+  "a remembered remote server lists its tools without connecting until it is called",
+  () =>
+    Effect.gen(function* () {
+      const mcp = yield* MCP.Service
+      expect((yield* mcp.tools())["remote_whoami"]?.def.description).toBe("remembered")
+      expect((yield* mcp.status()).remote).toEqual({ status: "connected" })
+      expect(remote.requests()).toBe(0)
+
+      const entry = (yield* mcp.tools())["remote_whoami"]
+      const result = yield* Effect.promise(() => entry.client.callTool({ name: "whoami", arguments: {} }))
+      expect((result.content as Array<{ text: string }>)[0].text).toBe("remote")
+      expect(remote.requests()).toBeGreaterThan(0)
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          return (yield* mcp.tools())["remote_whoami"]?.def.description === "live" ? true : undefined
+        }),
+        "remembered remote tools were not refreshed",
+      )
+    }),
+  {
+    config: { mcp: { remote: remoteServer } },
+    init: () =>
+      Effect.promise(() =>
+        McpLazy.write(McpLazy.remoteKey(remoteServer), {
+          time: Date.now(),
+          capabilities: { tools: {} },
+          defs: [{ name: "whoami", description: "remembered", inputSchema: { type: "object", properties: {} } }],
+        }),
+      ),
+  },
+)
+
+it.instance(
+  "a remote snapshot older than a day is not trusted",
+  () =>
+    Effect.gen(function* () {
+      const mcp = yield* MCP.Service
+      expect((yield* mcp.tools())["remote_whoami"]?.def.description).toBe("live")
+      expect(stale.requests()).toBeGreaterThan(0)
+    }),
+  {
+    config: { mcp: { remote: staleServer } },
+    init: () =>
+      Effect.promise(() =>
+        McpLazy.write(McpLazy.remoteKey(staleServer), {
+          time: Date.now() - 25 * 60 * 60_000,
+          capabilities: { tools: {} },
+          defs: [{ name: "whoami", description: "remembered", inputSchema: { type: "object", properties: {} } }],
+        }),
+      ),
+  },
 )
