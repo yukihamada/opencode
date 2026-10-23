@@ -260,9 +260,15 @@ export function compile<A, E, const Items extends Replacements = readonly []>(
         if (node.kind === "unbound") throw new Error(`Unbound layer node: ${node.name}`)
         const dependencies = node.dependencies.flatMap(flatten).map(context.visit)
         const implementation = node.implementation! as RuntimeLayer
-        return dependencies.length === 0
-          ? implementation
-          : implementation.pipe(Layer.provide(dependencies as [RuntimeLayer, ...RuntimeLayer[]]))
+        if (dependencies.length === 0) return implementation
+        const composite = implementation.pipe(Layer.provide(dependencies as [RuntimeLayer, ...RuntimeLayer[]]))
+        // Memoize the composite, not only the leaf implementation. `Layer.provide` is not
+        // memoized, so without this every reference to a shared node re-walked that node's
+        // whole dependency subtree: the DAG was built as a tree (~36k visits per runtime
+        // build, one open Scope + finalizer Map + closures left behind per visit). The leaf
+        // services were already shared through the MemoMap, so the built services are the
+        // same; `Layer.fresh` still isolates because it passes a fresh MemoMap.
+        return Layer.fromBuildMemo((memoMap, scope) => Layer.buildWithMemoMap(composite, memoMap, scope))
       },
       { cache, resolve: (node) => replacementMap.get(node.name) ?? node },
     )
