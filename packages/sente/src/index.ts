@@ -1,33 +1,10 @@
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
-import { RunCommand } from "./cli/cmd/run"
-import { GenerateCommand } from "./cli/cmd/generate"
-import { ConsoleCommand } from "./cli/cmd/account"
-import { ProvidersCommand } from "./cli/cmd/providers"
-import { AgentCommand } from "./cli/cmd/agent"
-import { UpgradeCommand } from "./cli/cmd/upgrade"
-import { UninstallCommand } from "./cli/cmd/uninstall"
-import { ModelsCommand } from "./cli/cmd/models"
 import { UI } from "./cli/ui"
 import { InstallationVersion } from "@sente-ai/core/installation/version"
 import { FormatError } from "./cli/error"
-import { ServeCommand } from "./cli/cmd/serve"
-import { DebugCommand } from "./cli/cmd/debug"
-import { StatsCommand } from "./cli/cmd/stats"
-import { McpCommand } from "./cli/cmd/mcp"
-import { GithubCommand } from "./cli/cmd/github"
-import { ExportCommand } from "./cli/cmd/export"
-import { ImportCommand } from "./cli/cmd/import"
-import { AttachCommand } from "./cli/cmd/attach"
-import { TuiThreadCommand } from "./cli/cmd/tui"
-import { AcpCommand } from "./cli/cmd/acp"
 import { EOL } from "os"
-import { WebCommand } from "./cli/cmd/web"
-import { PrCommand } from "./cli/cmd/pr"
-import { SessionCommand } from "./cli/cmd/session"
-import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
-import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 
 const args = hideBin(process.argv)
@@ -78,29 +55,91 @@ const cli = yargs(args)
   })
   .usage("")
   .completion("completion", "generate shell completion script")
-  .command(AcpCommand)
-  .command(McpCommand)
-  .command(TuiThreadCommand)
-  .command(AttachCommand)
-  .command(RunCommand)
-  .command(GenerateCommand)
-  .command(DebugCommand)
-  .command(ConsoleCommand)
-  .command(ProvidersCommand)
-  .command(AgentCommand)
-  .command(UpgradeCommand)
-  .command(UninstallCommand)
-  .command(ServeCommand)
-  .command(WebCommand)
-  .command(ModelsCommand)
-  .command(StatsCommand)
-  .command(ExportCommand)
-  .command(ImportCommand)
-  .command(GithubCommand)
-  .command(PrCommand)
-  .command(SessionCommand)
-  .command(PluginCommand)
-  .command(DbCommand)
+
+// Register commands lazily so `--version` and `--help` don't pay the import
+// cost of every command module. yargs only invokes a command's builder when
+// the command is actually used, but static imports are evaluated eagerly.
+const wantsHelp = args.includes("-h") || args.includes("--help")
+const wantsVersion = args.includes("-v") || args.includes("--version")
+const wantsCompletion = args[0] === "completion"
+
+if (!wantsVersion && !wantsCompletion) {
+  const [
+    { AcpCommand },
+    { McpCommand },
+    { TuiThreadCommand },
+    { AttachCommand },
+    { RunCommand },
+    { GenerateCommand },
+    { DebugCommand },
+    { ConsoleCommand },
+    { ProvidersCommand },
+    { AgentCommand },
+    { UpgradeCommand },
+    { UninstallCommand },
+    { ServeCommand },
+    { WebCommand },
+    { ModelsCommand },
+    { StatsCommand },
+    { ExportCommand },
+    { ImportCommand },
+    { GithubCommand },
+    { PrCommand },
+    { SessionCommand },
+    { PluginCommand },
+    { DbCommand },
+  ] = await Promise.all([
+    import("./cli/cmd/acp"),
+    import("./cli/cmd/mcp"),
+    import("./cli/cmd/tui"),
+    import("./cli/cmd/attach"),
+    import("./cli/cmd/run"),
+    import("./cli/cmd/generate"),
+    import("./cli/cmd/debug"),
+    import("./cli/cmd/account"),
+    import("./cli/cmd/providers"),
+    import("./cli/cmd/agent"),
+    import("./cli/cmd/upgrade"),
+    import("./cli/cmd/uninstall"),
+    import("./cli/cmd/serve"),
+    import("./cli/cmd/web"),
+    import("./cli/cmd/models"),
+    import("./cli/cmd/stats"),
+    import("./cli/cmd/export"),
+    import("./cli/cmd/import"),
+    import("./cli/cmd/github"),
+    import("./cli/cmd/pr"),
+    import("./cli/cmd/session"),
+    import("./cli/cmd/plug"),
+    import("./cli/cmd/db"),
+  ])
+  cli
+    .command(AcpCommand)
+    .command(McpCommand)
+    .command(TuiThreadCommand)
+    .command(AttachCommand)
+    .command(RunCommand)
+    .command(GenerateCommand)
+    .command(DebugCommand)
+    .command(ConsoleCommand)
+    .command(ProvidersCommand)
+    .command(AgentCommand)
+    .command(UpgradeCommand)
+    .command(UninstallCommand)
+    .command(ServeCommand)
+    .command(WebCommand)
+    .command(ModelsCommand)
+    .command(StatsCommand)
+    .command(ExportCommand)
+    .command(ImportCommand)
+    .command(GithubCommand)
+    .command(PrCommand)
+    .command(SessionCommand)
+    .command(PluginCommand)
+    .command(DbCommand)
+}
+
+cli
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
@@ -116,7 +155,7 @@ const cli = yargs(args)
   .strict()
 
 try {
-  if (args.includes("-h") || args.includes("--help")) {
+  if (wantsHelp) {
     await cli.parse(args, (err: Error | undefined, _argv: unknown, out: string) => {
       if (err) throw err
       if (!out) return
