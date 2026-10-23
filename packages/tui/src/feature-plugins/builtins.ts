@@ -2,6 +2,7 @@ import type { TuiPlugin, TuiPluginModule } from "@sente-ai/plugin/tui"
 import HomeFooter from "./home/footer"
 import HomeTips from "./home/tips"
 import SidebarContext from "./sidebar/context"
+import SidebarCredits from "./sidebar/credits"
 import SidebarFiles from "./sidebar/files"
 import SidebarFooter from "./sidebar/footer"
 import SidebarLsp from "./sidebar/lsp"
@@ -24,6 +25,7 @@ export function createBuiltinPlugins(options: { experimentalEventSystem: boolean
     HomeFooter,
     HomeTips,
     SidebarContext,
+    SidebarCredits,
     SidebarMcp,
     SidebarLsp,
     SidebarTodo,

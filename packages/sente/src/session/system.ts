@@ -101,6 +101,13 @@ const layer = Layer.effect(
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
+          [
+            `Work tracking rules:`,
+            `- When the user gives you a task, request, or instruction, register it with the todowrite tool before or while you work on it (status in_progress, then completed when done).`,
+            `- Break multi-step work into individual todo items so each unit of work is visible.`,
+            `- When you delegate work to a subagent via the task tool, make sure the delegated work is also captured as a todo item, and mark it completed only after the subagent's result is verified.`,
+            `- Keep the todo list current: update statuses as work progresses instead of leaving stale entries.`,
+          ].join("\n"),
           references.length === 0
             ? undefined
             : [

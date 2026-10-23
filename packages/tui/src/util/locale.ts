@@ -1,3 +1,7 @@
+export function terminalLocale(): string {
+  return process.env.TE_LANG || process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || "en"
+}
+
 export function titlecase(str: string) {
   return str.replace(/\b\w/g, (c) => c.toUpperCase())
 }

@@ -460,6 +460,9 @@ opencode stats
 | <nobr><code>{"--tools"}</code></nobr>   | Number of tools to show (all)                                               |
 | <nobr><code>{"--models"}</code></nobr>  | Show model usage breakdown (hidden by default). Pass a number to show top N |
 | <nobr><code>{"--project"}</code></nobr> | Filter by project (all projects, empty string: current project)             |
+| <nobr><code>{"--completion"}</code></nobr> | Show per-model completion rates recorded by `opencode run` (from the local run-metrics ledger) |
+
+`opencode run` appends one JSON line per non-interactive run (session, model, outcome, exit code, duration) to `run-metrics.jsonl` in the global state directory. `--completion` aggregates that ledger into a per-model success-rate table; recording is best-effort and never blocks a run.
 
 ---
 

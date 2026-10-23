@@ -10200,6 +10200,7 @@ export type SessionCommandData = {
     arguments: string
     command: string
     variant?: string
+    noReply?: boolean
     parts?: Array<{
       id?: string
       type: "file"

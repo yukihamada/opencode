@@ -205,14 +205,78 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 }),
               ),
             ),
-            Effect.catchTag("Session.OperationUnavailableError", (error) =>
-              Effect.fail(
-                new ServiceUnavailableError({
-                  message: `Session ${error.operation} is not available yet`,
-                  service: `session.${error.operation}`,
-                }),
-              ),
-            ),
+            Effect.catchTags({
+              "Integration.Authorization": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed to authorize the provider credential: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "LLM.Error": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed during model execution: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "SessionRunnerModel.ModelNotSelectedError": () =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: "Session wait requires a selected model before execution can resume",
+                    service: "session.wait",
+                  }),
+                ),
+              "SessionRunnerModel.ModelUnavailableError": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed to resolve the model: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "SessionRunnerModel.VariantUnavailableError": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed to resolve the model variant: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "SessionRunnerModel.UnsupportedApiError": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed because the model API is unsupported: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "Session.MessageDecodeError": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed to decode a message: ${error.messageID}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "Session.ContextSnapshotDecodeError": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed to decode the context snapshot: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "SystemContext.InitializationBlocked": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait is blocked until system context initialization completes: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+              "ToolOutputStore.StorageError": (error) =>
+                Effect.fail(
+                  new ServiceUnavailableError({
+                    message: `Session wait failed to read stored tool output: ${error.message}`,
+                    service: "session.wait",
+                  }),
+                ),
+            }),
           )
           return HttpApiSchema.NoContent.make()
         }),

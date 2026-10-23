@@ -1,4 +1,4 @@
----
+ご---
 title: CLI
 description: OpenCode CLI のオプションとコマンド。
 ---
@@ -425,6 +425,9 @@ opencode stats
 | <nobr><code>{"--tools"}</code></nobr>   | 表示するツールの数 (すべて)                                                                |
 | <nobr><code>{"--models"}</code></nobr>  | モデルの使用状況の内訳を表示 (デフォルトでは非表示)。上位 N 件を表示するには数値を渡します |
 | <nobr><code>{"--project"}</code></nobr> | プロジェクトでフィルタリング (全プロジェクト、空文字列: 現在のプロジェクト)                |
+| <nobr><code>{"--completion"}</code></nobr> | `opencode run` が記録したモデル別の完了率を表示 (ローカルの run-metrics 台帳から集計) |
+
+`opencode run` は非インタラクティブな実行ごとに1行のJSON(セッション・モデル・結果・終了コード・所要時間)をグローバルstateディレクトリの `run-metrics.jsonl` に追記します。`--completion` はその台帳をモデル別の成功率テーブルに集計します。記録はベストエフォートで、失敗しても実行は妨げられません。
 
 ---
 

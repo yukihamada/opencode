@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { cliIt } from "../lib/cli-process"
 import { redactConfig } from "@/cli/cmd/debug/redact"
@@ -39,24 +39,55 @@ describe("debug config redaction", () => {
     }),
   )
 
-  cliIt.live("does not mutate the input and preserves unrelated settings", () =>
-    Effect.sync(() => {
-      const before = structuredClone(config)
-      expect(redactConfig(config)).toEqual({
-        provider: {
-          example: {
-            options: { apiKey: "***", timeout: 1200, headers: { Authorization: "***", "X-API-Key": "***" } },
-            models: { demo: { variants: { fast: { api_key: "***" } } } },
-          },
+  test("does not mutate the input and preserves unrelated settings", () => {
+    const before = structuredClone(config)
+    expect(redactConfig(config)).toEqual({
+      provider: {
+        example: {
+          options: { apiKey: "***", timeout: 1200, headers: { Authorization: "***", "X-API-Key": "***" } },
+          models: { demo: { variants: { fast: { api_key: "***" } } } },
         },
-        mcp: {
-          remote: { oauth: { clientSecret: "***", clientId: "public" }, headers: { "x-custom": "***" } },
-          local: { environment: { SERVICE_TOKEN: "***", PATH: "/usr/bin" } },
-        },
-        url: "***",
-        normal: config.normal,
-      })
-      expect(config).toEqual(before)
-    }),
-  )
+      },
+      mcp: {
+        remote: { oauth: { clientSecret: "***", clientId: "public" }, headers: { "x-custom": "***" } },
+        local: { environment: { SERVICE_TOKEN: "***", PATH: "/usr/bin" } },
+      },
+      url: "***",
+      normal: config.normal,
+    })
+    expect(config).toEqual(before)
+  })
+
+  test("masks credential URLs inside nested arrays without hiding public URLs", () => {
+    expect(
+      redactConfig({
+        urls: [
+          { url: "https://example.com/?api_key=example" },
+          { url: "https://example.com/?access_token=example" },
+          { url: "https://[invalid" },
+          { url: "https://example.com/?region=global" },
+        ],
+        optional: null,
+      }),
+    ).toMatchObject({
+      urls: [{ url: "***" }, { url: "***" }, { url: "***" }, { url: "https://example.com/?region=global" }],
+      optional: null,
+    })
+  })
+
+  test("masks secrets in arrays and nested credential objects", () => {
+    expect(
+      redactConfig({
+        headers: { custom: ["opaque"] },
+        apiKey: ["first-key", "second-key"],
+        credentials: { value: "nested-secret" },
+        urls: ["https://user:pass@example.com", "https://example.com/?token=secret", "https://example.com"],
+      }),
+    ).toEqual({
+      headers: { custom: ["***"] },
+      apiKey: ["***", "***"],
+      credentials: { value: "***" },
+      urls: ["***", "***", "https://example.com"],
+    })
+  })
 })

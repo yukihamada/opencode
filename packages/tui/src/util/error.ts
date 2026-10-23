@@ -1,5 +1,15 @@
 import { isRecord } from "./record"
 
+const outputLimitMessages = {
+  ja: "出力トークン上限に達したため、回答が途中で切れました。明示的に続行してください。",
+  en: "The response hit the output token limit and was cut off. Please continue explicitly.",
+}
+
+function outputLimitMessage() {
+  const language = process.env.TE_LANG ?? process.env.LANG ?? ""
+  return outputLimitMessages[/^ja/i.test(language) ? "ja" : "en"]
+}
+
 type ConfigIssue = { message: string; path: string[] }
 
 export function cliErrorMessage(input: unknown): string | undefined {
@@ -134,6 +144,8 @@ export function errorFormat(error: unknown): string {
 }
 
 export function errorMessage(error: unknown): string {
+  if (named(error, "MessageOutputLengthError")) return outputLimitMessage()
+
   if (error instanceof Error) {
     if (error.message) return error.message
     if (error.name) return error.name

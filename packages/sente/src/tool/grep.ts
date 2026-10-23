@@ -7,6 +7,27 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./grep.txt"
 import * as Tool from "./tool"
 
+export function formatMatches(
+  rows: readonly { path: string; line: number; text: string }[],
+  options: { truncated: boolean; hasMore: boolean },
+) {
+  const output = [`Found ${rows.length} matches${options.hasMore ? " (more matches available)" : ""}`]
+  let current = ""
+  for (const match of rows) {
+    if (current !== match.path) {
+      if (current !== "") output.push("")
+      current = match.path
+      output.push(`${match.path}:`)
+    }
+    output.push(`  Line ${match.line}: ${match.text}`)
+  }
+  if (options.truncated) {
+    output.push("")
+    output.push("(Results truncated. Consider using a more specific path or pattern.)")
+  }
+  return output.join("\n")
+}
+
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The regex pattern to search for in file contents" }),
   path: Schema.optional(Schema.String).annotate({
@@ -84,22 +105,7 @@ export const GrepTool = Tool.define(
 
           const total = rows.length
           const hasMore = truncated || result.length === limit
-          const output = [`Found ${total} matches${hasMore ? " (more matches available)" : ""}`]
-
-          let current = ""
-          for (const match of final) {
-            if (current !== match.path) {
-              if (current !== "") output.push("")
-              current = match.path
-              output.push(`${match.path}:`)
-            }
-            output.push(`  Line ${match.line}: ${match.text}`)
-          }
-
-          if (truncated) {
-            output.push("")
-            output.push("(Results truncated. Consider using a more specific path or pattern.)")
-          }
+          const formatted = formatMatches(final, { truncated, hasMore })
 
           return {
             title: params.pattern,
@@ -107,7 +113,7 @@ export const GrepTool = Tool.define(
               matches: total,
               truncated,
             },
-            output: output.join("\n"),
+            output: formatted,
           }
         }).pipe(Effect.orDie),
     }
