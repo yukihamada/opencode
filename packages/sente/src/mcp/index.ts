@@ -497,7 +497,14 @@ const layer = Layer.effect(
 
     const idle = McpLazy.idle(process.env)
 
-    const snapshotKey = Effect.fnUntraced(function* (mcp: ConfigMCPV1.Info & { type: "local" }) {
+    type LazyConfig = ConfigMCPV1.Info & { type: "local" | "remote" }
+    // Remote servers are deferred too: listing their tools costs several network round trips on every
+    // start, before the first prompt can be sent. Only a successful connection writes a snapshot, so a
+    // server that needs OAuth is still connected eagerly until it works.
+    const deferrable = (mcp: ConfigMCPV1.Info) => idle > 0 && (mcp.type === "local" || mcp.type === "remote")
+
+    const snapshotKey = Effect.fnUntraced(function* (mcp: LazyConfig) {
+      if (mcp.type === "remote") return McpLazy.remoteKey({ url: mcp.url, headers: mcp.headers })
       const directory = yield* InstanceState.directory
       return McpLazy.key({
         command: mcp.command,
@@ -538,7 +545,7 @@ const layer = Layer.effect(
     const makeLazy = Effect.fnUntraced(function* (
       s: State,
       name: string,
-      mcp: ConfigMCPV1.Info & { type: "local" },
+      mcp: LazyConfig,
       snapshot: McpLazy.Snapshot,
       running?: MCPClient,
     ) {
@@ -574,7 +581,8 @@ const layer = Layer.effect(
           start: () =>
             bridge.promise(
               Effect.gen(function* () {
-                const result = yield* connectLocal(name, mcp)
+                const result =
+                  mcp.type === "remote" ? yield* connectRemote(name, mcp) : yield* connectLocal(name, mcp)
                 if (!result.client) {
                   if (s.clients[name] === lazy) {
                     s.status[name] = result.status
@@ -590,7 +598,8 @@ const layer = Layer.effect(
                 return result.client
               }),
             ),
-          stop: (client) => bridge.promise(stopLocal(client)),
+          stop: (client) =>
+            mcp.type === "remote" ? client.close().catch(() => undefined) : bridge.promise(stopLocal(client)),
         },
         running,
       )
@@ -628,12 +637,12 @@ const layer = Layer.effect(
                 return
               }
 
-              if (idle > 0 && mcp.type === "local") {
-                const id = yield* snapshotKey(mcp)
-                const snapshot = yield* Effect.promise(() => McpLazy.read(id))
+              if (deferrable(mcp)) {
+                const id = yield* snapshotKey(mcp as LazyConfig)
+                const snapshot = yield* Effect.promise(() => McpLazy.read(id, McpLazy.maxAge(mcp.type)))
                 if (snapshot) {
                   s.status[key] = { status: "connected" }
-                  s.clients[key] = yield* makeLazy(s, key, mcp, snapshot)
+                  s.clients[key] = yield* makeLazy(s, key, mcp as LazyConfig, snapshot)
                   s.defs[key] = snapshot.defs
                   if (snapshot.instructions) s.instructions[key] = snapshot.instructions
                   return
@@ -645,11 +654,11 @@ const layer = Layer.effect(
               if (!result.mcpClient) return
               s.defs[key] = result.defs!
               if (result.instructions) s.instructions[key] = result.instructions
-              if (idle > 0 && mcp.type === "local") {
+              if (deferrable(mcp)) {
                 s.clients[key] = yield* makeLazy(
                   s,
                   key,
-                  mcp,
+                  mcp as LazyConfig,
                   yield* capture(result.mcpClient, result.defs!, mcp.timeout),
                   result.mcpClient,
                 )
@@ -761,11 +770,11 @@ const layer = Layer.effect(
       }
 
       const client =
-        idle > 0 && mcp.type === "local"
+        deferrable(mcp)
           ? yield* makeLazy(
               s,
               name,
-              mcp,
+              mcp as LazyConfig,
               yield* capture(result.mcpClient, result.defs!, mcp.timeout),
               result.mcpClient,
             )

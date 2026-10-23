@@ -7,6 +7,12 @@ import { Global } from "@sente-ai/core/global"
 
 const DEFAULT_IDLE = 10 * 60_000
 const MAX_AGE = 7 * 24 * 60 * 60_000
+// A remote server can change its tools without anything changing on this machine, so trust its list for less time.
+const REMOTE_MAX_AGE = 24 * 60 * 60_000
+
+export function maxAge(type: "local" | "remote") {
+  return type === "remote" ? REMOTE_MAX_AGE : MAX_AGE
+}
 
 type Prompts = Awaited<ReturnType<Client["listPrompts"]>>["prompts"]
 type Resources = Awaited<ReturnType<Client["listResources"]>>["resources"]
@@ -37,16 +43,23 @@ export function key(input: { command: string[]; cwd: string; environment?: Recor
     .digest("hex")
 }
 
+// Headers often carry a key; only its hash is stored, and a new key simply starts a new snapshot.
+export function remoteKey(input: { url: string; headers?: Record<string, string> }) {
+  return createHash("sha256")
+    .update(JSON.stringify(["remote", input.url, Object.entries(input.headers ?? {}).sort()]))
+    .digest("hex")
+}
+
 function file(id: string) {
   return path.join(Global.Path.cache, "mcp-snapshot", id + ".json")
 }
 
-export async function read(id: string) {
+export async function read(id: string, maxAge = MAX_AGE) {
   const snapshot: Snapshot | undefined = await Bun.file(file(id))
     .json()
     .catch(() => undefined)
   if (!snapshot || !Array.isArray(snapshot.defs) || typeof snapshot.time !== "number") return undefined
-  if (Date.now() - snapshot.time > MAX_AGE) return undefined
+  if (Date.now() - snapshot.time > maxAge) return undefined
   return snapshot
 }
 
@@ -56,8 +69,8 @@ export async function write(id: string, snapshot: Snapshot) {
 }
 
 /**
- * Stands in for a local server's client. The process is started on the first request and stopped after
- * `idle` ms without one; capabilities and list results come from the snapshot while it is stopped.
+ * Stands in for a server's client. A local process (or a remote connection) is started on the first request
+ * and stopped after `idle` ms without one; capabilities and list results come from the snapshot meanwhile.
  */
 export class LazyClient extends Client {
   private real: Client | undefined
