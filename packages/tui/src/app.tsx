@@ -40,6 +40,7 @@ import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
+import { themeModeWaitMs } from "./util/theme-wait"
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
@@ -285,7 +286,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       yield* Effect.tryPromise(async () => {
         // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
         void renderer.getPalette({ size: 16 }).catch(() => undefined)
-        const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
+        // Terminals that support the color-scheme query answer within a few ms; ones that do not
+        // (tmux, Terminal.app in our measurements) never answer, and waiting 1 s for them was the
+        // largest single part of startup. ThemeProvider still applies a late answer (THEME_MODE event).
+        const mode = (await renderer.waitForThemeMode(themeModeWaitMs())) ?? "dark"
         if (renderer.isDestroyed) return
 
         await render(() => {
