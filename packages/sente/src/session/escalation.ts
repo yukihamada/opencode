@@ -36,10 +36,14 @@ export function handoffReferences(history: SessionV1.WithParts[]) {
     resume: "explicit_user_request" as const,
   }
 }
-// 費用確認の上限(USD)。既定は確認なし。SENTE_COST_LIMIT_USD を設定した時だけ有効。
+// 費用確認の上限(USD)。既定は $5。SENTE_COST_LIMIT_USD で上書きできる。
+// 0 や空文字・未設定の "off" 相当を明示したい場合は "none" を設定する。
+export const DEFAULT_COST_LIMIT_USD = 5
 export function costLimit(value: string | undefined): number {
-  const limit = value === undefined || value.trim() === "" ? NaN : Number(value)
-  return Number.isFinite(limit) && limit > 0 ? limit : Number.POSITIVE_INFINITY
+  if (value === undefined || value.trim() === "") return DEFAULT_COST_LIMIT_USD
+  if (value.trim().toLowerCase() === "none") return Number.POSITIVE_INFINITY
+  const limit = Number(value)
+  return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_COST_LIMIT_USD
 }
 export const COST_LIMIT_USD = costLimit(process.env.SENTE_COST_LIMIT_USD)
 // 送る内容から見積もった入力量に足す余裕。

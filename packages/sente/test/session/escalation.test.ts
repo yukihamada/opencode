@@ -655,10 +655,12 @@ describe("execution safety", () => {
     expect(SessionEscalation.requestTokens(loop)).toBeUndefined()
   })
 
-  test("cost limit is off unless a positive amount is configured", () => {
+  test("cost limit defaults to $5 and only 'none' turns it off", () => {
     for (const value of [undefined, "", " ", "0", "-1", "abc", "Infinity"]) {
-      expect(SessionEscalation.costLimit(value)).toBe(Number.POSITIVE_INFINITY)
+      expect(SessionEscalation.costLimit(value)).toBe(5)
     }
+    expect(SessionEscalation.costLimit("none")).toBe(Number.POSITIVE_INFINITY)
+    expect(SessionEscalation.costLimit("NONE")).toBe(Number.POSITIVE_INFINITY)
     expect(SessionEscalation.costLimit("20")).toBe(20)
     expect(SessionEscalation.costLimit("0.5")).toBe(0.5)
   })
