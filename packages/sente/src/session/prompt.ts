@@ -197,21 +197,18 @@ const layer = Layer.effect(
       modelID: ModelV2.ID
     }) {
       if (input.session.parentID) return
-      if (!Session.isDefaultTitle(input.session.title)) return
 
       const real = (m: SessionV1.WithParts) =>
         m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic)
-      const idx = input.history.findIndex(real)
+      const idx = input.history.findLastIndex(real)
       if (idx === -1) return
-      if (input.history.filter(real).length !== 1) return
 
-      const context = input.history.slice(0, idx + 1)
-      const firstUser = context[idx]
-      if (!firstUser || firstUser.info.role !== "user") return
-      const firstInfo = firstUser.info
+      const latestUser = input.history[idx]
+      if (!latestUser || latestUser.info.role !== "user") return
+      const latestInfo = latestUser.info
 
-      const subtasks = firstUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
-      const onlySubtasks = subtasks.length > 0 && firstUser.parts.every((p) => p.type === "subtask")
+      const subtasks = latestUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
+      const onlySubtasks = subtasks.length > 0 && latestUser.parts.every((p) => p.type === "subtask")
 
       const ag = yield* agents.get("title")
       if (!ag) return
@@ -221,18 +218,25 @@ const layer = Layer.effect(
           (yield* provider.getModel(input.providerID, input.modelID)))
       const msgs = onlySubtasks
         ? [{ role: "user" as const, content: subtasks.map((p) => p.prompt).join("\n") }]
-        : yield* MessageV2.toModelMessagesEffect(context, mdl)
+        : yield* MessageV2.toModelMessagesEffect([latestUser], mdl)
       const text = yield* llm
         .stream({
           agent: ag,
-          user: firstInfo,
+          user: latestInfo,
           system: [],
           small: true,
           tools: {},
           model: mdl,
           sessionID: input.session.id,
           retries: 2,
-          messages: [{ role: "user", content: "Generate a title for this conversation:\n" }, ...msgs],
+          messages: [
+            {
+              role: "user",
+              content:
+                "Generate a short title for the CURRENT goal of this conversation. The title must describe the latest request so anyone can tell at a glance what this session is working on now. Ignore earlier requests unless the latest one continues them.\n",
+            },
+            ...msgs,
+          ],
         })
         .pipe(
           Stream.filter(LLMEvent.is.textDelta),
@@ -247,6 +251,7 @@ const layer = Layer.effect(
         .find((line) => line.length > 0)
       if (!cleaned) return
       const t = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
+      if (t === input.session.title) return
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
         .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
@@ -1131,6 +1136,13 @@ const layer = Layer.effect(
 
           step++
           if (step === 1)
+            yield* title({
+              session,
+              modelID: lastUser.model.modelID,
+              providerID: lastUser.model.providerID,
+              history: msgs,
+            }).pipe(Effect.ignore, Effect.forkIn(scope))
+          else if (lastAssistant?.parentID !== lastUser.id)
             yield* title({
               session,
               modelID: lastUser.model.modelID,
