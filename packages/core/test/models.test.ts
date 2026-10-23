@@ -8,7 +8,7 @@ import { Flag } from "@sente-ai/core/flag/flag"
 import { Global } from "@sente-ai/core/global"
 import { ModelsDev } from "@sente-ai/core/models-dev"
 import { it } from "./lib/effect"
-import { readFile, rm, writeFile, utimes, mkdir } from "fs/promises"
+import { readFile, readdir, rm, writeFile, utimes, mkdir } from "fs/promises"
 import path from "path"
 
 // test/preload.ts pins SENTE_MODELS_PATH to a fixture so other tests can
@@ -112,12 +112,23 @@ const writeCache = (data: object, mtimeMs?: number) => writeCacheText(JSON.strin
 const provided = <A, E>(state: Ref.Ref<MockState>, eff: Effect.Effect<A, E, ModelsDev.Service>) =>
   eff.pipe(Effect.provide(buildLayer(state)))
 
+const sidecars = async () =>
+  (await readdir(Global.Path.cache).catch(() => [] as string[]))
+    .filter((name) => name.startsWith("models.json.only-"))
+    .map((name) => path.join(Global.Path.cache, name))
+
+const removeSidecars = async () => {
+  for (const file of await sidecars()) await rm(file, { force: true })
+}
+
 beforeEach(async () => {
   await rm(cacheFile, { force: true })
+  await removeSidecars()
 })
 
 afterAll(async () => {
   await rm(cacheFile, { force: true })
+  await removeSidecars()
 })
 
 const initialState: MockState = {
@@ -285,6 +296,74 @@ describe("ModelsDev Service", () => {
       // retryTransient retries 5xx, so calls may be > 1.
       const final = yield* Ref.get(state)
       expect(final.calls.length).toBeGreaterThanOrEqual(1)
+    }),
+  )
+
+  it.live("subset() returns only the listed providers and caches them next to the catalog", () =>
+    Effect.gen(function* () {
+      yield* writeCache({ ...fixture, ...fixture2 }, Date.now() - 60_000)
+      const state = yield* Ref.make(initialState)
+      const result = yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.subset(["beta", "missing"])),
+      )
+      expect(result).toEqual(fixture2)
+      const files = yield* Effect.promise(sidecars)
+      expect(files).toHaveLength(1)
+      const saved = JSON.parse(yield* Effect.promise(() => readFile(files[0], "utf8")))
+      expect(saved.ids).toEqual(["beta", "missing"])
+      expect(saved.providers).toEqual(fixture2)
+    }),
+  )
+
+  it.live("subset() reads the small cache instead of the catalog while the catalog is unchanged", () =>
+    Effect.gen(function* () {
+      yield* writeCache({ ...fixture, ...fixture2 }, Date.now() - 60_000)
+      const state = yield* Ref.make(initialState)
+      yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.subset(["beta"])),
+      )
+      // Prove the second start does not parse the catalog: edit only the small cache.
+      const [file] = yield* Effect.promise(sidecars)
+      const saved = JSON.parse(yield* Effect.promise(() => readFile(file, "utf8")))
+      const marker = { beta: { ...fixture2.beta, name: "from small cache" } }
+      yield* Effect.promise(() => writeFile(file, JSON.stringify({ ...saved, providers: marker })))
+      const again = yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.subset(["beta"])),
+      )
+      expect(again).toEqual(marker)
+    }),
+  )
+
+  it.live("subset() ignores the small cache once the catalog file changes", () =>
+    Effect.gen(function* () {
+      yield* writeCache({ ...fixture, ...fixture2 }, Date.now() - 60_000)
+      const state = yield* Ref.make(initialState)
+      yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.subset(["beta"])),
+      )
+      const updated = { beta: { ...fixture2.beta, name: "Beta Updated" } }
+      yield* writeCache({ ...fixture, ...updated }, Date.now())
+      const result = yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.subset(["beta"])),
+      )
+      expect(result).toEqual(updated)
+    }),
+  )
+
+  it.live("subset() without a catalog file falls back to the full catalog and writes nothing", () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(initialState)
+      const result = yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.subset(["acme"])),
+      )
+      expect(result).toEqual({})
+      expect(yield* Effect.promise(sidecars)).toEqual([])
     }),
   )
 })

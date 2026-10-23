@@ -1483,7 +1483,6 @@ const layer = Layer.effect(
       Effect.gen(function* () {
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
-        const modelsDev = yield* modelsDevSvc.get()
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
         const languages = new Map<string, LanguageModelV3>()
@@ -1519,6 +1518,12 @@ const layer = Layer.effect(
 
         // load plugins first so config() hook runs before reading cfg.provider
         const plugins = yield* plugin.list()
+        // After plugins: their config() hook may change enabled_providers. With a list, only those
+        // catalog entries can survive the filter below, so read just them (small per-list cache)
+        // instead of parsing and keeping the whole catalog.
+        const modelsDev = cfg.enabled_providers
+          ? yield* modelsDevSvc.subset(cfg.enabled_providers)
+          : yield* modelsDevSvc.get()
 
         // now read config providers - includes any modifications from plugin config() hook
         const configProviders = Object.entries(cfg.provider ?? {})

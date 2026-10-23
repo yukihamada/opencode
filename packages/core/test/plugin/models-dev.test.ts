@@ -79,6 +79,7 @@ describe("ModelsDevPlugin", () => {
               },
             },
           } satisfies Record<string, ModelsDev.Provider>),
+        subset: () => Effect.die("unused"),
         refresh: () => Effect.void,
       })
 

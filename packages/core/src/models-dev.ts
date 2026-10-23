@@ -137,6 +137,13 @@ declare const SENTE_MODELS_DEV: Record<string, Provider> | undefined
 
 export interface Interface {
   readonly get: () => Effect.Effect<Record<string, Provider>>
+  /**
+   * Only the listed providers. Reads a small per-list cache next to the catalog instead of
+   * parsing (and keeping) the whole catalog, which costs ~27MB on every start when a config
+   * uses one or two providers. Falls back to `get()` when that cache is missing or older
+   * than the catalog file, then writes it for the next start.
+   */
+  readonly subset: (providerIDs: Iterable<string>) => Effect.Effect<Record<string, Provider>>
   readonly refresh: (force?: boolean) => Effect.Effect<void>
 }
 
@@ -257,12 +264,38 @@ const layer = Layer.effect(
       )
     })
 
+    const pick = (all: Record<string, Provider>, ids: readonly string[]) =>
+      Object.fromEntries(ids.filter((id) => Object.hasOwn(all, id)).map((id) => [id, all[id]]))
+
+    const subset = Effect.fn("ModelsDev.subset")(function* (providerIDs: Iterable<string>) {
+      const ids = [...new Set(providerIDs)].sort()
+      // An explicit catalog path is a test/debug override: read it as is.
+      if (Flag.SENTE_MODELS_PATH !== undefined) return pick(yield* get(), ids)
+      const stat = yield* fs.stat(filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      // No catalog file yet (embedded snapshot or first fetch): nothing to key the cache on.
+      if (!stat) return pick(yield* get(), ids)
+      const source = Option.getOrElse(stat.mtime, () => new Date(0)).getTime()
+      const sidecar = `${filepath}.only-${Hash.fast(ids.join(","))}.json`
+      const cached = (yield* fs.readJson(sidecar).pipe(Effect.catch(() => Effect.succeed(undefined)))) as
+        | { source?: number; ids?: string[]; providers?: Record<string, Provider> }
+        | undefined
+      if (cached?.source === source && cached.providers && cached.ids?.join(",") === ids.join(","))
+        return cached.providers
+      const providers = pick(yield* get(), ids)
+      const tempfile = `${sidecar}.${process.pid}.${Date.now()}.tmp`
+      yield* fs.writeWithDirs(tempfile, JSON.stringify({ source, ids, providers })).pipe(
+        Effect.andThen(fs.rename(tempfile, sidecar)),
+        Effect.catch(() => fs.remove(tempfile, { force: true }).pipe(Effect.ignore)),
+      )
+      return providers
+    })
+
     if (!Flag.SENTE_DISABLE_MODELS_FETCH && !process.argv.includes("--get-yargs-completions")) {
       // Schedule.spaced runs the effect once, then waits between completions.
       yield* Effect.forkScoped(refresh().pipe(Effect.repeat(Schedule.spaced("60 minutes")), Effect.ignore))
     }
 
-    return Service.of({ get, refresh })
+    return Service.of({ get, subset, refresh })
   }),
 )
 
