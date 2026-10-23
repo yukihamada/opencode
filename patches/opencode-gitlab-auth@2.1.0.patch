@@ -1,0 +1,38 @@
+diff --git a/dist/index.js b/dist/index.js
+index 8af2f91bfe962691c9105ec63e30e6b060676d24..32c00db419ce614990d8792286eb5d57c966e69b 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,5 +1,5 @@
+ import { GitLabOAuthFlow } from './oauth-flow.js';
+-import { CallbackServer } from './callback-server.js';
++// Loaded on first OAuth login only: the callback server pulls in fastify (~15ms at every start).
+ import fs from 'fs';
+ import path from 'path';
+ import os from 'os';
+@@ -357,6 +357,7 @@ export const gitlabAuthPlugin = async (_input) => {
+                     const codeChallenge = generateCodeChallengeFromVerifier(codeVerifier);
+                     const state = generateSecret(32);
+                     // Create callback server for automatic OAuth flow
++                    const { CallbackServer } = await import('./callback-server.js');
+                     const callbackServer = new CallbackServer({
+                         port: 8080, // Fixed port matching OAuth app registration
+                         host: '127.0.0.1',
+diff --git a/dist/oauth-flow.js b/dist/oauth-flow.js
+index 9134426c1ce4feaa4561ea42e581e1d30efb32b0..b65b17bb230df31d86ca2ea4af58af3964157124 100644
+--- a/dist/oauth-flow.js
++++ b/dist/oauth-flow.js
+@@ -1,5 +1,5 @@
+ import { generateSecret, generateCodeChallengeFromVerifier } from './pkce.js';
+-import { CallbackServer } from './callback-server.js';
++// Loaded on first OAuth login only: the callback server pulls in fastify (~15ms at every start).
+ /**
+  * GitLab OAuth flow implementation
+  * Combines patterns from gitlab-vscode-extension and gitlab-lsp
+@@ -30,6 +30,7 @@ export class GitLabOAuthFlow {
+      */
+     async authorizeWithCallback(codeChallenge, state, codeVerifier) {
+         // Create callback server
++        const { CallbackServer } = await import('./callback-server.js');
+         const server = new CallbackServer({
+             port: 0, // Random port
+             host: '127.0.0.1',

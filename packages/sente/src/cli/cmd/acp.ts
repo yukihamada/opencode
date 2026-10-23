@@ -1,6 +1,5 @@
 import { Effect } from "effect"
 import { effectCmd } from "../effect-cmd"
-import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk"
 import { ServerAuth } from "@/server/auth"
 import { createSenteClient } from "@sente-ai/sdk/v2"
 import { withNetworkOptions, resolveNetworkOptions } from "../network"
@@ -19,6 +18,9 @@ export const AcpCommand = effectCmd({
   handler: Effect.fn("Cli.acp")(function* (args) {
     const { Server } = yield* Effect.promise(() => import("@/server/server"))
     const { ACP } = yield* Effect.promise(() => import("@/acp/agent"))
+    // Imported here, not at the top: every `sente` start (e.g. `sente run`) registers this command,
+    // and the ACP SDK's zod schemas cost ~7ms of module evaluation that only `sente acp` needs.
+    const { AgentSideConnection, ndJsonStream } = yield* Effect.promise(() => import("@agentclientprotocol/sdk"))
     ACPProfile.mark("cli.acp.handler")
     process.env.SENTE_CLIENT = "acp"
     const opts = yield* resolveNetworkOptions(args)
