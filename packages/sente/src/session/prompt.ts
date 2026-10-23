@@ -203,6 +203,10 @@ const layer = Layer.effect(
         m.info.role === "user" && !m.parts.every((p) => "synthetic" in p && p.synthetic)
       const idx = input.history.findLastIndex(real)
       if (idx === -1) return
+      // First request with a title already set (`sente run` names the session after the
+      // prompt, or `--title`): keep it. Re-titling here would cost one extra model request
+      // on every non-interactive run. Later requests still re-title to the current goal.
+      if (!Session.isDefaultTitle(input.session.title) && input.history.filter(real).length === 1) return
 
       const latestUser = input.history[idx]
       if (!latestUser || latestUser.info.role !== "user") return
