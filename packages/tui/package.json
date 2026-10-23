@@ -49,21 +49,22 @@
     "./component/register-spinner": "./src/component/register-spinner.ts"
   },
   "dependencies": {
+    "@opentui/core": "catalog:",
+    "@opentui/keymap": "catalog:",
+    "@opentui/solid": "catalog:",
     "@sente-ai/core": "workspace:*",
     "@sente-ai/plugin": "workspace:*",
     "@sente-ai/sdk": "workspace:*",
     "@sente-ai/ui": "workspace:*",
-    "@opentui/core": "catalog:",
-    "@opentui/keymap": "catalog:",
-    "@opentui/solid": "catalog:",
     "clipboardy": "4.0.0",
     "diff": "catalog:",
     "effect": "catalog:",
     "fuzzysort": "catalog:",
+    "open": "11.0.4",
     "opentui-spinner": "catalog:",
     "remeda": "catalog:",
-    "strip-ansi": "7.1.2",
-    "solid-js": "catalog:"
+    "solid-js": "catalog:",
+    "strip-ansi": "7.1.2"
   },
   "devDependencies": {
     "@tsconfig/bun": "catalog:",
