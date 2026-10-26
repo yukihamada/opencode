@@ -56,6 +56,7 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@sente-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { SessionTitle } from "./title"
 import { LLMEvent } from "@sente-ai/llm"
 
 // @ts-ignore
@@ -205,15 +206,17 @@ const layer = Layer.effect(
       if (idx === -1) return
       // First request with a title already set (`sente run` names the session after the
       // prompt, or `--title`): keep it. Re-titling here would cost one extra model request
-      // on every non-interactive run. Later requests still re-title to the current goal.
+      // on every non-interactive run. Later requests refine the title around the first goal.
       if (!Session.isDefaultTitle(input.session.title) && input.history.filter(real).length === 1) return
 
       const latestUser = input.history[idx]
       if (!latestUser || latestUser.info.role !== "user") return
       const latestInfo = latestUser.info
 
-      const subtasks = latestUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
-      const onlySubtasks = subtasks.length > 0 && latestUser.parts.every((p) => p.type === "subtask")
+      const userMsgs = input.history.filter(real)
+      const first = SessionTitle.messageText(userMsgs[0])
+      const later = userMsgs.slice(1).map(SessionTitle.messageText)
+      const current = Session.isDefaultTitle(input.session.title) ? undefined : input.session.title
 
       const ag = yield* agents.get("title")
       if (!ag) return
@@ -221,9 +224,6 @@ const layer = Layer.effect(
         ? yield* provider.getModel(ag.model.providerID, ag.model.modelID)
         : ((yield* provider.getSmallModel(input.providerID)) ??
           (yield* provider.getModel(input.providerID, input.modelID)))
-      const msgs = onlySubtasks
-        ? [{ role: "user" as const, content: subtasks.map((p) => p.prompt).join("\n") }]
-        : yield* MessageV2.toModelMessagesEffect([latestUser], mdl)
       const text = yield* llm
         .stream({
           agent: ag,
@@ -234,14 +234,7 @@ const layer = Layer.effect(
           model: mdl,
           sessionID: input.session.id,
           retries: 2,
-          messages: [
-            {
-              role: "user",
-              content:
-                "Generate a short title for the CURRENT goal of this conversation. The title must describe the latest request so anyone can tell at a glance what this session is working on now. Ignore earlier requests unless the latest one continues them.\n",
-            },
-            ...msgs,
-          ],
+          messages: [{ role: "user", content: SessionTitle.request({ first, later, current }) }],
         })
         .pipe(
           Stream.filter(LLMEvent.is.textDelta),
@@ -257,6 +250,8 @@ const layer = Layer.effect(
       if (!cleaned) return
       const t = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
       if (t === input.session.title) return
+      if (current && later.length && SessionTitle.echoesLatest({ candidate: t, first, latest: later[later.length - 1] }))
+        return
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
         .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
