@@ -14,7 +14,7 @@ import { LSP } from "@/lsp/lsp"
 import { Permission } from "../../src/permission"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Instruction } from "../../src/session/instruction"
-import { ReadTool } from "../../src/tool/read"
+import { MAX_PDF_BYTES, ReadTool } from "../../src/tool/read"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
 import { Filesystem } from "@/util/filesystem"
@@ -511,6 +511,42 @@ describe("tool.read truncation", () => {
       expect(result.output).toBe("Image read successfully")
       expect(result.attachments?.[0].mime).toBe("image/jpeg")
       expect(result.attachments?.[0].url.startsWith("data:image/jpeg;base64,")).toBe(true)
+    }),
+  )
+
+  it.live("attaches PDFs up to the size limit", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "small.pdf"), Buffer.from("%PDF-1.4\n%%EOF\n"))
+      const result = yield* exec(dir, { filePath: path.join(dir, "small.pdf") })
+      expect(result.output).toBe("PDF read successfully")
+      expect(result.attachments?.[0].mime).toBe("application/pdf")
+    }),
+  )
+
+  it.live("refuses PDFs over the size limit instead of attaching them", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const big = Buffer.alloc(MAX_PDF_BYTES + 1, 0x20)
+      big.write("%PDF-1.4\n")
+      yield* put(path.join(dir, "big.pdf"), big)
+      const err = yield* fail(dir, { filePath: path.join(dir, "big.pdf") })
+      expect(err.message).toContain("over the 10 MB limit")
+      expect(err.message).toContain("pdftotext")
+    }),
+  )
+
+  it.live("refuses media the current model cannot accept", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "doc.pdf"), Buffer.from("%PDF-1.4\n%%EOF\n"))
+      const model = {
+        id: "text-only",
+        capabilities: { input: { text: true, audio: false, image: true, video: false, pdf: false } },
+      }
+      const err = yield* fail(dir, { filePath: path.join(dir, "doc.pdf") }, { ...ctx, extra: { model } })
+      expect(err.message).toContain("does not accept pdf input")
+      expect(err.message).toContain("pdftotext")
     }),
   )
 

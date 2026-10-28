@@ -9,6 +9,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import type { Provider } from "@/provider/provider"
 
 export const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -16,6 +17,11 @@ const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 export const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
+// A PDF is stored base64-encoded in the tool part (and its update events) and resent with every
+// later request of the session, so large ones are refused instead of attached. Images need no cap
+// here: the session processor resizes them before storing (attachment.image.max_base64_bytes).
+export const MAX_PDF_BYTES = 10 * 1024 * 1024
+const PDF_HINT = "Extract the text instead, e.g. with bash: pdftotext -layout <file> - | head -n 400"
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
@@ -304,6 +310,25 @@ export const ReadTool = Tool.define<
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
 
       if (isImage || isPdfAttachment(mime)) {
+        const kind = isImage ? "image" : "pdf"
+        // Attaching media the model cannot take only stores the bytes; the model sees an error
+        // instead of the content and tends to read the same file again and again.
+        const model = ctx.extra?.model as Provider.Model | undefined
+        if (model && !model.capabilities.input[kind]) {
+          return yield* Effect.fail(
+            new Error(
+              `Cannot read ${filepath} as ${kind}: the current model (${model.id}) does not accept ${kind} input. ` +
+                (isImage ? "Do not read it again; describe what you need to the user instead." : PDF_HINT),
+            ),
+          )
+        }
+        if (!isImage && Number(stat.size) > MAX_PDF_BYTES) {
+          return yield* Effect.fail(
+            new Error(
+              `Cannot attach ${filepath}: the PDF is ${(Number(stat.size) / 1024 / 1024).toFixed(1)} MB, over the ${MAX_PDF_BYTES / 1024 / 1024} MB limit. ${PDF_HINT}`,
+            ),
+          )
+        }
         const bytes = yield* fs.readFile(filepath)
         const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
         return {
