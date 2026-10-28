@@ -25,8 +25,17 @@ import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@sente-ai/core/database/database"
 import { Usage, type LLMEvent } from "@sente-ai/llm"
+import { Hash } from "@sente-ai/core/util/hash"
 
 const DOOM_LOOP_THRESHOLD = 3
+// Repeat guard (no dialog): within one turn (assistant messages sharing a parentID), a tool call
+// whose input AND result are identical to the previous identical call is counted. From the
+// REPEAT_LIMIT-th such call the model gets a tool error instead of the (unchanged) result and its
+// attachments are not stored; at REPEAT_STOP the turn ends. Unlike the consecutive doom_loop check
+// this also catches cycles (A,B,C,A,B,C,...). Set permission `doom_loop: "allow"` to disable it.
+const REPEAT_LIMIT = 3
+const REPEAT_STOP = 6
+const REPEAT_TURNS = 64
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -96,6 +105,9 @@ const layer = Layer.effect(
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
     const database = yield* Database.Service
+    // turn (sessionID:parentID) -> call (tool + input hash) -> last result hash and repeat count.
+    // In memory only: a restart resets the counts, which is fine for a loop guard.
+    const repeats = new Map<string, Map<string, { result: string; count: number }>>()
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
@@ -204,6 +216,29 @@ const layer = Layer.effect(
         }
         yield* settleToolCall(toolCallID)
         return true
+      })
+
+      // How many times in a row (within this turn) this exact call returned this exact result,
+      // including this one. 0 when the agent opts out with `doom_loop: "allow"`.
+      const countRepeat = Effect.fn("SessionProcessor.countRepeat")(function* (
+        part: SessionV1.ToolPart,
+        output: { output: string; attachments?: SessionV1.FilePart[] },
+      ) {
+        const agent = yield* agents.get(ctx.assistantMessage.agent)
+        if (Permission.evaluate("doom_loop", part.tool, agent.permission).action === "allow") return 0
+        const turn = `${ctx.sessionID}:${ctx.assistantMessage.parentID}`
+        const calls = repeats.get(turn) ?? new Map<string, { result: string; count: number }>()
+        repeats.delete(turn)
+        repeats.set(turn, calls)
+        if (repeats.size > REPEAT_TURNS) repeats.delete(repeats.keys().next().value!)
+        const key = Hash.fast(`${part.tool}\0${JSON.stringify(part.state.input)}`)
+        const result = Hash.fast(
+          [output.output, ...(output.attachments ?? []).map((attachment) => attachment.url)].join("\0"),
+        )
+        const previous = calls.get(key)
+        const count = previous?.result === result ? previous.count + 1 : 1
+        calls.set(key, { result, count })
+        return count
       })
 
       const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
@@ -352,6 +387,12 @@ const layer = Layer.effect(
                 : value.providerMetadata,
             }))
 
+            // Only an explicit `doom_loop: "deny"` stops on three consecutive identical calls here.
+            // The default "ask" used to open a dialog; repeats are now handled without one by the
+            // repeat guard in "tool-result". Checking first also skips the history scan below.
+            const agent = yield* agents.get(ctx.assistantMessage.agent)
+            if (Permission.evaluate("doom_loop", value.name, agent.permission).action !== "deny") return
+
             const recentParts = yield* Effect.gen(function* () {
               const recent: SessionV1.ToolPart[] = []
               let before: string | undefined
@@ -388,7 +429,6 @@ const layer = Layer.effect(
               return
             }
 
-            const agent = yield* agents.get(ctx.assistantMessage.agent)
             yield* permission.ask({
               permission: "doom_loop",
               patterns: [value.name],
@@ -429,7 +469,23 @@ const layer = Layer.effect(
                   : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
               attachments: attachments.length ? attachments : undefined,
             }
-            yield* completeToolCall(value.id, output)
+            const count = toolCall ? yield* countRepeat(toolCall.part, output) : 0
+            if (count < REPEAT_LIMIT) {
+              yield* completeToolCall(value.id, output)
+              return
+            }
+            const stop = count >= REPEAT_STOP
+            yield* failToolCall(
+              value.id,
+              new Error(
+                `Repeated call: ${value.name} was called ${count} times in this turn with the same input and returned the same result each time. ` +
+                  (stop
+                    ? "The turn was stopped to prevent a loop. "
+                    : "The result is unchanged, so it is not shown again. Do not call it again with this input; use the earlier result or try a different approach. ") +
+                  "If you cannot make progress, stop and tell the user what is blocking you.",
+              ),
+            )
+            if (stop) ctx.blocked = true
             return
           }
 

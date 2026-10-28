@@ -165,7 +165,7 @@ OpenCode permissions are keyed by tool name, plus a couple of safety guards:
 - `webfetch` — fetching a URL (matches the URL)
 - `websearch` — web search (matches the query)
 - `external_directory` — triggered when a tool touches paths outside the project working directory
-- `doom_loop` — triggered when the same tool call repeats 3 times with identical input
+- `doom_loop` — repeated identical tool calls within one turn. With the default `"ask"` no dialog is shown: from the 3rd call whose input and result are both unchanged the model gets a tool error instead of the result, and the 6th ends the turn (this also catches cycles such as A, B, A, B, ...). `"deny"` additionally stops on 3 consecutive identical calls; `"allow"` turns the guard off (e.g. for polling)
 
 ---
 

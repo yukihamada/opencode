@@ -937,7 +937,15 @@ for (const scenario of [
   { name: "isolates new user messages", fails: true, action: "deny", boundary: "user", stops: false },
   { name: "isolates sessions", fails: true, action: "deny", boundary: "session", stops: false },
   { name: "reads beyond a history page", fails: true, action: "deny", boundary: "page", stops: true },
-  { name: "stops after rejecting permission", fails: true, action: "ask", boundary: "none", stops: true },
+  // The default "ask" no longer opens a dialog; the repeat guard below handles loops instead.
+  { name: "does not ask by default", fails: true, action: "ask", boundary: "none", stops: false },
+  {
+    name: "does not ask by default for successful repetitions",
+    fails: false,
+    action: "ask",
+    boundary: "none",
+    stops: false,
+  },
 ] as const) {
   it.live(`session.processor doom_loop ${scenario.name}`, () =>
     provideTmpdirServer(
@@ -1012,7 +1020,7 @@ for (const scenario of [
           }
 
           yield* off
-          expect(requests).toEqual(scenario.action === "ask" ? ["doom_loop"] : [])
+          expect(requests).toEqual([])
           expect(outcomes).toEqual(
             scenario.stops ? ["continue", "continue", "stop"] : ["continue", "continue", "continue", "continue"],
           )
@@ -1027,6 +1035,121 @@ for (const scenario of [
     ),
   )
 }
+
+// Incident 2026-10-28: a subagent read the same 6 PDFs in a cycle ~150 times each in one turn.
+// The consecutive doom_loop check never saw 3 identical calls in a row, so nothing stopped it.
+it.live("session.processor repeat guard answers a cycle of identical calls with an error, then stops", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "read the files")
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const permission = yield* Permission.Service
+        const events = yield* EventV2Bridge.Service
+        const requests: string[] = []
+        const off = yield* events.listen((event) => {
+          if (event.type !== Permission.Event.Asked.type) return Effect.void
+          const request = event.data as typeof Permission.Event.Asked.data.Type
+          requests.push(request.permission)
+          return permission.reply({ requestID: request.id, reply: "reject" }).pipe(Effect.orDie)
+        })
+        const outcomes: SessionProcessor.Result[] = []
+        const calls: SessionV1.ToolPart[] = []
+        for (let step = 0; step < 20; step++) {
+          const file = ["a.pdf", "b.pdf"][step % 2]
+          yield* llm.push(reply().tool("lookup", { query: file }))
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+          const outcome = yield* handle.process({
+            user: parent as SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "read the files" }],
+            tools: {
+              lookup: tool({
+                description: "Look up information",
+                inputSchema: z.object({ query: z.string() }),
+                execute: async ({ query }) => ({ title: "Lookup", output: `content of ${query}`, metadata: {} }),
+              }),
+            },
+          })
+          outcomes.push(outcome)
+          calls.push(...(yield* MessageV2.parts(msg.id)).filter((part) => part.type === "tool"))
+          if (outcome === "stop") break
+        }
+        yield* off
+
+        expect(requests).toEqual([])
+        // a.pdf is called at steps 0,2,4,6,8,10: the 3rd identical result is an error, the 6th stops.
+        expect(outcomes.length).toBe(11)
+        expect(outcomes.at(-1)).toBe("stop")
+        expect(calls.map((part) => part.state.status)).toEqual([
+          "completed",
+          "completed",
+          "completed",
+          "completed",
+          "error",
+          "error",
+          "error",
+          "error",
+          "error",
+          "error",
+          "error",
+        ])
+        const third = calls[4]
+        if (third.state.status !== "error") return
+        expect(third.state.error).toContain("Repeated call: lookup was called 3 times")
+        const last = calls[10]
+        if (last.state.status !== "error") return
+        expect(last.state.error).toContain("The turn was stopped")
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor repeat guard lets a repeated call through when its result changes", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "poll")
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const statuses: string[] = []
+        let polls = 0
+        for (let step = 0; step < 8; step++) {
+          yield* llm.push(reply().tool("lookup", { query: "ci" }))
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+          const outcome = yield* handle.process({
+            user: parent as SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "poll" }],
+            tools: {
+              lookup: tool({
+                description: "Look up information",
+                inputSchema: z.object({ query: z.string() }),
+                execute: async () => ({ title: "Lookup", output: `poll ${polls++}`, metadata: {} }),
+              }),
+            },
+          })
+          expect(outcome).toBe("continue")
+          statuses.push(
+            ...(yield* MessageV2.parts(msg.id)).flatMap((part) => (part.type === "tool" ? [part.state.status] : [])),
+          )
+        }
+        expect(statuses).toEqual(Array(8).fill("completed"))
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
 
 it.live("session.processor effect tests mark pending tools as aborted on cleanup", () =>
   provideTmpdirServer(
