@@ -1,36 +1,72 @@
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
-import { RunCommand } from "./cli/cmd/run"
-import { GenerateCommand } from "./cli/cmd/generate"
-import { ConsoleCommand } from "./cli/cmd/account"
-import { ProvidersCommand } from "./cli/cmd/providers"
-import { AgentCommand } from "./cli/cmd/agent"
-import { UpgradeCommand } from "./cli/cmd/upgrade"
-import { UninstallCommand } from "./cli/cmd/uninstall"
-import { ModelsCommand } from "./cli/cmd/models"
+import type { Argv, CommandModule } from "yargs"
 import { UI } from "./cli/ui"
 import { InstallationDev, InstallationVersion } from "@sente-ai/core/installation/version"
 import { FormatError } from "./cli/error"
-import { ServeCommand } from "./cli/cmd/serve"
-import { DebugCommand } from "./cli/cmd/debug"
-import { StatsCommand } from "./cli/cmd/stats"
-import { McpCommand } from "./cli/cmd/mcp"
-import { GithubCommand } from "./cli/cmd/github"
-import { ExportCommand } from "./cli/cmd/export"
-import { ImportCommand } from "./cli/cmd/import"
-import { AttachCommand } from "./cli/cmd/attach"
-import { TuiThreadCommand } from "./cli/cmd/tui"
-import { AcpCommand } from "./cli/cmd/acp"
 import { EOL } from "os"
-import { WebCommand } from "./cli/cmd/web"
-import { PrCommand } from "./cli/cmd/pr"
-import { SessionCommand } from "./cli/cmd/session"
-import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
-import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+// yargs always runs the default command's builder (even for --version or a bare --help)
+// to assemble its own command/option list, so making this one lazy buys nothing and
+// trips a yargs limitation where an async default-command builder leaves showHelp()'s
+// internal `out` buffer empty. Keep it a static import; every other subcommand builder
+// below stays lazy since yargs only invokes those when that specific command is selected.
+import { TuiThreadCommand } from "./cli/cmd/tui"
 
 const args = hideBin(process.argv)
+
+function lazyCommand(
+  command: string,
+  describe: string | false | undefined,
+  load: () => Promise<CommandModule>,
+  aliases?: string[],
+): CommandModule {
+  return {
+    command,
+    describe,
+    aliases,
+    builder: async (yargs: Argv) => {
+      const definition = await load()
+      if (typeof definition.builder !== "function") return yargs
+      return definition.builder(yargs)
+    },
+    handler: async (args) => {
+      const definition = await load()
+      await definition.handler?.(args as never)
+    },
+  }
+}
+
+const commands = [
+  lazyCommand("acp", "start ACP (Agent Client Protocol) server", async () => (await import("./cli/cmd/acp")).AcpCommand as CommandModule),
+  lazyCommand("mcp", "manage MCP (Model Context Protocol) servers", async () => (await import("./cli/cmd/mcp")).McpCommand as CommandModule),
+  TuiThreadCommand as CommandModule,
+  lazyCommand("attach <url>", "attach to a running sente server", async () => (await import("./cli/cmd/attach")).AttachCommand as CommandModule),
+  lazyCommand("run [message..]", "run sente with a message", async () => (await import("./cli/cmd/run")).RunCommand as CommandModule),
+  lazyCommand("generate", undefined, async () => (await import("./cli/cmd/generate")).GenerateCommand as CommandModule),
+  lazyCommand("debug", "debugging and troubleshooting tools", async () => (await import("./cli/cmd/debug")).DebugCommand as CommandModule),
+  lazyCommand("console", false, async () => (await import("./cli/cmd/account")).ConsoleCommand as CommandModule),
+  lazyCommand("providers", "manage AI providers and credentials", async () => (await import("./cli/cmd/providers")).ProvidersCommand as CommandModule, ["auth"]),
+  lazyCommand("agent", "manage agents", async () => (await import("./cli/cmd/agent")).AgentCommand as CommandModule),
+  lazyCommand("upgrade [target]", "upgrade sente to the latest or a specific version", async () => (await import("./cli/cmd/upgrade")).UpgradeCommand as CommandModule),
+  lazyCommand(
+    "uninstall",
+    "uninstall sente and remove all related files",
+    async () => (await import("./cli/cmd/uninstall")).UninstallCommand as unknown as CommandModule,
+  ),
+  lazyCommand("serve", "starts a headless sente server", async () => (await import("./cli/cmd/serve")).ServeCommand as CommandModule),
+  lazyCommand("web", "start sente server and open web interface", async () => (await import("./cli/cmd/web")).WebCommand as CommandModule),
+  lazyCommand("models [provider]", "list all available models", async () => (await import("./cli/cmd/models")).ModelsCommand as CommandModule),
+  lazyCommand("stats", "show token usage and cost statistics", async () => (await import("./cli/cmd/stats")).StatsCommand as CommandModule),
+  lazyCommand("export [sessionID]", "export session data as JSON", async () => (await import("./cli/cmd/export")).ExportCommand as CommandModule),
+  lazyCommand("import <file>", "import session data from JSON file or URL", async () => (await import("./cli/cmd/import")).ImportCommand as CommandModule),
+  lazyCommand("github", "manage GitHub agent", async () => (await import("./cli/cmd/github")).GithubCommand as CommandModule),
+  lazyCommand("pr <number>", "fetch and checkout a GitHub PR branch, then run sente", async () => (await import("./cli/cmd/pr")).PrCommand as CommandModule),
+  lazyCommand("session", "manage sessions", async () => (await import("./cli/cmd/session")).SessionCommand as CommandModule),
+  lazyCommand("plugin <module>", "install plugin and update config", async () => (await import("./cli/cmd/plug")).PluginCommand as CommandModule, ["plug"]),
+  lazyCommand("db", "database tools", async () => (await import("./cli/cmd/db")).DbCommand as CommandModule),
+]
 
 function show(out: string) {
   const text = out.trimStart()
@@ -124,29 +160,7 @@ const cli = yargs(args)
   })
   .usage("")
   .completion("completion", "generate shell completion script")
-  .command(AcpCommand)
-  .command(McpCommand)
-  .command(TuiThreadCommand)
-  .command(AttachCommand)
-  .command(RunCommand)
-  .command(GenerateCommand)
-  .command(DebugCommand)
-  .command(ConsoleCommand)
-  .command(ProvidersCommand)
-  .command(AgentCommand)
-  .command(UpgradeCommand)
-  .command(UninstallCommand)
-  .command(ServeCommand)
-  .command(WebCommand)
-  .command(ModelsCommand)
-  .command(StatsCommand)
-  .command(ExportCommand)
-  .command(ImportCommand)
-  .command(GithubCommand)
-  .command(PrCommand)
-  .command(SessionCommand)
-  .command(PluginCommand)
-  .command(DbCommand)
+  .command(commands)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
