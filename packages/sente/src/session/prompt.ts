@@ -57,6 +57,8 @@ import { SessionTable } from "@sente-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { SessionTitle } from "./title"
+import { SessionModelFallback } from "./model-fallback"
+import { ProviderQuota } from "@/provider/quota"
 import { LLMEvent } from "@sente-ai/llm"
 
 // @ts-ignore
@@ -1090,6 +1092,10 @@ const layer = Layer.effect(
         let step = 0
         // Consecutive automatic resumes of this request; a turn that gets through resets it.
         let autoResumes = 0
+        // Model used instead of the user's choice after its upstream account was blocked.
+        let fallback: { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined
+        const blockedFamilies = new Set<string>()
+        let fallbackExhausted = false
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1152,7 +1158,11 @@ const layer = Layer.effect(
               history: msgs,
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-          const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          const model = yield* getModel(
+            fallback?.providerID ?? lastUser.model.providerID,
+            fallback?.modelID ?? lastUser.model.modelID,
+            sessionID,
+          )
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
@@ -1232,7 +1242,8 @@ const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
-              resumes: (error) => resumeWait(error) !== undefined,
+              resumes: (error) =>
+                resumeWait(error) !== undefined || (SessionModelFallback.blocked(error) && !fallbackExhausted),
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1337,6 +1348,47 @@ const layer = Layer.effect(
                   retries: 0,
                 }).toObject()
                 yield* sessions.updateMessage(handle.message)
+                return "break" as const
+              }
+            }
+
+            if (result === "stop" && SessionModelFallback.blocked(handle.message.error)) {
+              // The upstream account behind this model is blocked (balance or key). Retrying the same
+              // model cannot help, so continue on another configured model from a different family.
+              blockedFamilies.add(SessionModelFallback.family(model.api.id))
+              const cfg = yield* config.get()
+              let next: { providerID: ProviderV2.ID; modelID: ModelV2.ID; label: string } | undefined
+              for (const ref of SessionModelFallback.candidates(cfg)) {
+                const exit = yield* provider
+                  .getModel(ProviderV2.ID.make(ref.providerID), ModelV2.ID.make(ref.modelID))
+                  .pipe(Effect.exit)
+                if (!Exit.isSuccess(exit)) continue
+                if (blockedFamilies.has(SessionModelFallback.family(exit.value.api.id))) continue
+                next = {
+                  providerID: exit.value.providerID,
+                  modelID: exit.value.id,
+                  label: exit.value.api.id,
+                }
+                break
+              }
+              if (next) {
+                fallback = { providerID: next.providerID, modelID: next.modelID }
+                yield* Effect.logWarning("model fallback after upstream account block", {
+                  "session.id": sessionID,
+                  from: model.api.id,
+                  to: next.label,
+                })
+                yield* status.set(sessionID, {
+                  type: "retry",
+                  attempt: 1,
+                  message: SessionModelFallback.note(model.api.id, next.label, ProviderQuota.language()),
+                  next: Date.now(),
+                })
+                return "continue" as const
+              }
+              fallbackExhausted = true
+              if (resumeWait(handle.message.error) === undefined) {
+                yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
                 return "break" as const
               }
             }
