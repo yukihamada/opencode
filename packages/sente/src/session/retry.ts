@@ -5,6 +5,7 @@ import { MessageV2 } from "./message-v2"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
 import { ProviderQuota } from "@/provider/quota"
+import { SessionModelFallback } from "./model-fallback"
 
 export type Err = ReturnType<NamedError["toObject"]>
 
@@ -98,6 +99,9 @@ function exponential(attempt: number, random: number) {
 export function retryable(error: Err, provider: string) {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+  // 上流アカウント遮断(残高切れ・鍵失効)は数分〜数時間直らない。同じモデルへ再送せず、
+  // 呼び出し側(SessionPrompt)の別モデル切替に任せる。
+  if (SessionModelFallback.blocked(error as SessionV1.Assistant["error"])) return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     // 402(上限到達/残高不足)は同じ窓の中では再送しても必ず 402。本文の数値
