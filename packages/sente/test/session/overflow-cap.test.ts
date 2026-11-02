@@ -29,13 +29,15 @@ describe("session.overflow max_context cap", () => {
   test("1M-window models compact at the default cap instead of ~1M", () => {
     const m = model(1_050_000)
     expect(usable({ cfg: {}, model: m })).toBe(DEFAULT_MAX_CONTEXT)
-    expect(isOverflow({ cfg: {}, model: m, tokens: tokens(300_000) })).toBe(true)
-    expect(isOverflow({ cfg: {}, model: m, tokens: tokens(200_000) })).toBe(false)
+    expect(isOverflow({ cfg: {}, model: m, tokens: tokens(150_000) })).toBe(true)
+    expect(isOverflow({ cfg: {}, model: m, tokens: tokens(100_000) })).toBe(false)
   })
 
   test("models with a smaller window keep their window-based threshold", () => {
-    expect(usable({ cfg: {}, model: model(200_000) })).toBe(200_000 - 32_000)
-    expect(usable({ cfg: {}, model: model(400_000, 128_000, 272_000) })).toBe(252_000)
+    const standard = { compaction: { mode: "standard" as const } }
+    expect(usable({ cfg: standard, model: model(200_000) })).toBe(200_000 - 32_000)
+    expect(usable({ cfg: standard, model: model(400_000, 128_000, 272_000) })).toBe(252_000)
+    expect(usable({ cfg: {}, model: model(100_000) })).toBe(100_000 - 32_000)
   })
 
   test("compaction.max_context overrides the cap; 0 disables it", () => {
@@ -60,7 +62,7 @@ describe("session.overflow usage mode", () => {
     expect(usable({ cfg: { compaction: { mode: "saver" } }, model: m })).toBe(128_000)
     expect(usable({ cfg: { compaction: { mode: "standard" } }, model: m })).toBe(256_000)
     expect(usable({ cfg: { compaction: { mode: "max" } }, model: m })).toBe(window)
-    expect(usable({ cfg: {}, model: m })).toBe(256_000)
+    expect(usable({ cfg: {}, model: m })).toBe(128_000)
   })
 
   test("an explicit max_context (SENTE_MAX_CONTEXT or config) beats the mode", () => {
@@ -76,7 +78,8 @@ describe("session.overflow usage mode", () => {
 
   test("saver compacts a 150k request that standard would keep", () => {
     expect(isOverflow({ cfg: { compaction: { mode: "saver" } }, model: m, tokens: tokens(150_000) })).toBe(true)
-    expect(isOverflow({ cfg: {}, model: m, tokens: tokens(150_000) })).toBe(false)
+    expect(isOverflow({ cfg: { compaction: { mode: "standard" } }, model: m, tokens: tokens(150_000) })).toBe(false)
+    expect(isOverflow({ cfg: {}, model: m, tokens: tokens(150_000) })).toBe(true)
     expect(isOverflow({ cfg: { compaction: { mode: "max" } }, model: m, tokens: tokens(900_000) })).toBe(false)
   })
 })

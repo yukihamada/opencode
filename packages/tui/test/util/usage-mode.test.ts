@@ -22,10 +22,10 @@ describe("util.usage-mode", () => {
   test("shows the default mode and its threshold in Japanese and English", () => {
     const base = { env: {}, window: 1_018_000 }
     expect(describeMode({ ...base, language: "ja" })).toBe(
-      ["モード: 標準(既定)", "自動要約の閾値: 256,000 tokens", "古いツール出力の整理: OFF"].join("\n"),
+      ["モード: 節約(既定)", "自動要約の閾値: 128,000 tokens", "古いツール出力の整理: ON"].join("\n"),
     )
     expect(describeMode({ ...base, language: "en" })).toBe(
-      ["Mode: Standard (default)", "Auto-compaction threshold: 256,000 tokens", "Prune old tool outputs: off"].join(
+      ["Mode: Saver (default)", "Auto-compaction threshold: 128,000 tokens", "Prune old tool outputs: on"].join(
         "\n",
       ),
     )
@@ -40,8 +40,8 @@ describe("util.usage-mode", () => {
     ).toContain(
       "Mode: Max (SENTE_MODE environment variable)\nAuto-compaction threshold: up to the model's window (~1,018,000 tokens)",
     )
-    expect(describeMode({ env: {}, window: 168_000, language: "ja" })).toContain(
-      "自動要約の閾値: 168,000 tokens(このモデルの文脈窓が上限)",
+    expect(describeMode({ env: {}, window: 100_000, language: "ja" })).toContain(
+      "自動要約の閾値: 100,000 tokens(このモデルの文脈窓が上限)",
     )
   })
 
@@ -58,7 +58,7 @@ describe("util.usage-mode", () => {
 
   test("change and error messages are localized and mention an overriding SENTE_MODE", () => {
     expect(modeChangedMessage("saver", {}, "ja")).toBe(
-      "モードを「節約」にしました(128k で自動要約・古いツール出力を整理)",
+      "モードを「節約」にしました(既定・128k で自動要約・古いツール出力を整理)",
     )
     expect(modeChangedMessage("max", { SENTE_MODE: "saver" }, "en")).toContain(
       "SENTE_MODE=saver still takes precedence",

@@ -21,10 +21,10 @@ describe("UsageMode", () => {
     ])
   })
 
-  test("SENTE_MODE beats the config file, which beats the standard default", () => {
+  test("SENTE_MODE beats the config file, which beats the saver default", () => {
     expect(UsageMode.resolve({ env: "max", config: "saver" })).toEqual({ mode: "max", source: "env" })
     expect(UsageMode.resolve({ config: "saver" })).toEqual({ mode: "saver", source: "config", invalid: undefined })
-    expect(UsageMode.resolve({})).toEqual({ mode: "standard", source: "default", invalid: undefined })
+    expect(UsageMode.resolve({})).toEqual({ mode: "saver", source: "default", invalid: undefined })
   })
 
   test("an invalid SENTE_MODE is reported and ignored", () => {
@@ -33,7 +33,7 @@ describe("UsageMode", () => {
       source: "config",
       invalid: "turbo",
     })
-    expect(UsageMode.resolve({ env: "turbo" })).toEqual({ mode: "standard", source: "default", invalid: "turbo" })
+    expect(UsageMode.resolve({ env: "turbo" })).toEqual({ mode: "saver", source: "default", invalid: "turbo" })
     expect(UsageMode.resolve({ env: "  " }).invalid).toBeUndefined()
   })
 

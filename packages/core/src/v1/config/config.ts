@@ -187,7 +187,7 @@ export const Info = Schema.Struct({
       }),
       mode: Schema.optional(Schema.Literals(["saver", "standard", "max"])).annotate({
         description:
-          "Usage mode: saver compacts at 128k tokens and prunes old tool outputs, standard at 256k (default), max only near the model's context window. max_context / SENTE_MAX_CONTEXT beat it; the SENTE_MODE environment variable overrides this.",
+          "Usage mode: saver compacts at 128k tokens and prunes old tool outputs (default), standard at 256k, max only near the model's context window. max_context / SENTE_MAX_CONTEXT beat it; the SENTE_MODE environment variable overrides this.",
       }),
       max_context: Schema.optional(NonNegativeInt).annotate({
         description:
