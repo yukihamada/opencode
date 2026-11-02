@@ -1,6 +1,8 @@
 import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { registerOpencodeSpinner } from "./component/register-spinner"
-import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
+import { createOpenTuiKeymapHost } from "@opentui/keymap/opentui"
+import { Keymap } from "@opentui/keymap"
+import { registerDefaultKeys, registerEnabledFields, registerMetadataFields } from "@opentui/keymap/addons"
 import { Deferred, Effect } from "effect"
 import { Global } from "@sente-ai/core/global"
 import { Flag } from "@sente-ai/core/flag/flag"
@@ -9,7 +11,7 @@ import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
-import { createCliRenderer, MouseButton } from "@opentui/core"
+import { createCliRenderer, MouseButton, RenderableEvents, type CliRenderer } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
 import {
   Switch,
@@ -258,7 +260,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           }),
       )
       win32DisableProcessedInput()
-      const keymap = createDefaultOpenTuiKeymap(renderer)
+      const keymap = createSenteKeymap(renderer)
       yield* Effect.acquireRelease(
         Effect.sync(() => registerOpencodeKeymap(keymap, renderer, input.config)),
         (unregister) => Effect.sync(unregister),
@@ -1313,4 +1315,26 @@ function App(props: {
       </Show>
     </box>
   )
+}
+
+
+// keymap は「同じ画面部品に重ねたキー割り当て層」ごとに destroyed 購読を1つ足す。
+// 入力欄などには正当に11層以上重なるため、既定上限10を超えると起動のたびに
+// MaxListenersExceededWarning が画面下に出ていた(リークではない: 層の解除時に off される)。
+// 購読数に合わせて上限だけ引き上げ、それ以外は createDefaultOpenTuiKeymap と同じ構成にする。
+function createSenteKeymap(renderer: CliRenderer) {
+  if (renderer.isDestroyed) throw new Error("Cannot create a keymap for a destroyed renderer")
+  const host = createOpenTuiKeymapHost(renderer)
+  const onTargetDestroy = host.onTargetDestroy.bind(host)
+  host.onTargetDestroy = (target, listener) => {
+    const needed = target.listenerCount(RenderableEvents.DESTROYED) + 1
+    const max = target.getMaxListeners()
+    if (max !== 0 && needed > max) target.setMaxListeners(Math.max(needed, max * 2))
+    return onTargetDestroy(target, listener)
+  }
+  const keymap = new Keymap(host)
+  registerDefaultKeys(keymap)
+  registerEnabledFields(keymap)
+  registerMetadataFields(keymap)
+  return keymap
 }
