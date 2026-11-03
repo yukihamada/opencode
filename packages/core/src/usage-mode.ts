@@ -1,8 +1,8 @@
 /**
  * Usage modes: one switch for how much context each request may carry.
  *
- * - saver    (節約):   auto-compact at 128k tokens and prune old tool outputs
- * - standard (標準):   auto-compact at 256k tokens (default)
+ * - saver    (節約):   auto-compact at 128k tokens and prune old tool outputs (default)
+ * - standard (標準):   auto-compact at 256k tokens
  * - max      (たっぷり): auto-compact only near the model's own context window
  *
  * Modes never pick models or touch pricing. An explicit token count
@@ -13,7 +13,10 @@
 export const MODES = ["saver", "standard", "max"] as const
 export type Mode = (typeof MODES)[number]
 
-export const DEFAULT_MODE: Mode = "standard"
+// 2026-11-03: default is saver. Long sessions at 200k+ tokens per request made
+// customer costs spike (~¥60k in one afternoon); saver halves the ceiling and
+// trims old tool output. Users can still pick /mode standard or max.
+export const DEFAULT_MODE: Mode = "saver"
 
 const SETTINGS: Record<Mode, { maxContext: number; prune: boolean; ja: string; en: string }> = {
   saver: { maxContext: 128_000, prune: true, ja: "節約", en: "Saver" },
@@ -51,7 +54,7 @@ export function label(mode: Mode, language: "ja" | "en") {
 }
 
 /**
- * Picks the active mode: SENTE_MODE, then the config file, then standard.
+ * Picks the active mode: SENTE_MODE, then the config file, then saver.
  * An unrecognised SENTE_MODE is reported via `invalid` and ignored.
  */
 export function resolve(input: { env?: string; config?: string }) {

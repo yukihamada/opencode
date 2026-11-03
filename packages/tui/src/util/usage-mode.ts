@@ -73,12 +73,12 @@ export function modeDescription(mode: UsageMode.Mode, language: Language) {
   const cap = UsageMode.maxContext(mode)
   const tokens = `${Math.round(cap / 1000)}k`
   if (language === "ja") {
-    if (mode === "saver") return `${tokens} で自動要約・古いツール出力を整理`
-    if (mode === "standard") return `${tokens} で自動要約(既定)`
+    if (mode === "saver") return `既定・${tokens} で自動要約・古いツール出力を整理`
+    if (mode === "standard") return `${tokens} で自動要約`
     return "モデルの文脈窓の上限まで要約しない"
   }
-  if (mode === "saver") return `Compact at ${tokens}, prune old tool outputs`
-  if (mode === "standard") return `Compact at ${tokens} (default)`
+  if (mode === "saver") return `Default: compact at ${tokens}, prune old tool outputs`
+  if (mode === "standard") return `Compact at ${tokens}`
   return "Compact only near the model's window"
 }
 

@@ -430,13 +430,16 @@ describe("session.compaction.isOverflow", () => {
 
   it.live(
     "returns false when input/output are within input caps",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const compact = yield* SessionCompaction.Service
-        const model = createModel({ context: 400_000, input: 272_000, output: 128_000 })
-        const tokens = { input: 200_000, output: 20_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
-        expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
-      }),
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const model = createModel({ context: 400_000, input: 272_000, output: 128_000 })
+          const tokens = { input: 200_000, output: 20_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
+          expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+        }),
+      // 230k is inside the 272k input cap; standard mode keeps the 256k ceiling (saver would compact).
+      { config: { compaction: { mode: "standard" } } },
     ),
   )
 
@@ -719,11 +722,22 @@ describe("session.compaction.prune", () => {
   )
 
   it.live(
-    "standard mode (default) does not prune",
+    "saver is the default, so old tool output is pruned without any config",
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
-        expect(yield* prunedBashOutput(dir)).toBeUndefined()
+        expect(yield* prunedBashOutput(dir)).toBeNumber()
       }),
+    ),
+  )
+
+  it.live(
+    "standard mode does not prune",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          expect(yield* prunedBashOutput(dir)).toBeUndefined()
+        }),
+      { config: { compaction: { mode: "standard" } } },
     ),
   )
 
