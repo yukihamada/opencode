@@ -258,7 +258,6 @@ test("keeps a role when another role resolves to the same model", async () => {
     await app.renderOnce()
     expect(ctx.local.model.cyclePreset(1)).toBe(true)
     await app.renderOnce()
-    console.log("DBG3", JSON.stringify({ cur: ctx.local.model.current(), fav: ctx.local.model.favorite().map((f) => [f.presetID, f.modelID]) }))
     const coding = expectedModelID(modelPresets[1], "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v5-flash", recommended.id)
     await wait(() => ctx.local.model.current()?.modelID === coding)
   } finally {
