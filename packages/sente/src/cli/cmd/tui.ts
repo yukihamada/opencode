@@ -11,12 +11,9 @@ import { Filesystem } from "@/util/filesystem"
 import type { GlobalEvent } from "@sente-ai/sdk/v2"
 import type { EventSource } from "@sente-ai/tui/context/sdk"
 import { writeHeapSnapshot } from "v8"
-import { ServerAuth } from "@/server/auth"
-import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@sente-ai/tui/terminal-win32"
 import { ExitCode } from "@/cli/exit-code"
 import { randomBytes } from "node:crypto"
-import { registerRemote } from "../tui/remote"
 
 declare global {
   const SENTE_WORKER_PATH: string
@@ -249,9 +246,11 @@ export const TuiThreadCommand = cmd({
         : resolveNetworkOptionsNoConfig(args)
       const external = args.remote || hasArg("--port") || hasArg("--hostname") || network.mdns
 
-      const headers = external
-        ? ServerAuth.headers(remotePassword ? { password: remotePassword, username: "sente" } : undefined)
-        : undefined
+      const headers = await (async () => {
+        if (!external) return undefined
+        const { ServerAuth } = await import("@/server/auth")
+        return ServerAuth.headers(remotePassword ? { password: remotePassword, username: "sente" } : undefined)
+      })()
 
       const transport = external
         ? {
@@ -268,15 +267,23 @@ export const TuiThreadCommand = cmd({
 
       try {
         if (args.remote && headers) {
-          unregister = await registerRemote({ url: transport.url, directory: cwd, authorization: headers.Authorization })
+          const { registerRemote } = await import("../tui/remote")
+          unregister = await registerRemote({
+            url: transport.url,
+            directory: cwd,
+            authorization: headers.Authorization,
+          })
         }
-        await validateSession({
-          url: transport.url,
-          sessionID: args.session,
-          directory: cwd,
-          fetch: transport.fetch,
-          headers,
-        })
+        if (args.session) {
+          const { validateSession } = await import("../tui/validate-session")
+          await validateSession({
+            url: transport.url,
+            sessionID: args.session,
+            directory: cwd,
+            fetch: transport.fetch,
+            headers,
+          })
+        }
       } catch (error) {
         UI.error(errorMessage(error))
         process.exitCode = ExitCode.User

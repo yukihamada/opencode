@@ -16,10 +16,23 @@ describe("tui thread", () => {
     expect(source).not.toContain('import("./app")')
   })
 
+  test("loads external transport and session validation only when needed", async () => {
+    const source = await Bun.file(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)).text()
+
+    expect(source).not.toMatch(/^import .*from ["'](?:@\/server\/auth|\.\.\/tui\/(?:remote|validate-session))["']/m)
+    expect(source).toMatch(
+      /if \(!external\) return undefined\s+const \{ ServerAuth \} = await import\("@\/server\/auth"\)/,
+    )
+    expect(source).toMatch(/if \(args\.remote && headers\) \{\s+const \{ registerRemote \} = await import/)
+    expect(source).toMatch(/if \(args\.session\) \{\s+const \{ validateSession \} = await import/)
+  })
+
   test("forwards the CLI environment to the TUI worker", async () => {
     const source = await Bun.file(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)).text()
 
-    expect(source).toMatch(/new Worker\(file, \{\s*env: \{\s*\.\.\.Object\.fromEntries\(\s*Object\.entries\(process\.env\)/)
+    expect(source).toMatch(
+      /new Worker\(file, \{\s*env: \{\s*\.\.\.Object\.fromEntries\(\s*Object\.entries\(process\.env\)/,
+    )
   })
 
   async function check(project?: string) {
