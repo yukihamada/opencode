@@ -242,7 +242,6 @@ const layer = Layer.effect(
           Stream.filter(LLMEvent.is.textDelta),
           Stream.map((e) => e.text),
           Stream.mkString,
-          Effect.orDie,
         )
       const cleaned = text
         .replace(/<think>[\s\S]*?<\/think>\s*/g, "")
@@ -1143,20 +1142,23 @@ const layer = Layer.effect(
           }
 
           step++
-          if (step === 1)
+          // Titling is best-effort: a provider error must not fail the turn, but it must
+          // also not vanish silently (the session would keep its default title forever).
+          if (step === 1 || lastAssistant?.parentID !== lastUser.id)
             yield* title({
               session,
               modelID: lastUser.model.modelID,
               providerID: lastUser.model.providerID,
               history: msgs,
-            }).pipe(Effect.ignore, Effect.forkIn(scope))
-          else if (lastAssistant?.parentID !== lastUser.id)
-            yield* title({
-              session,
-              modelID: lastUser.model.modelID,
-              providerID: lastUser.model.providerID,
-              history: msgs,
-            }).pipe(Effect.ignore, Effect.forkIn(scope))
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("failed to generate title", {
+                  "session.id": sessionID,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+              Effect.forkIn(scope),
+            )
 
           const model = yield* getModel(
             fallback?.providerID ?? lastUser.model.providerID,
