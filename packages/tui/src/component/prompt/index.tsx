@@ -53,7 +53,7 @@ import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
 import { useUsageMode } from "../dialog-mode"
 import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
-import { spendLabel, todayCost, turnCost } from "../../util/spend"
+import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import { SENTE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
@@ -281,8 +281,15 @@ export function Prompt(props: PromptProps) {
     return {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
       // This turn / today, in the locale's currency. The session total stays in the sidebar.
+      // The turn includes subagent sessions, which record their own cost.
       cost: spendLabel({
-        turn: turnCost(msg),
+        turn: props.sessionID
+          ? turnCostWithSubagents({
+              sessionID: props.sessionID,
+              sessions: sync.data.session,
+              messages: sync.data.message,
+            })
+          : undefined,
         today: todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() }),
       }),
     }
