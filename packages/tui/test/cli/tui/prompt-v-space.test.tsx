@@ -42,58 +42,103 @@ async function wait(fn: () => boolean, timeout = 2000) {
 
 function model(id: string): Model {
   return {
-    id, providerID: "teai", name: id,
+    id,
+    providerID: "teai",
+    name: id,
     api: { id, url: "https://example.test", npm: "@ai-sdk/openai-compatible" },
     capabilities: {
-      temperature: true, reasoning: true, attachment: true, toolcall: true, interleaved: false,
+      temperature: true,
+      reasoning: true,
+      attachment: true,
+      toolcall: true,
+      interleaved: false,
       input: { text: true, image: true, audio: false, video: false, pdf: false },
       output: { text: true, image: false, audio: false, video: false, pdf: false },
     },
     cost: { input: 10, output: 50, cache: { read: 0, write: 0 } },
-    limit: { context: 1048576, output: 32768 }, status: "active", release_date: "2026-09-10",
-    options: {}, headers: {},
+    limit: { context: 1048576, output: 32768 },
+    status: "active",
+    release_date: "2026-09-10",
+    options: {},
+    headers: {},
   }
 }
 
 const sessionID = "ses_v_space_test"
 
-async function mount(state: string, width: number, height: number) {
+async function mount(
+  state: string,
+  width: number,
+  height: number,
+  options: { sessionID?: string | null; sessionDelayMs?: number } = {},
+) {
+  const promptSessionID = options.sessionID === undefined ? sessionID : (options.sessionID ?? undefined)
   const provider = { id: "teai", name: "teai", env: [], models: { auto: model("auto") } }
   // Every command request is recorded so we can assert which command name fired.
   const commands: string[] = []
-  const commandRequests: Array<{ command: string; arguments: string; parts: unknown[] }> = []
+  const commandRequests: Array<{ command: string; arguments: string; parts: unknown[]; sessionID: string }> = []
+  const createdSessions: string[] = []
   const base = createFetch((url) => {
     if (url.pathname === "/config/providers") return json({ providers: [provider], default: { teai: "auto" } })
     if (url.pathname === "/provider") return json({ all: [provider], default: { teai: "auto" }, connected: ["teai"] })
-    if (url.pathname === "/agent") return json([{ name: "build", mode: "primary", native: true, options: {}, permission: [] }])
-      if (url.pathname === "/command") return json([{ name: "v", description: "Voice input", hints: [], template: "" }])
-    if (url.pathname === `/session/${sessionID}/command`) return json({})
+    if (url.pathname === "/agent")
+      return json([{ name: "build", mode: "primary", native: true, options: {}, permission: [] }])
+    if (url.pathname === "/command") return json([{ name: "v", description: "Voice input", hints: [], template: "" }])
     return undefined
   })
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input))
-    if (url.pathname === `/session/${sessionID}/command`) {
+    if (url.pathname === "/session" && (input instanceof Request ? input.method : init?.method) === "POST") {
+      const id = `ses_created_${createdSessions.length + 1}`
+      createdSessions.push(id)
+      if (options.sessionDelayMs) await Bun.sleep(options.sessionDelayMs)
+      return json({ id })
+    }
+    if (url.pathname.startsWith("/session/") && url.pathname.endsWith("/command")) {
       const request = input instanceof Request ? input : undefined
       const body = request ? await request.clone().json() : init?.body ? JSON.parse(String(init.body)) : undefined
       if (body?.command) {
         commands.push(body.command)
-        commandRequests.push({ command: body.command, arguments: body.arguments, parts: body.parts })
+        commandRequests.push({
+          command: body.command,
+          arguments: body.arguments,
+          parts: body.parts,
+          sessionID: url.pathname.split("/")[2],
+        })
       }
+      return json({})
     }
     return base.fetch(input as RequestInfo, init)
   }) as typeof globalThis.fetch
   const calls = { fetch }
   const events = createEventSource()
   let prompt!: PromptRef
-  let ctx!: { local: ReturnType<typeof useLocal>; sync: ReturnType<typeof useSync>; dialog: ReturnType<typeof useDialog> }
+  let ctx!: {
+    local: ReturnType<typeof useLocal>
+    sync: ReturnType<typeof useSync>
+    dialog: ReturnType<typeof useDialog>
+  }
   function Probe() {
     ctx = { local: useLocal(), sync: useSync(), dialog: useDialog() }
     return (
-      <DataProvider><PromptStashProvider><FrecencyProvider><PromptHistoryProvider>
-        <EditorContextProvider integration={{}}><LocationProvider>
-          <Prompt sessionID={sessionID} ref={(value) => { if (value) prompt = value }} />
-        </LocationProvider></EditorContextProvider>
-      </PromptHistoryProvider></FrecencyProvider></PromptStashProvider></DataProvider>
+      <DataProvider>
+        <PromptStashProvider>
+          <FrecencyProvider>
+            <PromptHistoryProvider>
+              <EditorContextProvider integration={{}}>
+                <LocationProvider>
+                  <Prompt
+                    sessionID={promptSessionID}
+                    ref={(value) => {
+                      if (value) prompt = value
+                    }}
+                  />
+                </LocationProvider>
+              </EditorContextProvider>
+            </PromptHistoryProvider>
+          </FrecencyProvider>
+        </PromptStashProvider>
+      </DataProvider>
     )
   }
   function Harness() {
@@ -102,43 +147,69 @@ async function mount(state: string, width: number, height: number) {
     const config = createTuiResolvedConfig({})
     onCleanup(registerOpencodeKeymap(keymap, renderer, config))
     return (
-      <TestTuiContexts paths={{ state, home: state }}><ArgsProvider>
-        <OpencodeKeymapProvider keymap={keymap}><TuiConfigProvider config={config}><KVProvider>
-          <ThemeProvider mode="dark"><ToastProvider>
-            <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={events.source}>
-              <PermissionProvider><ProjectProvider><ExitProvider exit={() => {}}><SyncProvider><RouteProvider><LocalProvider>
-                <DialogProvider><Probe /></DialogProvider>
-              </LocalProvider></RouteProvider></SyncProvider></ExitProvider></ProjectProvider></PermissionProvider>
-            </SDKProvider>
-          </ToastProvider></ThemeProvider>
-        </KVProvider></TuiConfigProvider></OpencodeKeymapProvider>
-      </ArgsProvider></TestTuiContexts>
+      <TestTuiContexts paths={{ state, home: state }}>
+        <ArgsProvider>
+          <OpencodeKeymapProvider keymap={keymap}>
+            <TuiConfigProvider config={config}>
+              <KVProvider>
+                <ThemeProvider mode="dark">
+                  <ToastProvider>
+                    <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={events.source}>
+                      <PermissionProvider>
+                        <ProjectProvider>
+                          <ExitProvider exit={() => {}}>
+                            <SyncProvider>
+                              <RouteProvider>
+                                <LocalProvider>
+                                  <DialogProvider>
+                                    <Probe />
+                                  </DialogProvider>
+                                </LocalProvider>
+                              </RouteProvider>
+                            </SyncProvider>
+                          </ExitProvider>
+                        </ProjectProvider>
+                      </PermissionProvider>
+                    </SDKProvider>
+                  </ToastProvider>
+                </ThemeProvider>
+              </KVProvider>
+            </TuiConfigProvider>
+          </OpencodeKeymapProvider>
+        </ArgsProvider>
+      </TestTuiContexts>
     )
   }
   const app = await testRender(() => <Harness />, { width, height, kittyKeyboard: true })
   await wait(() => !!ctx && ctx.local.model.ready && ctx.sync.status === "complete")
-  return { app, ctx, prompt, commands, commandRequests }
+  return { app, ctx, prompt, commands, commandRequests, createdSessions }
 }
 
 function releaseSpace(app: Awaited<ReturnType<typeof mount>>["app"]) {
-  app.renderer.keyInput.emit("keyrelease", new KeyEvent({
-    name: "space",
-    ctrl: false,
-    meta: false,
-    shift: false,
-    option: false,
-    sequence: " ",
-    number: false,
-    raw: " ",
-    eventType: "release",
-    source: "kitty",
-  }))
+  app.renderer.keyInput.emit(
+    "keyrelease",
+    new KeyEvent({
+      name: "space",
+      ctrl: false,
+      meta: false,
+      shift: false,
+      option: false,
+      sequence: " ",
+      number: false,
+      raw: " ",
+      eventType: "release",
+      source: "kitty",
+    }),
+  )
 }
 
 test("space tap inserts a space; /v is not required for voice input", async () => {
   await using tmp = await tmpdir()
   await Bun.write(path.join(tmp.path, "kv.json"), "{}")
-  await Bun.write(path.join(tmp.path, "model.json"), JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }))
+  await Bun.write(
+    path.join(tmp.path, "model.json"),
+    JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }),
+  )
   const { app, prompt, commands } = await mount(tmp.path, 80, 24)
   try {
     prompt.focus()
@@ -173,7 +244,10 @@ test("space tap inserts a space; /v is not required for voice input", async () =
 test("holding space starts voice input and releasing it stops the microphone", async () => {
   await using tmp = await tmpdir()
   await Bun.write(path.join(tmp.path, "kv.json"), "{}")
-  await Bun.write(path.join(tmp.path, "model.json"), JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }))
+  await Bun.write(
+    path.join(tmp.path, "model.json"),
+    JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }),
+  )
   const { app, prompt, commandRequests } = await mount(tmp.path, 80, 24)
   try {
     prompt.focus()
@@ -196,6 +270,65 @@ test("holding space starts voice input and releasing it stops the microphone", a
 
     expect(commandRequests.map((request) => request.arguments)).toEqual(["", "off"])
     expect(commandRequests[0].parts).toEqual([])
+  } finally {
+    prompt.reset()
+    app.renderer.destroy()
+  }
+})
+
+test("deferred start serializes session creation before release stops the microphone", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(path.join(tmp.path, "kv.json"), "{}")
+  await Bun.write(
+    path.join(tmp.path, "model.json"),
+    JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }),
+  )
+  // No session yet, and session creation is slow: the release's `off` must not
+  // create a second session or arrive before the start.
+  const { app, prompt, commandRequests, createdSessions } = await mount(tmp.path, 80, 24, {
+    sessionID: null,
+    sessionDelayMs: 150,
+  })
+  try {
+    prompt.focus()
+    await wait(() => app.renderer.currentFocusedEditor instanceof TextareaRenderable)
+
+    const press = new KeyEvent({
+      name: "space",
+      ctrl: false,
+      meta: false,
+      shift: false,
+      option: false,
+      sequence: " ",
+      number: false,
+      raw: " ",
+      eventType: "press",
+      source: "kitty",
+    })
+    app.renderer.keyInput.emit("keypress", press)
+    await Bun.sleep(350)
+    app.renderer.keyInput.emit(
+      "keypress",
+      new KeyEvent({
+        name: "space",
+        ctrl: false,
+        meta: false,
+        shift: false,
+        option: false,
+        sequence: " ",
+        number: false,
+        raw: " ",
+        eventType: "repeat",
+        source: "kitty",
+      }),
+    )
+    releaseSpace(app)
+
+    await wait(() => commandRequests.length === 2)
+    expect(createdSessions).toHaveLength(1)
+    expect(commandRequests.map((request) => request.arguments)).toEqual(["", "off"])
+    expect(commandRequests.every((request) => request.sessionID === createdSessions[0])).toBe(true)
+    expect(prompt.current.input).toBe("")
   } finally {
     prompt.reset()
     app.renderer.destroy()

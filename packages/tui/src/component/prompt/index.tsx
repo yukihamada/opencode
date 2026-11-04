@@ -844,10 +844,9 @@ export function Prompt(props: PromptProps) {
     commands: stashCommands(),
   }))
 
-  // 空のプロンプトでスペースを押すと `/v` 音声入力を開始する。日本語IMEでも
-  // 変換が始まる前のキーイベントで拾う。音声入力の停止は `/v off`。
-  // TextareaRenderable が space を insertText として消費するため、
-  // useBindings ではなく onKeyDown で先取りする。
+  // 空のプロンプトでスペースを長押しすると `/v` 音声入力を開始し、離すと停止する。
+  // 短いタップは通常のスペース入力として扱う。日本語IMEでも変換前の
+  // キーイベントで拾えるよう、TextareaRenderable より先にグローバルで処理する。
   useBindings(() => ({
     target: inputTarget,
     enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input.trim() === "",
@@ -856,27 +855,114 @@ export function Prompt(props: PromptProps) {
         key: "ctrl+space",
         desc: "Voice input (IME-safe)",
         group: "Prompt",
-        cmd: () => void voiceInput(),
+        cmd: () => void voiceCommand(""),
       },
     ],
   }))
 
-  async function voiceInput() {
+  const VOICE_HOLD_DELAY = 200
+  let voiceTimer: ReturnType<typeof setTimeout> | undefined
+  let voicePending = false
+  let voiceRecording = false
+  let voiceSessionID: string | undefined
+  let voiceDisposed = false
+  // Voice commands are serialized: a release's `off` must never race the
+  // start's session creation, otherwise it can create a second session or
+  // stop before the microphone ever started.
+  let voiceQueue: Promise<void> = Promise.resolve()
+
+  function enqueueVoice(arguments_: string) {
+    voiceQueue = voiceQueue.then(() => voiceCommand(arguments_))
+  }
+
+  function voiceHoldEnabled() {
+    return (
+      !!input &&
+      !input.isDestroyed &&
+      input.focused &&
+      props.visible !== false &&
+      !props.disabled &&
+      dialog.stack.length === 0 &&
+      !leader() &&
+      store.mode === "normal" &&
+      !auto()?.visible
+    )
+  }
+
+  function cancelVoiceHold() {
+    clearTimeout(voiceTimer)
+    voiceTimer = undefined
+    voicePending = false
+  }
+
+  function onVoiceKey(event: KeyEvent) {
+    const space = event.name === "space" || event.name === " "
+    const plain = !event.ctrl && !event.meta && !event.option && !event.shift && !event.super && !event.hyper
+    if (event.eventType === "release") {
+      if (!space || (!voicePending && !voiceRecording)) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (voicePending) {
+        cancelVoiceHold()
+        if (voiceHoldEnabled()) input.insertText(" ")
+        return
+      }
+      voiceRecording = false
+      enqueueVoice("off")
+      return
+    }
+    if (!space || !plain || event.source !== "kitty" || !voiceHoldEnabled()) return
+    // Consume every press/repeat while a hold is pending or recording so the
+    // textarea never inserts spaces mid-hold.
+    event.preventDefault()
+    event.stopPropagation()
+    if (voicePending || voiceRecording) return
+    voicePending = true
+    voiceTimer = setTimeout(() => {
+      voiceTimer = undefined
+      voicePending = false
+      if (!voiceHoldEnabled()) return
+      voiceRecording = true
+      enqueueVoice("")
+    }, VOICE_HOLD_DELAY)
+  }
+
+  onMount(() => {
+    renderer.keyInput.on("keypress", onVoiceKey)
+    renderer.keyInput.on("keyrelease", onVoiceKey)
+    onCleanup(() => {
+      cancelVoiceHold()
+      const recording = voiceRecording
+      voiceRecording = false
+      renderer.keyInput.off("keypress", onVoiceKey)
+      renderer.keyInput.off("keyrelease", onVoiceKey)
+      // Stop the microphone if it was active, but let the queued start finish
+      // first so `off` targets the same session. UI updates are suppressed
+      // after disposal.
+      if (recording) enqueueVoice("off")
+      voiceDisposed = true
+    })
+  })
+
+  async function voiceCommand(arguments_: string) {
     try {
-      let sessionID = props.sessionID
+      let sessionID = props.sessionID ?? voiceSessionID
       if (sessionID == null) {
         const res = await sdk.client.session.create({})
         if (res.error) throw res.error
         sessionID = res.data.id
+        voiceSessionID = sessionID
       }
       const res = await sdk.client.session.command({
         sessionID,
         command: "v",
-        arguments: "",
+        arguments: arguments_,
         noReply: true,
+        parts: [],
       })
       if (res.error) throw res.error
     } catch (error) {
+      if (voiceDisposed) return
       toast.show({
         title: "🎤",
         message: errorMessage(error),
@@ -1481,20 +1567,6 @@ export function Prompt(props: PromptProps) {
                 if (props.disabled) {
                   e.preventDefault()
                   return
-                }
-                // 空のプロンプトでスペースを押すと `/v` 音声入力を開始する。
-                // TextareaRenderable のデフォルト処理より先に消費する。
-                if (
-                  e.name === "space" &&
-                  !e.ctrl &&
-                  !e.meta &&
-                  !e.super &&
-                  store.prompt.input.trim() === "" &&
-                  store.mode === "normal" &&
-                  !auto()?.visible
-                ) {
-                  e.preventDefault()
-                  void voiceInput()
                 }
               }}
               onSubmit={() => {
