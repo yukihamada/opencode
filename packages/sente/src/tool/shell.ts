@@ -421,8 +421,13 @@ export const ShellTool = Tool.define(
             const resolved = yield* argPath(arg, cwd, ps, shell)
             yield* Effect.logInfo("resolved path", { arg, resolved })
             if (!resolved || containsPath(resolved, instance)) continue
-            const dir = (yield* fs.isDir(resolved)) ? resolved : path.dirname(resolved)
-            scan.dirs.add(dir)
+            const dir = yield* fs.isDir(resolved)
+            // `cd` only ever enters a directory that already exists. A missing target
+            // fails inside the shell without touching anything, so falling back to its
+            // parent would ask for a directory the command never reaches (`cd /privat`
+            // asking for `/*`).
+            if (CWD.has(cmd) && !dir) continue
+            scan.dirs.add(dir ? resolved : path.dirname(resolved))
           }
         }
 
