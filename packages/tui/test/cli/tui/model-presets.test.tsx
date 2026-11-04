@@ -248,10 +248,10 @@ test("keeps a role when another role resolves to the same model", async () => {
     expect(ctx.local.model.favorite().filter((item) => item.modelID === everyday.seed).map((item) => item.presetID))
       .toEqual(["everyday", "recommended"])
     // The prompt names the role that was actually chosen, not the first role owning the model.
-    expect(ctx.local.model.parsed().model).toBe(presetName("recommended"))
+    expect(ctx.local.model.parsed().model).toBe(presetName("recommended")!)
     ctx.local.model.selectPreset("everyday")
     await app.renderOnce()
-    expect(ctx.local.model.parsed().model).toBe(presetName("everyday"))
+    expect(ctx.local.model.parsed().model).toBe(presetName("everyday")!)
 
     // Cycling moves by role, so it advances past the shared model instead of stalling.
     ctx.local.model.selectPreset("everyday")
