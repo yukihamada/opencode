@@ -18,10 +18,13 @@ const now = Date.parse("2026-09-29")
 const favorite = { providerID: "teai", modelID: "deepseek/deepseek-v4.1-flash" }
 
 describe("task favorites", () => {
-  test("migrates only the five seeds, preserving ordinary and other-provider favorites", () => {
+  test("migrates only the family seeds, preserving ordinary and other-provider favorites", () => {
     for (const preset of modelPresets) {
       const seed = model(preset.seed)
-      expect(updateModelFavorite({ providerID: "teai", modelID: seed.id }, { [seed.id]: seed }, now).presetID).toBe(preset.id)
+      const migrated = updateModelFavorite({ providerID: "teai", modelID: seed.id }, { [seed.id]: seed }, now)
+      // The recommended role spans families, so a bare favorite of its seed model stays
+      // a plain favorite instead of being silently adopted as the cheapest-model role.
+      expect(migrated.presetID).toBe("family" in preset ? preset.id : undefined)
       expect(presetName(preset.id, "ja-JP")).toBe(preset.ja)
       expect(presetName(preset.id, "en-US")).toBe(preset.en)
     }
@@ -29,6 +32,37 @@ describe("task favorites", () => {
     expect(updateModelFavorite(ordinary, {}, now)).toBe(ordinary)
     const other = { ...favorite, providerID: "openrouter" }
     expect(updateModelFavorite(other, {}, now)).toBe(other)
+  })
+
+  test("recommended picks the cheapest eligible model and follows price changes", () => {
+    const role = { providerID: "teai", modelID: "cheap", presetID: "recommended" }
+    const cheap = { ...model("vendor/cheap-flash"), cost: { input: 0.01, output: 0.03, cache: { read: 0, write: 0 } } }
+    const better = { ...model("vendor/better-flash"), cost: { input: 0.02, output: 0.06, cache: { read: 0, write: 0 } } }
+    const first = updateModelFavorite(role, { [cheap.id]: cheap, [better.id]: better }, now)
+    expect(first.modelID).toBe(cheap.id)
+    // A catalog repricing makes the other model cheapest; the role moves without a baseline.
+    const repriced = { ...cheap, cost: { ...cheap.cost, input: 0.05, output: 0.1 } }
+    expect(updateModelFavorite(first, { [repriced.id]: repriced, [better.id]: better }, now).modelID).toBe(better.id)
+  })
+
+  test("recommended skips models that are cheap but unusable", () => {
+    const role = { providerID: "teai", modelID: "cheap", presetID: "recommended" }
+    const tiny = { ...model("vendor/tiny"), limit: { context: 32000, output: 4096 } }
+    const noTools = { ...model("vendor/no-tools"), capabilities: { ...model().capabilities, toolcall: false } }
+    const tiered = { ...model("vendor/tiered"), cost: { ...model().cost, tiers: [{ input: 9, output: 9 }] } }
+    const alias = model("~vendor/alias")
+    const cache = model("vendor/cache")
+    const usable = { ...model("vendor/usable"), cost: { input: 0.02, output: 0.06, cache: { read: 0, write: 0 } } }
+    const models = Object.fromEntries([tiny, noTools, tiered, alias, cache, usable].map((m) => [m.id, m]))
+    expect(updateModelFavorite(role, models, now).modelID).toBe(usable.id)
+  })
+
+  test("recommended stays put when no model clears the floor", () => {
+    const role = { providerID: "teai", modelID: "cheap", presetID: "recommended" }
+    const tiny = { ...model("vendor/tiny"), limit: { context: 32000, output: 4096 } }
+    const result = updateModelFavorite(role, { [tiny.id]: tiny }, now)
+    expect(result.modelID).toBe("cheap")
+    expect(result.presetID).toBe("recommended")
   })
 
   test("selects the newest numeric version, persists the role and is idempotent", () => {
