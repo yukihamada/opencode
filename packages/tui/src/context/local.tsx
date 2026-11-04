@@ -178,12 +178,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         }[]
         favorite: ModelFavorite[]
         variant: Record<string, string | undefined>
+        // Two roles can resolve to the same model (the recommended role often lands on a
+        // preset's model), so the selected role is remembered per agent. Without it the
+        // prompt could only show and cycle the first role that owns that model.
+        preset: Record<string, string | undefined>
       }>({
         ready: false,
         model: {},
         recent: [],
         favorite: [],
         variant: {},
+        preset: {},
       })
 
       const filePath = path.join(paths.state, "model.json")
@@ -210,17 +215,25 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
       }
 
+      // Saves are asynchronous and several can overlap (a preset selection writes while an
+      // earlier one is still renaming), so an older snapshot could land last and silently
+      // drop the newer favorite. Chain the writes and always serialize the latest state.
+      let saving: Promise<void> = Promise.resolve()
       function save() {
         if (!modelStore.ready) {
           state.pending = true
           return
         }
         state.pending = false
-        void writeJsonAtomic(filePath, {
-          recent: modelStore.recent,
-          favorite: modelStore.favorite,
-          variant: modelStore.variant,
-        })
+        saving = saving
+          .then(() =>
+            writeJsonAtomic(filePath, {
+              recent: modelStore.recent,
+              favorite: modelStore.favorite,
+              variant: modelStore.variant,
+            }),
+          )
+          .catch(() => undefined)
       }
 
       readJson<unknown>(filePath)
@@ -318,8 +331,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const items = presets().filter((item) => availableFavorite(item,
             sync.data.provider.find((provider) => provider.id === item.providerID)?.models[item.modelID]))
           if (!items.length) return false
-          const current = currentModel()
-          const index = items.findIndex((item) => item.providerID === current?.providerID && item.modelID === current?.modelID)
+          const active = modelStore.preset[agent.current()?.name ?? ""]
+          const index = items.findIndex((item) => item.presetID === active)
           const next = index < 0 ? (direction === 1 ? 0 : items.length - 1) : (index + direction + items.length) % items.length
           return this.selectPreset(items[next].presetID!)
         },
@@ -330,11 +343,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             toast.show({ message: presetLabels().unavailable, variant: "warning", duration: 3000 })
             return false
           }
-          if (!agent.current() || !isModelValid(item)) return false
+          const a = agent.current()
+          if (!a || !isModelValid(item)) return false
           this.set({ providerID: item.providerID, modelID: item.modelID }, { recent: true })
+          setModelStore("preset", a.name, id)
           setModelStore("favorite", [
+            // Two roles may legitimately resolve to the same model (the recommended role
+            // can land on a preset's model), so only the same role or a plain favorite of
+            // that model is replaced.
             ...modelStore.favorite.filter((favorite) =>
-              favorite.providerID !== item.providerID || (favorite.presetID !== id && favorite.modelID !== item.modelID)),
+              favorite.providerID !== item.providerID ||
+              (favorite.presetID ? favorite.presetID !== id : favorite.modelID !== item.modelID)),
             item,
           ])
           save()
@@ -362,7 +381,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const info = provider?.models[value.modelID]
           return {
             provider: provider?.name ?? value.providerID,
-            model: presetName(modelStore.favorite.find((item) => item.providerID === value.providerID && item.modelID === value.modelID)?.presetID) ?? info?.name ?? value.modelID,
+            model: presetName(modelStore.preset[agent.current()?.name ?? ""]) ?? presetName(modelStore.favorite.find((item) => item.providerID === value.providerID && item.modelID === value.modelID)?.presetID) ?? info?.name ?? value.modelID,
             reasoning: info?.capabilities?.reasoning ?? false,
           }
         }),
@@ -372,6 +391,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const a = agent.current()
           if (!a) return false
           setModelStore("model", a.name, { ...val })
+          setModelStore("preset", a.name, undefined)
           toast.show({ message: `Model: ${this.parsed().model}`, variant: "info", duration: 3000 })
           void warnPremiumOnLowCredits(val)
           return true
@@ -403,6 +423,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const a = agent.current()
           if (!a) return
           setModelStore("model", a.name, { providerID: next.providerID, modelID: next.modelID })
+          setModelStore("preset", a.name, undefined)
           setModelStore("recent", recentModels(next, modelStore.recent))
           save()
         },
@@ -419,6 +440,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             const a = agent.current()
             if (!a) return
             setModelStore("model", a.name, model)
+            setModelStore("preset", a.name, undefined)
             if (options?.recent) {
               setModelStore("recent", recentModels(model, modelStore.recent))
               save()
