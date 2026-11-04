@@ -3,6 +3,7 @@ import type { TuiPlugin, TuiPluginApi } from "@sente-ai/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo, createSignal, onCleanup, Show } from "solid-js"
 import { CREDITS_PER_USD } from "../../util/account-credits"
+import { sessionCostWithSubagents } from "../../util/spend"
 
 const id = "internal:sidebar-context"
 
@@ -37,7 +38,13 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const money = new Intl.NumberFormat(language, { style: "currency", currency: "USD" })
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
   const session = createMemo(() => props.api.state.session.get(props.session_id))
-  const cost = createMemo(() => session()?.cost ?? 0)
+  // Subagents record their own cost in child sessions, so the sidebar total walks them.
+  // Older plugin hosts expose only `get`, in which case the parent total is the best we have.
+  const cost = createMemo(() => {
+    const sessions = props.api.state.session.list?.()
+    if (!sessions) return session()?.cost ?? 0
+    return sessionCostWithSubagents({ sessionID: props.session_id, sessions })
+  })
   const parts = (id: string) => props.api.state.part?.(id) ?? []
   const [now, setNow] = createSignal(Date.now())
   const ticker = setInterval(() => setNow(Date.now()), 500)

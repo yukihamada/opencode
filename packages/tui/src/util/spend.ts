@@ -19,6 +19,7 @@ export function yen(usd: number) {
 
 type SpendMessage = { role: string; cost?: number; time: { created: number } }
 type SpendSession = { id: string; cost?: number; time: { created: number; updated: number } }
+type SpendSessionTree = SpendSession & { parentID?: string }
 
 function cost(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0
@@ -36,6 +37,74 @@ export function turnCost(messages: readonly SpendMessage[]) {
   const start = messages.findLastIndex((message) => message.role === "user")
   if (start < 0) return undefined
   return messages.slice(start + 1).reduce((sum, message) => sum + (message.role === "assistant" ? cost(message.cost) : 0), 0)
+}
+
+/**
+ * Every session created by a `task` tool call below `rootID`, depth-first.
+ *
+ * Subagents run in their own session (`parent_id` set) and record their own cost
+ * there, so a parent total has to walk this tree to include them.
+ */
+export function descendantIDs(sessions: readonly SpendSessionTree[], rootID: string) {
+  const children = new Map<string, string[]>()
+  for (const session of sessions) {
+    if (!session.parentID) continue
+    children.set(session.parentID, [...(children.get(session.parentID) ?? []), session.id])
+  }
+  const out: string[] = []
+  const seen = new Set([rootID])
+  const stack = [...(children.get(rootID) ?? [])]
+  while (stack.length > 0) {
+    const id = stack.pop()!
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+    stack.push(...(children.get(id) ?? []))
+  }
+  return out
+}
+
+/**
+ * Cost of this turn including subagent sessions.
+ *
+ * Loaded subagent messages are filtered to the same turn window as the parent. A
+ * subagent whose messages are not loaded falls back to its session total, which
+ * over-counts when a `task_id` reused a session across turns.
+ */
+export function turnCostWithSubagents(input: {
+  sessionID: string
+  sessions: readonly SpendSessionTree[]
+  messages: Readonly<Record<string, readonly SpendMessage[] | undefined>>
+}): number | undefined {
+  const own = input.messages[input.sessionID] ?? []
+  const start = own.findLastIndex((message) => message.role === "user")
+  if (start < 0) return undefined
+  const since = own[start]!.time.created
+  const total = turnCost(own) ?? 0
+  return descendantIDs(input.sessions, input.sessionID).reduce((sum, id) => {
+    const loaded = input.messages[id]
+    if (!loaded) return sum + cost(input.sessions.find((session) => session.id === id)?.cost)
+    return (
+      sum +
+      loaded.reduce(
+        (inner, message) =>
+          inner + (message.role === "assistant" && message.time.created >= since ? cost(message.cost) : 0),
+        0,
+      )
+    )
+  }, total)
+}
+
+/** Session total including every subagent session below it. */
+export function sessionCostWithSubagents(input: {
+  sessionID: string
+  sessions: readonly SpendSessionTree[]
+}) {
+  const own = input.sessions.find((session) => session.id === input.sessionID)?.cost
+  return descendantIDs(input.sessions, input.sessionID).reduce(
+    (sum, id) => sum + cost(input.sessions.find((session) => session.id === id)?.cost),
+    cost(own),
+  )
 }
 
 /**
