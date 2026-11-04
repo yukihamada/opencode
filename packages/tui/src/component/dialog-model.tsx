@@ -9,7 +9,7 @@ import * as fuzzysort from "fuzzysort"
 import { useConnected } from "./use-connected"
 import { useSync } from "../context/sync"
 import { modelCostDetail } from "../util/model-cost"
-import { availableFavorite, presetLabels, presetName, type ModelFavorite } from "../util/model-presets"
+import { availableFavorite, presetLabels, presetName, presetUpdateLabel, type ModelFavorite } from "../util/model-presets"
 import { modelBrowseText, modelPrice, orderModels } from "../util/model-browse"
 import { useTheme } from "../context/theme"
 
@@ -50,7 +50,7 @@ export function DialogModel(props: { providerID?: string }) {
             value: { providerID: provider.id, modelID: item.modelID },
             title: name ?? model?.name ?? item.modelID,
             description: provider.name,
-            details: [...(name ? [item.modelID, presetLabels().automatic] : []), modelCostDetail(model?.cost), ...(!available ? [presetLabels().unavailable] : [])],
+            details: [...(name ? [item.modelID, presetUpdateLabel(item.presetID)] : []), modelCostDetail(model?.cost), ...(!available ? [presetLabels().unavailable] : [])],
             category: name ? presetLabels().section : category,
             disabled: provider.id === "sente" && item.modelID.includes("-nano"),
             footer: model?.cost?.input === 0 && provider.id === "sente" ? "Free" : undefined,
@@ -104,7 +104,7 @@ export function DialogModel(props: { providerID?: string }) {
               ? "(Favorite)"
               : undefined,
             category: order() === "price" ? undefined : connected() ? provider.name : undefined,
-            details: [...(name ? [model, presetLabels().automatic] : []), modelCostDetail(info.cost), ...(!available ? [presetLabels().unavailable] : [])],
+            details: [...(name ? [model, presetUpdateLabel(favorite?.presetID)] : []), modelCostDetail(info.cost), ...(!available ? [presetLabels().unavailable] : [])],
             disabled: provider.id === "sente" && model.includes("-nano"),
             footer: info.cost?.input === 0 && provider.id === "sente" ? "Free" : undefined,
             onSelect() {
