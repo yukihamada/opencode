@@ -20,9 +20,22 @@ export async function wait(fn: () => boolean, timeout = 2000) {
   }
 }
 
+function within(promise: Promise<void>, timeout: number) {
+  return Promise.race([
+    promise,
+    Bun.sleep(timeout).then(() => {
+      throw new Error(`SyncProvider did not become ready within ${timeout}ms: startup is blocked (Probe never mounted)`)
+    }),
+  ])
+}
+
 type Ctx = { kv: ReturnType<typeof useKV>; project: ReturnType<typeof useProject>; sync: ReturnType<typeof useSync> }
 
-export async function mount(override?: FetchHandler, state?: string) {
+export async function mount(
+  override?: FetchHandler,
+  state?: string,
+  options: { complete?: boolean; readyTimeout?: number; release?: () => void } = {},
+) {
   const calls = createFetch(override)
   const events = createEventSource()
   let sync!: ReturnType<typeof useSync>
@@ -64,7 +77,11 @@ export async function mount(override?: FetchHandler, state?: string) {
     </TestTuiContexts>
   ))
 
-  await ready
-  await wait(() => sync.status === "complete")
+  await within(ready, options.readyTimeout ?? 2000).catch((error) => {
+    options.release?.()
+    app.renderer.destroy()
+    throw error
+  })
+  if (options.complete !== false) await wait(() => sync.status === "complete")
   return { app, emit: events.emit, kv, project, sync, session: calls.session }
 }

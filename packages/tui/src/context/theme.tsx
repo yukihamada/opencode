@@ -144,7 +144,10 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     }
 
     onMount(() => {
-      void Promise.allSettled([resolveSystemTheme(store.mode), syncCustomThemes()]).finally(() => {
+      const palette = resolveSystemTheme(store.mode)
+      // Only the system theme needs terminal colors to paint. Palette detection
+      // can take a full timeout on terminals that do not answer every OSC query.
+      void Promise.allSettled([store.active === "system" ? palette : undefined, syncCustomThemes()]).finally(() => {
         setStore("ready", true)
       })
     })
