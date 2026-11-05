@@ -36,9 +36,9 @@ export function handoffReferences(history: SessionV1.WithParts[]) {
     resume: "explicit_user_request" as const,
   }
 }
-// 費用確認の上限(USD)。既定は $5。SENTE_COST_LIMIT_USD で上書きできる。
+// 費用確認の上限(USD)。既定は $1。SENTE_COST_LIMIT_USD で上書きできる。
 // 0 や空文字・未設定の "off" 相当を明示したい場合は "none" を設定する。
-export const DEFAULT_COST_LIMIT_USD = 5
+export const DEFAULT_COST_LIMIT_USD = 1
 export function costLimit(value: string | undefined): number {
   if (value === undefined || value.trim() === "") return DEFAULT_COST_LIMIT_USD
   if (value.trim().toLowerCase() === "none") return Number.POSITIVE_INFINITY
@@ -46,6 +46,19 @@ export function costLimit(value: string | undefined): number {
   return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_COST_LIMIT_USD
 }
 export const COST_LIMIT_USD = costLimit(process.env.SENTE_COST_LIMIT_USD)
+// セッションごとの上書き。metadata の cost_limit_usd が正の数ならそれを、
+// "none" なら無制限を、未設定・不正なら環境既定 COST_LIMIT_USD を返す。
+export const COST_LIMIT_METADATA_KEY = "cost_limit_usd"
+export function sessionCostLimit(metadata: Record<string, unknown> | undefined): number {
+  const value = metadata?.[COST_LIMIT_METADATA_KEY]
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : COST_LIMIT_USD
+  if (typeof value === "string") {
+    if (value.trim().toLowerCase() === "none") return Number.POSITIVE_INFINITY
+    const limit = Number(value)
+    return Number.isFinite(limit) && limit > 0 ? limit : COST_LIMIT_USD
+  }
+  return COST_LIMIT_USD
+}
 // 送る内容から見積もった入力量に足す余裕。
 export const INPUT_GROWTH_FACTOR = 1.5
 export const INPUT_GROWTH_TOKENS = 20_000
@@ -166,14 +179,14 @@ export function limitNote(kind: "turns" | "attempts", lang: Language = language(
     : `The ${kind === "turns" ? MAX_TURNS + " turn" : MAX_REQUEST_ATTEMPTS + " request"} allowance is exhausted; further execution is stopped. Completion is unverified. Review the latest report and conversation execution records for results, unverified work and remaining work. To continue, explicitly request resume from remaining work; reconcile saved records first and do not repeat sending or payments.`
 }
 
-export function budgetNote(projected: number | undefined, lang: Language = language(), spent = 0): string {
+export function budgetNote(projected: number | undefined, lang: Language = language(), spent = 0, limit = COST_LIMIT_USD): string {
   return lang === "ja"
     ? projected === undefined
       ? `今回の依頼の記録済み費用は $${spent.toFixed(2)}、料金上限は未確認です。次のモデル呼び出し1回の費用を承認してください。`
-      : `今回の依頼の記録済み費用は $${spent.toFixed(2)}、安全側の累積上限見積は $${projected.toFixed(2)} です（請求額ではありません）。確認ライン $${COST_LIMIT_USD.toFixed(2)} を超えるため、次のモデル呼び出し1回だけ承認してください。中止・安価なモデルへの変更も選べます。`
+      : `今回の依頼の記録済み費用は $${spent.toFixed(2)}、安全側の累積上限見積は $${projected.toFixed(2)} です（請求額ではありません）。確認ライン $${limit.toFixed(2)} を超えるため、次のモデル呼び出し1回だけ承認してください。中止・安価なモデルへの変更も選べます。`
     : projected === undefined
       ? `Recorded cost for this task is $${spent.toFixed(2)}; the price ceiling is unknown. Approve only the next model call.`
-      : `Recorded cost for this task is $${spent.toFixed(2)}; the conservative cumulative ceiling is $${projected.toFixed(2)} (not a billed amount). It exceeds the $${COST_LIMIT_USD.toFixed(2)} approval threshold. Approve only the next model call, stop, or choose a cheaper model.`
+      : `Recorded cost for this task is $${spent.toFixed(2)}; the conservative cumulative ceiling is $${projected.toFixed(2)} (not a billed amount). It exceeds the $${limit.toFixed(2)} approval threshold. Approve only the next model call, stop, or choose a cheaper model.`
 }
 
 export function evaluate(part: SessionV1.ToolPart): ToolOutcome | undefined {

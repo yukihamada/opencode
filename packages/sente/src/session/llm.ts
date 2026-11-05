@@ -29,6 +29,8 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { SessionEscalation } from "./escalation"
+import { Session } from "./session"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -70,6 +72,7 @@ const live: Layer.Layer<
   | EventV2Bridge.Service
   | LLMClientService
   | RuntimeFlags.Service
+  | Session.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -81,6 +84,7 @@ const live: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const session = yield* Session.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
@@ -111,6 +115,40 @@ const live: Layer.Layer<
         flags,
         isWorkflow,
       })
+
+      // Cost guard: reserve the prepared output ceiling and, when the
+      // session's recorded cost plus this call's conservative ceiling crosses
+      // the approval line, require a one-call approval before streaming.
+      // The line is $1 by default and can be changed per session via
+      // metadata.cost_limit_usd (or SENTE_COST_LIMIT_USD globally).
+      const sessionInfo = yield* session.get(SessionID.make(input.sessionID)).pipe(Effect.option)
+      if (Option.isSome(sessionInfo)) {
+        const root = sessionInfo.value.parentID
+          ? yield* session.get(sessionInfo.value.parentID).pipe(Effect.option)
+          : sessionInfo
+        const base = Option.isSome(root) ? root.value : sessionInfo.value
+        const limit = SessionEscalation.sessionCostLimit(base.metadata)
+        if (Number.isFinite(limit)) {
+          const spent = base.cost ?? 0
+          const observed =
+            (base.tokens?.input ?? 0) + (base.tokens?.cache?.read ?? 0) + (base.tokens?.cache?.write ?? 0)
+          const estimate = SessionEscalation.requestEstimate(
+            input.model,
+            prepared.params.maxOutputTokens ?? input.model.limit.output,
+            observed > 0 ? observed : undefined,
+          )
+          if (estimate === undefined || spent + estimate > limit) {
+            yield* perm.ask({
+              sessionID: SessionID.make(input.sessionID),
+              permission: SessionEscalation.COST_PERMISSION,
+              patterns: [`${input.model.providerID}/${input.model.id}`],
+              metadata: { note: SessionEscalation.budgetNote(estimate, SessionEscalation.language(), spent, limit) },
+              always: [],
+              ruleset: [],
+            })
+          }
+        }
+      }
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -398,6 +436,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     llmClient,
     RuntimeFlags.node,
+    Session.node,
   ],
 })
 

@@ -655,14 +655,25 @@ describe("execution safety", () => {
     expect(SessionEscalation.requestTokens(loop)).toBeUndefined()
   })
 
-  test("cost limit defaults to $5 and only 'none' turns it off", () => {
+  test("cost limit defaults to $1 and only 'none' turns it off", () => {
     for (const value of [undefined, "", " ", "0", "-1", "abc", "Infinity"]) {
-      expect(SessionEscalation.costLimit(value)).toBe(5)
+      expect(SessionEscalation.costLimit(value)).toBe(1)
     }
     expect(SessionEscalation.costLimit("none")).toBe(Number.POSITIVE_INFINITY)
     expect(SessionEscalation.costLimit("NONE")).toBe(Number.POSITIVE_INFINITY)
     expect(SessionEscalation.costLimit("20")).toBe(20)
     expect(SessionEscalation.costLimit("0.5")).toBe(0.5)
+  })
+
+  test("per-session limit overrides the environment default", () => {
+    const fallback = SessionEscalation.COST_LIMIT_USD
+    expect(SessionEscalation.sessionCostLimit(undefined)).toBe(fallback)
+    expect(SessionEscalation.sessionCostLimit({})).toBe(fallback)
+    expect(SessionEscalation.sessionCostLimit({ cost_limit_usd: 2 })).toBe(2)
+    expect(SessionEscalation.sessionCostLimit({ cost_limit_usd: "3.5" })).toBe(3.5)
+    expect(SessionEscalation.sessionCostLimit({ cost_limit_usd: "none" })).toBe(Number.POSITIVE_INFINITY)
+    expect(SessionEscalation.sessionCostLimit({ cost_limit_usd: 0 })).toBe(fallback)
+    expect(SessionEscalation.sessionCostLimit({ cost_limit_usd: "abc" })).toBe(fallback)
   })
 
   test("observed input narrows the estimate but never exceeds the context ceiling", () => {
@@ -686,7 +697,7 @@ describe("execution safety", () => {
   })
 
   test("budget notices distinguish recorded cost from the conservative ceiling", () => {
-    expect(SessionEscalation.COST_LIMIT_USD).toBe(5)
+    expect(SessionEscalation.COST_LIMIT_USD).toBe(1)
     const ja = SessionEscalation.budgetNote(114.6, "ja", 0.42)
     expect(ja).toContain("$0.42")
     expect(ja).toContain("$114.60")
