@@ -35,6 +35,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionOutputLimit } from "../../src/session/output-limit"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -678,7 +679,7 @@ it.instance("loop surfaces content-filter finishes as session errors", () =>
   }),
 )
 
-it.instance("loop surfaces length finishes as output-length errors", () =>
+it.instance("loop surfaces length finishes as output-length errors once continuations are exhausted", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const events = yield* EventV2Bridge.Service
@@ -703,13 +704,14 @@ it.instance("loop surfaces length finishes as output-length errors", () =>
       noReply: true,
       parts: [{ type: "text", text: "hello" }],
     })
-    yield* llm.push(reply().text("partial response").length())
+    for (let i = 0; i <= SessionOutputLimit.MAX_OUTPUT_CONTINUES; i++)
+      yield* llm.push(reply().text(`partial response ${i}`).length())
 
     const result = yield* prompt.loop({ sessionID: chat.id })
     const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: result.info.id })
     yield* off
 
-    expect(yield* llm.hits).toHaveLength(1)
+    expect(yield* llm.hits).toHaveLength(SessionOutputLimit.MAX_OUTPUT_CONTINUES + 1)
     expect(result.info.role).toBe("assistant")
     expect(stored.info.role).toBe("assistant")
     if (result.info.role === "assistant" && stored.info.role === "assistant") {
@@ -719,8 +721,45 @@ it.instance("loop surfaces length finishes as output-length errors", () =>
       expect(errors).toContainEqual(expected)
     }
     expect(result.parts).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: "text", text: "partial response" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ type: "text", text: `partial response ${SessionOutputLimit.MAX_OUTPUT_CONTINUES}` }),
+      ]),
     )
+  }),
+)
+
+it.instance("loop continues automatically after an output-length finish", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.push(reply().text("partial response").length())
+    yield* llm.push(reply().text("the rest").stop())
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+
+    expect(yield* llm.hits).toHaveLength(2)
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.finish).toBe("stop")
+      expect(result.info.error).toBeUndefined()
+    }
+    expect(
+      messages.some((message) =>
+        message.parts.some(
+          (part) => part.type === "text" && part.synthetic && part.text === SessionOutputLimit.continuePrompt(),
+        ),
+      ),
+    ).toBe(true)
   }),
 )
 
