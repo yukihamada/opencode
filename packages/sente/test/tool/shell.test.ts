@@ -341,6 +341,25 @@ describe("tool.shell permissions", () => {
     ),
   )
 
+  each("does not ask for external_directory when cd targets a missing path", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const err = new Error("stop after permission")
+        const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+        const result = yield* run(
+          {
+            command: "cd /sente-missing-dir-repro",
+          },
+          capture(requests, err),
+        )
+        // The shell itself fails; the point is that no permission was requested for `/`.
+        expect(result.metadata.exit).not.toBe(0)
+        expect(requests.filter((r) => r.permission === "external_directory")).toEqual([])
+      }),
+    ),
+  )
+
   if (process.platform === "win32") {
     if (bash) {
       it.live("asks for nested bash command permissions [bash]", () =>
