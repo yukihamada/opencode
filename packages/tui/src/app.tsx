@@ -32,6 +32,7 @@ import { DialogProvider as DialogProviderList } from "./component/dialog-provide
 import { DialogTeaiLogin } from "./component/dialog-teai-login"
 import { DialogTeaiAccount } from "./component/dialog-teai-account"
 import { DialogTaskBudget } from "./component/dialog-task-budget"
+import { DialogCostLimit } from "./component/dialog-cost-limit"
 import { TaskBudget } from "./util/task-budget"
 import { taskText } from "./util/task-budget-text"
 import { accountText } from "./util/teai"
@@ -914,6 +915,14 @@ function App(props: {
         title: taskText(language.current()).title,
         slashName: "tasks",
         run: () => dialog.replace(() => <DialogTaskBudget client={taskBudget} session={taskSession()} />),
+        category: "Session",
+      },
+      {
+        name: "sente.cost-limit",
+        title: language.current().startsWith("ja") ? "依頼ごとの費用上限" : "Task cost limit",
+        slashName: "cost",
+        slashAliases: ["budget", "cost-limit"],
+        run: () => dialog.replace(() => <DialogCostLimit session={taskSession()} />),
         category: "Session",
       },
       ...(sync.data.console_state.switchableOrgCount > 1
