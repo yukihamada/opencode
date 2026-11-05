@@ -58,6 +58,22 @@ export const Prompt = Schema.Struct({
   }),
 }).annotate({ description: "Prompt size settings" })
 
+export const Voice = Schema.Struct({
+  enabled: Schema.optional(Schema.Boolean).annotate({
+    description: "Start voice input with Space on an empty prompt (default: true on macOS). /v on|off overrides it",
+  }),
+  mode: Schema.optional(Schema.Literals(["hold", "tap"])).annotate({
+    description: "hold: hold Space to talk, release to insert. tap: tap Space to start, tap again to send",
+  }),
+  auto_submit: Schema.optional(Schema.Boolean).annotate({
+    description: "Send automatically after a hold or Ctrl+Space dictation of 3+ words (any length for Japanese)",
+  }),
+  autoSubmit: Schema.optional(Schema.Boolean).annotate({ description: "Alias of auto_submit (Claude Code spelling)" }),
+  language: Schema.optional(Schema.String).annotate({
+    description: "Dictation language as a name or BCP 47 code (e.g. japanese, en). Defaults to the UI language",
+  }),
+}).annotate({ description: "Voice input (dictation) settings" })
+
 export const Info = Schema.Struct({
   $schema: Schema.optional(Schema.String),
   theme: Schema.optional(Schema.String),
@@ -72,6 +88,7 @@ export const Info = Schema.Struct({
   diff_style: Schema.optional(DiffStyle),
   cursor: Schema.optional(Cursor),
   mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable or disable mouse capture (default: true)" }),
+  voice: Schema.optional(Voice),
 })
 export type Info = Schema.Schema.Type<typeof Info>
 

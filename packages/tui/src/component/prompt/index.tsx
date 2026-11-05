@@ -53,6 +53,23 @@ import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
 import { useUsageMode } from "../dialog-mode"
 import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
+import {
+  backend as dictationBackend,
+  buildLexicon,
+  describeVoice,
+  joinTranscript,
+  longEnoughToSubmit,
+  privacyNotice,
+  summarizeVoice,
+  parseVoiceCommand,
+  Recording,
+  sttLanguage,
+  unavailableReason,
+  type RecordingResult,
+  type VoiceCommand,
+  type VoiceSettings,
+} from "../../util/dictation"
+import { stopSpeaking } from "../../util/voice"
 import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
@@ -851,133 +868,411 @@ export function Prompt(props: PromptProps) {
     commands: stashCommands(),
   }))
 
-  // 空のプロンプトでスペースを長押しすると `/v` 音声入力を開始し、離すと停止する。
-  // 短いタップは通常のスペース入力として扱う。日本語IMEでも変換前の
-  // キーイベントで拾えるよう、TextareaRenderable より先にグローバルで処理する。
-  useBindings(() => ({
-    target: inputTarget,
-    enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input.trim() === "",
-    bindings: [
-      {
-        key: "ctrl+space",
-        desc: "Voice input (IME-safe)",
-        group: "Prompt",
-        cmd: () => void voiceCommand(""),
-      },
-    ],
-  }))
-
-  const VOICE_HOLD_DELAY = 200
-  let voiceTimer: ReturnType<typeof setTimeout> | undefined
-  let voicePending = false
-  let voiceRecording = false
-  let voiceSessionID: string | undefined
+  // 音声入力(Claude Code の voice dictation と同じ操作)。録音と文字起こしは TUI の中だけで
+  // 行い、セッションやモデルには何も送らない。
+  // - 長押し(既定): 空欄で Space を押し続けて話し、離すと入力欄に入る。
+  //   kitty 対応端末は離した瞬間を、それ以外はキーリピートが止まった瞬間を「離した」とみなす。
+  //   話し始めを落とさないよう、最初の Space で裏で録音を始め、ただの空白だったら送らずに捨てる。
+  // - タップ: 空欄で Space を1回押して話し、もう1回押すと送信(3語以上・日本語は長さ不問)。
+  // - Ctrl+Space / <leader>v(変更可)と `/v` は、どちらのモードでも開始・確定に使える。
+  // - 録音中の Esc / Ctrl+C は取消だけに使う(作業の中断や終了には渡さない)。
+  // 日本語入力 ON の Space(全角空白)も Space として扱う。
+  const voiceSettings = createMemo((): VoiceSettings => {
+    const config = tuiConfig.voice ?? {}
+    const saved = (kv.get("voice_input", {}) ?? {}) as Partial<VoiceSettings>
+    return {
+      enabled: saved.enabled ?? config.enabled ?? process.platform === "darwin",
+      mode: saved.mode ?? config.mode ?? "hold",
+      autoSubmit: saved.autoSubmit ?? config.auto_submit ?? config.autoSubmit ?? false,
+      language: config.language,
+    }
+  })
+  const voiceShortcut = useCommandShortcut("prompt.voice")
+  const voiceKeyLabel = () => voiceShortcut() || "Ctrl+Space"
+  type VoiceSource = "hold" | "tap" | "toggle"
+  const [voiceUi, setVoiceUi] = createSignal<
+    { phase: "recording" | "transcribing"; source: VoiceSource; level: number; elapsed: number } | undefined
+  >()
+  const VOICE_KITTY_HOLD_MS = 200
+  // キーリピートが始まるまでの待ち時間。macOS の設定(リピート入力認識までの時間)+余裕。読めなければ 650ms。
+  const voiceRepeatWait = () => Math.min(2500, Math.max(650, (dictationBackend.keyRepeatDelayMs() ?? 400) + 250))
+  let voiceRecording: Recording | undefined
+  let voiceSource: VoiceSource | undefined
+  let voiceConfirmed = false
+  let voiceSilentCancel = false
+  let voiceFinishSubmit: boolean | undefined
+  let voicePending: { kitty: boolean; char: string; timer: ReturnType<typeof setTimeout> } | undefined
+  let voiceSwallow: { kitty: boolean } | undefined
+  let voiceLastSpace = 0
+  let voiceRepeatGap = 0
+  let voiceReleaseTimer: ReturnType<typeof setInterval> | undefined
   let voiceDisposed = false
-  // Voice commands are serialized: a release's `off` must never race the
-  // start's session creation, otherwise it can create a second session or
-  // stop before the microphone ever started.
-  let voiceQueue: Promise<void> = Promise.resolve()
 
-  function enqueueVoice(arguments_: string) {
-    voiceQueue = voiceQueue.then(() => voiceCommand(arguments_))
+  function english() {
+    return language.current() !== "ja"
   }
 
-  function voiceHoldEnabled() {
+  function voiceCanToggle() {
     return (
       !!input &&
       !input.isDestroyed &&
-      input.focused &&
       props.visible !== false &&
       !props.disabled &&
       dialog.stack.length === 0 &&
-      !leader() &&
       store.mode === "normal" &&
       !auto()?.visible
     )
   }
 
-  function cancelVoiceHold() {
-    clearTimeout(voiceTimer)
-    voiceTimer = undefined
-    voicePending = false
+  function voiceCanStart() {
+    return (
+      voiceCanToggle() &&
+      input.focused &&
+      !leader() &&
+      store.prompt.input.trim() === "" &&
+      store.prompt.parts.length === 0
+    )
+  }
+
+  function spaceChar(event: KeyEvent) {
+    if (event.name === "space" || event.name === " " || event.sequence === " ") return " "
+    if (event.name === "　" || event.sequence === "　") return "　"
+    return undefined
+  }
+
+  // 録音を始める。visible=false は長押し判定前の先行録音(画面に出さず、外れたら捨てる)。
+  function startVoice(source: VoiceSource, visible = true) {
+    if (voiceRecording) return false
+    const reason = unavailableReason(english())
+    if (reason) {
+      if (visible) toast.show({ title: "🎤", message: reason, variant: "error", duration: 8000 })
+      return false
+    }
+    const recorder = dictationBackend.findRecorder()
+    if (!recorder) return false
+    const directory = project.instance.path().worktree || project.instance.path().directory || process.cwd()
+    const recording = new Recording({
+      recorder,
+      english: english(),
+      language: sttLanguage(voiceSettings().language) ?? sttLanguage(language.current()),
+      lexicon: buildLexicon({ directory, branch: dictationBackend.gitBranch(directory) }),
+      onLevel: (level, elapsed) => {
+        const ui = voiceUi()
+        if (ui?.phase === "recording") setVoiceUi({ ...ui, level, elapsed })
+      },
+      onTranscribing: () => {
+        const ui = voiceUi()
+        if (ui) setVoiceUi({ ...ui, phase: "transcribing" })
+      },
+      onAutoStop: () => {
+        clearInterval(voiceReleaseTimer)
+        voiceReleaseTimer = undefined
+        // 長押しのまま自動停止した時、押し続けている Space を入力欄へ漏らさない。
+        if (voiceSource === "hold") voiceSwallow = { kitty: voiceLastKitty }
+      },
+    })
+    voiceRecording = recording
+    voiceSource = source
+    voiceConfirmed = false
+    voiceSilentCancel = false
+    voiceFinishSubmit = undefined
+    void recording.result.then((result) => onVoiceResult(recording, result))
+    if (visible) confirmVoice()
+    return true
+  }
+  let voiceLastKitty = false
+
+  function confirmVoice() {
+    if (!voiceRecording || voiceConfirmed) return
+    voiceConfirmed = true
+    // Sente の声(KOE)が読み上げ中なら止める。自分の声だけを拾うため。
+    if (process.env.NODE_ENV !== "test") stopSpeaking()
+    if (!kv.get("voice_input_notice_seen", false)) {
+      kv.set("voice_input_notice_seen", true)
+      toast.show({ title: "🎤", message: privacyNotice(english()), variant: "info", duration: 9000 })
+    }
+    setVoiceUi({ phase: "recording", source: voiceSource ?? "toggle", level: 0, elapsed: 0 })
+  }
+
+  function finishVoice(tailMs: number, submitAfter?: boolean) {
+    const recording = voiceRecording
+    if (!recording) return
+    clearInterval(voiceReleaseTimer)
+    voiceReleaseTimer = undefined
+    if (submitAfter !== undefined) voiceFinishSubmit = submitAfter
+    void recording.finish(tailMs)
+  }
+
+  function cancelVoice(silent = false) {
+    const recording = voiceRecording
+    if (!recording) return
+    clearInterval(voiceReleaseTimer)
+    voiceReleaseTimer = undefined
+    voiceSilentCancel = silent
+    recording.cancel()
+  }
+
+  function onVoiceResult(recording: Recording, result: RecordingResult) {
+    if (voiceRecording !== recording) return
+    const source = voiceSource
+    const submitAfter = voiceFinishSubmit
+    const silent = voiceSilentCancel || !voiceConfirmed
+    voiceRecording = undefined
+    voiceSource = undefined
+    voiceConfirmed = false
+    voiceFinishSubmit = undefined
+    voiceSilentCancel = false
+    setVoiceUi(undefined)
+    if (voiceDisposed) return
+    const text = (ja: string, en: string) => (english() ? en : ja)
+    if (result.type === "cancelled") {
+      if (!silent)
+        toast.show({ title: "🎤", message: text("音声入力を取り消しました", "Voice input cancelled"), variant: "info", duration: 2000 })
+      return
+    }
+    if (silent) return
+    if (result.type === "error") {
+      toast.show({ title: "🎤", message: result.message, variant: "error", duration: 8000 })
+      return
+    }
+    if (result.type === "empty") {
+      toast.show({ title: "🎤", message: text("聞き取れませんでした。もう一度どうぞ", "Didn't catch that. Try again"), variant: "info", duration: 3000 })
+      return
+    }
+    if (!input || input.isDestroyed) return
+    input.insertText(joinTranscript(input.plainText.slice(0, input.cursorOffset), result.text))
+    const send =
+      submitAfter ??
+      (source === "tap" ? longEnoughToSubmit(result.text) : voiceSettings().autoSubmit && longEnoughToSubmit(result.text))
+    // シェルモード等では自動送信しない(話した言葉がコマンドとして走らないように)。
+    if (send && store.mode === "normal") setTimeout(() => setTimeout(() => void submit(), 0), 0)
+  }
+
+  // 長押し判定の結果「ただの Space」だった: 先行録音を捨て、空白を入れる。
+  function resolvePendingAsTap() {
+    const pending = voicePending
+    if (!pending) return
+    clearTimeout(pending.timer)
+    voicePending = undefined
+    if (voiceRecording && !voiceConfirmed) cancelVoice(true)
+    if (input && !input.isDestroyed) input.insertText(pending.char)
+  }
+
+  // キーリピートが途切れたら「離した」とみなす(kitty 以外の端末の長押し)。
+  function watchRepeatRelease() {
+    clearInterval(voiceReleaseTimer)
+    voiceReleaseTimer = setInterval(() => {
+      const gap = Math.min(1500, Math.max(300, voiceRepeatGap * 3))
+      if (Date.now() - voiceLastSpace > gap) finishVoice(0)
+    }, 50)
+  }
+
+  function consume(event: KeyEvent) {
+    event.preventDefault()
+    event.stopPropagation()
   }
 
   function onVoiceKey(event: KeyEvent) {
-    const space = event.name === "space" || event.name === " "
+    const char = spaceChar(event)
+    const space = char !== undefined
     const plain = !event.ctrl && !event.meta && !event.option && !event.shift && !event.super && !event.hyper
-    if (event.eventType === "release") {
-      if (!space || (!voicePending && !voiceRecording)) return
-      event.preventDefault()
-      event.stopPropagation()
-      if (voicePending) {
-        cancelVoiceHold()
-        if (voiceHoldEnabled()) input.insertText(" ")
+    const release = event.eventType === "release"
+    const repeat = event.eventType === "repeat"
+    const now = Date.now()
+
+    // 長押しが自動停止した後、まだ押されている Space を捨てる。
+    if (voiceSwallow) {
+      const over = voiceSwallow.kitty ? release && space : !space || now - voiceLastSpace > 400
+      if (over) {
+        voiceSwallow = undefined
+        if (release && space) return consume(event)
+      } else if (space) {
+        voiceLastSpace = now
+        return consume(event)
+      }
+    }
+
+    // 録音中・文字起こし中
+    if (voiceRecording && voiceConfirmed) {
+      if (release) {
+        if (space && voiceSource === "hold") {
+          consume(event)
+          finishVoice(250)
+        }
         return
       }
-      voiceRecording = false
-      enqueueVoice("off")
+      if (event.name === "escape" || (event.ctrl && event.name === "c")) {
+        consume(event)
+        cancelVoice()
+        return
+      }
+      if (event.name === "return" && plain) {
+        consume(event)
+        // 文字起こし中に押した Enter も「入ったら送信」として受け付ける。
+        if (voiceUi()?.phase === "recording") finishVoice(150, true)
+        else voiceFinishSubmit = true
+        return
+      }
+      if (!space) return
+      consume(event)
+      const gap = now - voiceLastSpace
+      voiceLastSpace = now
+      if (voiceSource === "hold") {
+        voiceRepeatGap = voiceRepeatGap ? (voiceRepeatGap + gap) / 2 : gap
+        return
+      }
+      // タップ・トグル: キーリピート(押し続け)は2回目の押下とみなさない。
+      if (voiceUi()?.phase !== "recording" || repeat || gap < 200) return
+      finishVoice(150, voiceSource === "tap" ? undefined : voiceSettings().autoSubmit ? undefined : false)
       return
     }
-    if (!space || !plain || event.source !== "kitty" || !voiceHoldEnabled()) return
-    // Consume every press/repeat while a hold is pending or recording so the
-    // textarea never inserts spaces mid-hold.
-    event.preventDefault()
-    event.stopPropagation()
-    if (voicePending || voiceRecording) return
-    voicePending = true
-    voiceTimer = setTimeout(() => {
-      voiceTimer = undefined
-      voicePending = false
-      if (!voiceHoldEnabled()) return
-      voiceRecording = true
-      enqueueVoice("")
-    }, VOICE_HOLD_DELAY)
+
+    // 長押しの判定待ち
+    if (voicePending) {
+      if (release) {
+        if (!space) return
+        consume(event)
+        resolvePendingAsTap()
+        return
+      }
+      if (space && plain) {
+        consume(event)
+        if (voicePending.kitty) return
+        // kitty 以外: 2回目のスペース(=キーリピート)が来たら長押し。
+        clearTimeout(voicePending.timer)
+        voicePending = undefined
+        voiceLastSpace = now
+        voiceRepeatGap = 0
+        if (voiceRecording) confirmVoice()
+        else startVoice("hold")
+        if (voiceRecording) watchRepeatRelease()
+        return
+      }
+      // 別のキー: 待っていたスペースを先に入れてから、そのキーを通す。
+      resolvePendingAsTap()
+      return
+    }
+
+    if (release || !space || !plain || !voiceSettings().enabled || !voiceCanStart()) return
+    consume(event)
+    if (repeat) return
+    voiceLastSpace = now
+    if (voiceSettings().mode === "tap") {
+      startVoice("tap")
+      return
+    }
+    const kitty = event.source === "kitty"
+    voiceLastKitty = kitty
+    startVoice("hold", false)
+    voicePending = {
+      kitty,
+      char,
+      timer: setTimeout(
+        () => {
+          if (!kitty) return resolvePendingAsTap()
+          voicePending = undefined
+          if (!voiceCanStart()) return cancelVoice(true)
+          if (voiceRecording) confirmVoice()
+          else startVoice("hold")
+        },
+        kitty ? VOICE_KITTY_HOLD_MS : voiceRepeatWait(),
+      ),
+    }
+  }
+
+  function toggleVoice() {
+    if (voiceRecording && voiceConfirmed) {
+      if (voiceUi()?.phase === "recording") finishVoice(150, voiceSettings().autoSubmit ? undefined : false)
+      return
+    }
+    if (voicePending) return
+    if (voiceCanToggle()) startVoice("toggle")
+  }
+
+  useBindings(() => ({
+    target: inputTarget,
+    enabled: inputTarget() !== undefined && !props.disabled,
+    commands: [
+      {
+        name: "prompt.voice",
+        title: language.text("音声入力の開始・確定", "Start or finish voice input"),
+        category: "Prompt",
+        run: toggleVoice,
+      },
+    ],
+    bindings: tuiConfig.keybinds.get("prompt.voice"),
+  }))
+
+  // `/v` を入力候補から選んだ時も、サーバーへ送らずここで録音を始める。
+  useBindings(() => ({
+    enabled: !props.disabled && props.visible !== false,
+    commands: [
+      {
+        name: "prompt.voice.slash",
+        namespace: "palette",
+        title: language.text("音声入力(/v hold・tap・on・off・auto・status)", "Voice input (/v hold, tap, on, off, auto, status)"),
+        category: "Prompt",
+        slashName: "v",
+        run: () => setTimeout(toggleVoice, 0),
+      },
+    ],
+  }))
+
+  function handleVoiceCommand(command: VoiceCommand) {
+    const text = (ja: string, en: string) => (english() ? en : ja)
+    if (command.type === "invalid") {
+      toast.show({
+        title: "🎤",
+        message: text(
+          `「${command.value}」は分かりませんでした。使えるのは /v・/v hold・/v tap・/v on・/v off・/v auto on|off・/v status です`,
+          `Unknown option "${command.value}". Use /v, /v hold, /v tap, /v on, /v off, /v auto on|off, /v status`,
+        ),
+        variant: "error",
+        duration: 8000,
+      })
+      return
+    }
+    if (command.type === "stop") {
+      cancelVoice()
+      return
+    }
+    if (command.type === "status") {
+      void DialogAlert.show(dialog, text("音声入力", "Voice input"), describeVoice(voiceSettings(), english(), voiceKeyLabel()))
+      return
+    }
+    if (command.type === "set") {
+      // 旧版の `/v off` は「録音を止める」だった。録音中ならその意味で扱い、設定は変えない。
+      if (command.settings.enabled === false && voiceRecording) {
+        cancelVoice()
+        return
+      }
+      kv.set("voice_input", { ...((kv.get("voice_input", {}) ?? {}) as object), ...command.settings })
+      const reason = command.settings.enabled ? unavailableReason(english()) : undefined
+      toast.show({
+        title: "🎤",
+        message: reason ?? summarizeVoice(voiceSettings(), english()),
+        variant: reason ? "error" : "info",
+        duration: reason ? 8000 : 3000,
+      })
+      return
+    }
+    // `/v` は入力欄を空にしてから録音を始める(終わり方は Ctrl+Space と同じ)。
+    setTimeout(toggleVoice, 0)
   }
 
   onMount(() => {
-    renderer.keyInput.on("keypress", onVoiceKey)
-    renderer.keyInput.on("keyrelease", onVoiceKey)
+    // 本体のキー割り当て(Ctrl+C で終了・Esc で中断など)より先に受け取り、使ったキーはそこで止める。
+    const offPress = keymap.intercept("key", ({ event }) => onVoiceKey(event), { priority: 1000 })
+    const offRelease = keymap.intercept("key", ({ event }) => onVoiceKey(event), { priority: 1000, release: true })
     onCleanup(() => {
-      cancelVoiceHold()
-      const recording = voiceRecording
-      voiceRecording = false
-      renderer.keyInput.off("keypress", onVoiceKey)
-      renderer.keyInput.off("keyrelease", onVoiceKey)
-      // Stop the microphone if it was active, but let the queued start finish
-      // first so `off` targets the same session. UI updates are suppressed
-      // after disposal.
-      if (recording) enqueueVoice("off")
       voiceDisposed = true
+      if (voicePending) clearTimeout(voicePending.timer)
+      voicePending = undefined
+      cancelVoice(true)
+      offPress()
+      offRelease()
     })
   })
-
-  async function voiceCommand(arguments_: string) {
-    try {
-      let sessionID = props.sessionID ?? voiceSessionID
-      if (sessionID == null) {
-        const res = await sdk.client.session.create({})
-        if (res.error) throw res.error
-        sessionID = res.data.id
-        voiceSessionID = sessionID
-      }
-      const res = await sdk.client.session.command({
-        sessionID,
-        command: "v",
-        arguments: arguments_,
-        noReply: true,
-        parts: [],
-      })
-      if (res.error) throw res.error
-    } catch (error) {
-      if (voiceDisposed) return
-      toast.show({
-        title: "🎤",
-        message: errorMessage(error),
-        variant: "error",
-        duration: 6000,
-      })
-    }
-  }
 
   useBindings(() => {
     return {
@@ -1190,6 +1485,16 @@ export function Prompt(props: PromptProps) {
       input.clear()
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
+      return true
+    }
+    // `/v` 系(音声入力)もサーバーへ送らず手元で処理する。
+    const voiceCommand = parseVoiceCommand(trimmed)
+    if (voiceCommand) {
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      handleVoiceCommand(voiceCommand)
       return true
     }
     const selectedModel = local.model.current()
@@ -1629,6 +1934,38 @@ export function Prompt(props: PromptProps) {
               cursorStyle={tuiConfig.cursor}
               syntaxStyle={syntax()}
             />
+            <Show when={voiceUi()}>
+              {(ui) => {
+                const meter = () => {
+                  const bars = "▁▂▃▄▅▆▇█"
+                  return bars[Math.max(0, Math.min(bars.length - 1, Math.round(ui().level * (bars.length - 1))))]
+                }
+                const clock = () => {
+                  const seconds = Math.floor(ui().elapsed / 1000)
+                  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+                }
+                const hint = () => {
+                  const t = (ja: string, en: string) => (english() ? en : ja)
+                  if (ui().source === "hold") return t("離すと確定 · Esc で取消", "release to insert · Esc to cancel")
+                  if (ui().source === "tap") return t("Space で送信 · Esc で取消", "Space to send · Esc to cancel")
+                  return t(`${voiceKeyLabel()} か Space で確定 · Enter で送信 · Esc で取消`, `${voiceKeyLabel()} or Space to finish · Enter to send · Esc to cancel`)
+                }
+                return (
+                  <Show
+                    when={ui().phase === "recording"}
+                    fallback={<text fg={theme.textMuted}>{english() ? "🎤 Transcribing…" : "🎤 文字起こし中…"}</text>}
+                  >
+                    <text>
+                      <span style={{ fg: theme.error, bold: true }}>●</span>
+                      <span style={{ fg: theme.text }}>{english() ? " Listening " : " 録音中 "}</span>
+                      <span style={{ fg: theme.textMuted }}>{clock()} </span>
+                      <span style={{ fg: theme.success }}>{meter()}</span>
+                      <span style={{ fg: theme.textMuted }}> {hint()}</span>
+                    </text>
+                  </Show>
+                )
+              }}
+            </Show>
             <Show when={store.mode === "normal" && props.visible !== false}>
               <ModelPresets
                 disabled={props.disabled}

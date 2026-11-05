@@ -9,6 +9,7 @@ import { voiceState } from "../util/voice"
 // 説明文はハードコードせず useCommandShortcut で実際の割当を引いて表示する。
 const rows = [
   { command: "koe.toggle", label: "声(KOE)の on/off", state: () => (voiceState().muted ? "OFF" : "ON") },
+  { command: "prompt.voice", label: "音声入力(空欄で Space 長押しでも可・/v status)", state: () => "" },
   { command: "model.cycle_recent", label: "モデルを次へ切替", state: () => "" },
   { command: "model.cycle_recent_reverse", label: "モデルを前へ切替", state: () => "" },
   { command: "model.list", label: "モデル一覧から選ぶ", state: () => "" },
