@@ -59,6 +59,18 @@ export function sessionCostLimit(metadata: Record<string, unknown> | undefined):
   }
   return COST_LIMIT_USD
 }
+// 次のモデル呼び出し1回の承認が必要かを判定する。無制限(Infinity)なら不要。
+// 見積もり不能(undefined)は安全側に倒して承認を求める。記録済み費用+見積が
+// 確認ラインを超えるときだけ承認を求める。
+export function needsCostApproval(
+  limit: number,
+  spent: number,
+  estimate: number | undefined,
+): boolean {
+  if (!Number.isFinite(limit)) return false
+  if (estimate === undefined) return true
+  return spent + estimate > limit
+}
 // 送る内容から見積もった入力量に足す余裕。
 export const INPUT_GROWTH_FACTOR = 1.5
 export const INPUT_GROWTH_TOKENS = 20_000

@@ -676,6 +676,14 @@ describe("execution safety", () => {
     expect(SessionEscalation.sessionCostLimit({ cost_limit_usd: "abc" })).toBe(fallback)
   })
 
+  test("cost approval fires only past the line and defaults to asking when unknown", () => {
+    expect(SessionEscalation.needsCostApproval(1, 0, 0.5)).toBe(false)
+    expect(SessionEscalation.needsCostApproval(1, 0.4, 0.5)).toBe(false)
+    expect(SessionEscalation.needsCostApproval(1, 0.6, 0.5)).toBe(true)
+    expect(SessionEscalation.needsCostApproval(1, 0, undefined)).toBe(true)
+    expect(SessionEscalation.needsCostApproval(Number.POSITIVE_INFINITY, 999, undefined)).toBe(false)
+  })
+
   test("observed input narrows the estimate but never exceeds the context ceiling", () => {
     const full = SessionEscalation.requestEstimate(model)!
     const narrowed = SessionEscalation.requestEstimate(model, model.limit.output, 1000)!

@@ -127,7 +127,13 @@ const live: Layer.Layer<
           ? yield* session.get(sessionInfo.value.parentID).pipe(Effect.option)
           : sessionInfo
         const base = Option.isSome(root) ? root.value : sessionInfo.value
-        const limit = SessionEscalation.sessionCostLimit(base.metadata)
+        // A limit set on the current session wins; otherwise inherit the root
+        // conversation's limit. This lets /cost work from a child session too.
+        const own = sessionInfo.value.metadata?.[SessionEscalation.COST_LIMIT_METADATA_KEY]
+        const limit =
+          own === undefined
+            ? SessionEscalation.sessionCostLimit(base.metadata)
+            : SessionEscalation.sessionCostLimit(sessionInfo.value.metadata)
         if (Number.isFinite(limit)) {
           const spent = base.cost ?? 0
           const observed =
@@ -137,7 +143,7 @@ const live: Layer.Layer<
             prepared.params.maxOutputTokens ?? input.model.limit.output,
             observed > 0 ? observed : undefined,
           )
-          if (estimate === undefined || spent + estimate > limit) {
+          if (SessionEscalation.needsCostApproval(limit, spent, estimate)) {
             yield* perm.ask({
               sessionID: SessionID.make(input.sessionID),
               permission: SessionEscalation.COST_PERMISSION,
