@@ -684,6 +684,28 @@ describe("execution safety", () => {
     expect(SessionEscalation.needsCostApproval(Number.POSITIVE_INFINITY, 999, undefined)).toBe(false)
   })
 
+  test("internal helper agents are never the user's request", () => {
+    for (const name of ["title", "summary", "compaction"]) {
+      expect(SessionEscalation.isAuxiliaryAgent(name)).toBe(true)
+      expect(SessionEscalation.isUserFacingAgent(name)).toBe(false)
+    }
+    for (const name of ["build", "plan", undefined]) {
+      expect(SessionEscalation.isUserFacingAgent(name)).toBe(true)
+    }
+  })
+
+  test("user-facing cost skips helper agents and user messages", () => {
+    const messages = [
+      { info: { role: "user" } },
+      { info: { role: "assistant", agent: "build", cost: 2 } },
+      { info: { role: "assistant", agent: "title", cost: 100 } },
+      { info: { role: "assistant", agent: "compaction", cost: 50 } },
+      { info: { role: "assistant", cost: 3 } },
+    ]
+    expect(SessionEscalation.userFacingCost(messages)).toBe(5)
+    expect(SessionEscalation.userFacingCost([])).toBe(0)
+  })
+
   test("observed input narrows the estimate but never exceeds the context ceiling", () => {
     const full = SessionEscalation.requestEstimate(model)!
     const narrowed = SessionEscalation.requestEstimate(model, model.limit.output, 1000)!

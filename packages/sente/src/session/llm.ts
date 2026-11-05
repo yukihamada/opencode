@@ -121,8 +121,11 @@ const live: Layer.Layer<
       // the approval line, require a one-call approval before streaming.
       // The line is $1 by default and can be changed per session via
       // metadata.cost_limit_usd (or SENTE_COST_LIMIT_USD globally).
+      // Internal helper agents (title/summary/compaction) are not the user's
+      // request, so they never prompt; with a $1 default they would otherwise
+      // stop every turn.
       const sessionInfo = yield* session.get(SessionID.make(input.sessionID)).pipe(Effect.option)
-      if (Option.isSome(sessionInfo)) {
+      if (Option.isSome(sessionInfo) && !SessionEscalation.isAuxiliaryAgent(input.agent.name)) {
         const root = sessionInfo.value.parentID
           ? yield* session.get(sessionInfo.value.parentID).pipe(Effect.option)
           : sessionInfo
@@ -135,13 +138,16 @@ const live: Layer.Layer<
             ? SessionEscalation.sessionCostLimit(base.metadata)
             : SessionEscalation.sessionCostLimit(sessionInfo.value.metadata)
         if (Number.isFinite(limit)) {
-          const spent = base.cost ?? 0
-          const observed =
-            (base.tokens?.input ?? 0) + (base.tokens?.cache?.read ?? 0) + (base.tokens?.cache?.write ?? 0)
+          // Count only the user's own calls against the request budget; the
+          // title/summary/compaction helpers are overhead, not the request.
+          const history = yield* session.messages({ sessionID: base.id }).pipe(Effect.option)
+          const spent = Option.isSome(history) ? SessionEscalation.userFacingCost(history.value) : (base.cost ?? 0)
+          // Estimate this one call from the request we are about to send, so a
+          // small prompt to a cheap model is not blocked by the context window.
           const estimate = SessionEscalation.requestEstimate(
             input.model,
             prepared.params.maxOutputTokens ?? input.model.limit.output,
-            observed > 0 ? observed : undefined,
+            SessionEscalation.requestTokens(prepared),
           )
           if (SessionEscalation.needsCostApproval(limit, spent, estimate)) {
             yield* perm.ask({
@@ -150,7 +156,11 @@ const live: Layer.Layer<
               patterns: [`${input.model.providerID}/${input.model.id}`],
               metadata: { note: SessionEscalation.budgetNote(estimate, SessionEscalation.language(), spent, limit) },
               always: [],
-              ruleset: [],
+              // Only explicit request_cost rules decide this gate. The default
+              // "*": "allow" agent rule must not silently bypass it.
+              ruleset: Permission.merge(input.agent.permission ?? [], input.permission ?? []).filter(
+                (rule) => rule.permission === SessionEscalation.COST_PERMISSION,
+              ),
             })
           }
         }

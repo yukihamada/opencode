@@ -59,6 +59,28 @@ export function sessionCostLimit(metadata: Record<string, unknown> | undefined):
   }
   return COST_LIMIT_USD
 }
+// 依頼そのものではなく、その裏で走る内部補助エージェント。タイトル付け・要約・
+// 自動圧縮は利用者が起動した処理ではないため、費用確認プロンプトの対象外にする
+// （既定 $1 では自動タイトルだけで毎回止まってしまうため）。
+export const AUXILIARY_AGENTS = new Set(["title", "summary", "compaction"])
+export function isAuxiliaryAgent(name: string): boolean {
+  return AUXILIARY_AGENTS.has(name)
+}
+// 依頼の費用として数えるのは利用者が起動した呼び出しだけ。agent が未設定の
+// メッセージは利用者向けとして扱い、内部補助エージェントだけを除外する。
+export function isUserFacingAgent(name: string | undefined): boolean {
+  return name === undefined || !AUXILIARY_AGENTS.has(name)
+}
+// 会話のメッセージから、利用者向けの記録済み費用だけを合計する。
+export function userFacingCost(messages: { info: { role: string; agent?: string; cost?: number } }[]): number {
+  return messages.reduce(
+    (sum, message) =>
+      message.info.role === "assistant" && isUserFacingAgent(message.info.agent)
+        ? sum + (message.info.cost ?? 0)
+        : sum,
+    0,
+  )
+}
 // 次のモデル呼び出し1回の承認が必要かを判定する。無制限(Infinity)なら不要。
 // 見積もり不能(undefined)は安全側に倒して承認を求める。記録済み費用+見積が
 // 確認ラインを超えるときだけ承認を求める。
@@ -177,6 +199,9 @@ export function requestEstimate(
   const prices = costs.flatMap((cost) => [cost.input, cost.output, cost.cache.read, cost.cache.write])
   if (prices.some((price) => !Number.isFinite(price) || price < 0)) return undefined
   if (model.id === "auto" && model.providerID === "teai" && prices.every((price) => price === 0)) return undefined
+  // 価格が全て 0 のモデルは無料。上限・文脈が未設定でも費用は発生しないので
+  // 見積は 0 とし、確認は求めない（fixture・自前モデル・無料枠で誤って止めない）。
+  if (prices.every((price) => price === 0)) return 0
   if (!Number.isFinite(model.limit.context) || !Number.isFinite(model.limit.output)) return undefined
   if (model.limit.context <= 0 || model.limit.output <= 0) return undefined
   if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) return undefined

@@ -265,8 +265,13 @@ def cases(bench):
 
     def gate_off():
         fake.reset()
-        code, out = bench.run()
-        bench.check("gate-off", "上限未設定なら高額モデルでも確認なしで実行する", code == 0 and fake.main == 1 and OK_TEXT in out, f"exit={code} main={fake.main}\n{out}")
+        code, out = bench.run({"SENTE_COST_LIMIT_USD": "none"})
+        bench.check("gate-off", "SENTE_COST_LIMIT_USD=none なら高額モデルでも確認なしで実行する", code == 0 and fake.main == 1 and OK_TEXT in out, f"exit={code} main={fake.main}\n{out}")
+
+    def gate_default():
+        fake.reset()
+        code, out = bench.run(timeout=60)
+        bench.check("gate-default", "上限未設定なら既定 $1 で呼び出す前に止まる", fake.main == 0 and OK_TEXT not in out, f"exit={code} main={fake.main}\n{out}")
 
     def gate_on():
         fake.reset()
@@ -293,23 +298,23 @@ def cases(bench):
     def resume():
         # 1 call + 5 built-in retries all fail, then the automatic resume succeeds on the 7th call.
         fake.reset(fail=6)
-        code, out = bench.run({"SENTE_AUTO_RESUME_BASE_MS": "200"})
+        code, out = bench.run({"SENTE_AUTO_RESUME_BASE_MS": "200", "SENTE_COST_LIMIT_USD": "none"})
         bench.check("resume", "503 が続いて止まっても、自動で再開して完了する", code == 0 and fake.main == 7 and OK_TEXT in out, f"exit={code} main={fake.main} (期待 7)\n{out}")
 
     def resume_limit():
         fake.reset(fail=-1)
-        code, out = bench.run({"SENTE_AUTO_RESUME_BASE_MS": "50"}, timeout=240)
+        code, out = bench.run({"SENTE_AUTO_RESUME_BASE_MS": "50", "SENTE_COST_LIMIT_USD": "none"}, timeout=240)
         # (1 call + 5 retries) x (1 original + 5 resumes)
         bench.check("resume-limit", "直らないエラーは5回再開したところで止まる", fake.main == 36 and OK_TEXT not in out, f"exit={code} main={fake.main} (期待 36)\n{out}")
 
     def no_resume():
         fake.reset(fail=-1, status=401)
-        code, out = bench.run({"SENTE_AUTO_RESUME_BASE_MS": "50"}, timeout=60)
+        code, out = bench.run({"SENTE_AUTO_RESUME_BASE_MS": "50", "SENTE_COST_LIMIT_USD": "none"}, timeout=60)
         bench.check("no-resume", "認証エラー(401)は再開しない", fake.main == 1 and OK_TEXT not in out, f"exit={code} main={fake.main} (期待 1)\n{out}")
 
     def tui_sidebar():
         fake.reset(todo=True)
-        screen, path = bench.tui("sidebar", lambda shot: OK_TEXT in shot and "今回の使用" in shot and "[✓]" in shot)
+        screen, path = bench.tui("sidebar", lambda shot: OK_TEXT in shot and "今回の使用" in shot and "[✓]" in shot, {"SENTE_COST_LIMIT_USD": "none"})
         side = sidebar(screen)
         order = [side.find(word) for word in ("進捗", "今回の使用", "残高")]
         lines = side.splitlines()
@@ -333,12 +338,13 @@ def cases(bench):
 
     def tui_retry():
         fake.reset(fail=6)
-        screen, path = bench.tui("retry", lambda shot: "再試行待ち" in sidebar(shot) and "回目" in sidebar(shot), {"SENTE_AUTO_RESUME_BASE_MS": "8000"})
+        screen, path = bench.tui("retry", lambda shot: "再試行待ち" in sidebar(shot) and "回目" in sidebar(shot), {"SENTE_AUTO_RESUME_BASE_MS": "8000", "SENTE_COST_LIMIT_USD": "none"})
         side = sidebar(screen)
         bench.check("tui-retry", "再開待ちの間、右側に「再試行待ち（n回目）」と出る", "再試行待ち（" in side and "回目）" in side, f"画面: {path}\n{side}")
 
     return {
         "gate-off": gate_off,
+        "gate-default": gate_default,
         "gate-on": gate_on,
         "gate-high": gate_high,
         "gate-settles": gate_settles,
