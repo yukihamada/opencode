@@ -38,6 +38,14 @@ import { createFetch, createEventSource, directory, json } from "../../fixture/t
 import { tmpdir } from "../../fixture/fixture"
 import { wait } from "../cmd/tui/sync-fixture"
 
+// A preset resolves to a concrete model: the coding family migrates to the newer seed,
+// the recommended role takes the cheapest eligible model, the rest keep their seed.
+function expectedModelID(preset: (typeof modelPresets)[number], seed: string, next: string, recommended: string) {
+  if (preset.id === "coding") return next
+  if (preset.id === "recommended") return recommended
+  return preset.seed
+}
+
 function model(id: string): Model {
   return {
     id, providerID: "teai", name: id,
@@ -56,10 +64,13 @@ function model(id: string): Model {
 async function mount(state: string, width: number, withPrompt = false) {
   const seed = model("deepseek/deepseek-v4.1-flash")
   const next = model("deepseek/deepseek-v5-flash")
+  // The recommended role resolves to the cheapest model that clears its floor, so the
+  // fixture needs one model that is cheaper than every preset seed.
+  const recommended = { ...model("vendor/recommended-flash"), cost: { input: 0.01, output: 0.03, cache: { read: 0, write: 0 } } }
   const models = withPrompt ? Object.fromEntries(modelPresets.map((preset) => [preset.seed, {
     ...model(preset.seed), cost: { input: preset.input, output: preset.output, cache: { read: 0, write: 0 } },
   }])) : {}
-  const provider = { id: "teai", name: "teai", env: [], models: { ...models, [seed.id]: seed, [next.id]: next } }
+  const provider = { id: "teai", name: "teai", env: [], models: { ...models, [seed.id]: seed, [next.id]: next, [recommended.id]: recommended } }
   const requests: string[] = []
   const calls = createFetch((url) => {
     requests.push(url.pathname)
@@ -140,11 +151,13 @@ async function mount(state: string, width: number, withPrompt = false) {
       const saved = await Bun.file(path.join(state, "model.json")).json()
       const pending = (await readdir(state)).some((name) => name.startsWith("model.json.") && name.endsWith(".tmp"))
       if (!pending && JSON.stringify({ recent: saved.recent, favorite: saved.favorite }) === expected) return
-      if (Date.now() > deadline) throw new Error("model selection was not persisted")
+      if (Date.now() > deadline) {
+        throw new Error(`model selection was not persisted\nexpected=${expected}\nsaved=${JSON.stringify({ recent: saved.recent, favorite: saved.favorite })}`)
+      }
       await Bun.sleep(10)
     }
   }
-  return { app, ctx, seed, next, prompt, setDisabled, requests, persisted }
+  return { app, ctx, seed, next, recommended, prompt, setDisabled, requests, persisted }
 }
 
 test.each([80, 140])("migrates saved favorites, renders and selects the successor at %i columns", async (width) => {
@@ -211,6 +224,48 @@ test.each([80, 140])("migrates saved favorites, renders and selects the successo
   }
 })
 
+test("keeps a role when another role resolves to the same model", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(path.join(tmp.path, "model.json"), JSON.stringify({
+    favorite: [{ providerID: "teai", modelID: "deepseek/deepseek-v4.1-flash" }],
+    recent: [{ providerID: "teai", modelID: "deepseek/deepseek-v4.1-flash" }],
+  }))
+  await Bun.write(path.join(tmp.path, "kv.json"), "{}")
+  const { app, ctx, recommended, persisted } = await mount(tmp.path, 120, true)
+  try {
+    await wait(() => ctx.sync.data.agent.length > 0)
+    // Reprice the recommended model above the everyday seed so both roles resolve to the
+    // everyday model. They are separate roles and must both survive selection.
+    ctx.sync.set("provider", 0, "models", recommended.id, "cost", "input", 100)
+    ctx.sync.set("provider", 0, "models", recommended.id, "cost", "output", 100)
+    await app.renderOnce()
+    const everyday = modelPresets.find((preset) => preset.id === "everyday")!
+    expect(ctx.local.model.selectPreset("everyday")).toBe(true)
+    await wait(() => ctx.local.model.favorite().some((item) => item.presetID === "everyday"))
+    expect(ctx.local.model.selectPreset("recommended")).toBe(true)
+    await wait(() => ctx.local.model.favorite().some((item) => item.presetID === "recommended"))
+    expect(ctx.local.model.current()?.modelID).toBe(everyday.seed)
+    expect(ctx.local.model.favorite().filter((item) => item.modelID === everyday.seed).map((item) => item.presetID))
+      .toEqual(["everyday", "recommended"])
+    // The prompt names the role that was actually chosen, not the first role owning the model.
+    expect(ctx.local.model.parsed().model).toBe(presetName("recommended")!)
+    ctx.local.model.selectPreset("everyday")
+    await app.renderOnce()
+    expect(ctx.local.model.parsed().model).toBe(presetName("everyday")!)
+
+    // Cycling moves by role, so it advances past the shared model instead of stalling.
+    ctx.local.model.selectPreset("everyday")
+    await app.renderOnce()
+    expect(ctx.local.model.cyclePreset(1)).toBe(true)
+    await app.renderOnce()
+    const coding = expectedModelID(modelPresets[1], "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v5-flash", recommended.id)
+    await wait(() => ctx.local.model.current()?.modelID === coding)
+  } finally {
+    app.renderer.destroy()
+    await persisted()
+  }
+})
+
 test.each([80, 140])("selects by click and slash in the real prompt at %i columns", async (width) => {
   await using tmp = await tmpdir()
   await Bun.write(path.join(tmp.path, "model.json"), JSON.stringify({
@@ -218,7 +273,7 @@ test.each([80, 140])("selects by click and slash in the real prompt at %i column
     recent: [{ providerID: "teai", modelID: "deepseek/deepseek-v4.1-flash" }],
   }))
   await Bun.write(path.join(tmp.path, "kv.json"), "{}")
-  const { app, ctx, seed, next, prompt, setDisabled, requests, persisted } = await mount(tmp.path, width, true)
+  const { app, ctx, seed, next, recommended, prompt, setDisabled, requests, persisted } = await mount(tmp.path, width, true)
   try {
     if (!prompt) throw new Error("prompt not mounted")
     prompt.focus()
@@ -255,40 +310,43 @@ test.each([80, 140])("selects by click and slash in the real prompt at %i column
       await app.mockInput.typeText(`/${index + 1}`)
       await app.renderOnce()
       app.mockInput.pressEnter()
-      await wait(() => ctx.local.model.current()?.modelID === (preset.id === "coding" ? next.id : preset.seed))
+      await wait(() => ctx.local.model.current()?.modelID === expectedModelID(preset, seed.id, next.id, recommended.id))
       expect(prompt.current.input).toBe("")
     }
     expect(requests.some((pathname) => /(?:prompt|message|command)$/.test(pathname) && pathname.includes("session"))).toBe(false)
 
-    // Empty prompt arrows wrap through presets; with a draft, right advances to the
-    // next model while left keeps cursor navigation.
+    // Empty prompt arrows wrap through presets in role order; with a draft, right advances
+    // to the next model while left keeps cursor navigation.
+    const at = (index: number) => expectedModelID(modelPresets[index], seed.id, next.id, recommended.id)
+    const last = modelPresets.length - 1
     ctx.local.model.selectPreset("expert")
     await app.renderOnce()
+    const expert = modelPresets.findIndex((preset) => preset.id === "expert")
     app.mockInput.pressArrow("right")
     await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(modelPresets[0].seed)
-    await wait(() => ctx.local.model.current()?.modelID === modelPresets[0].seed)
+    expect(ctx.local.model.current()?.modelID).toBe(at((expert + 1) % modelPresets.length))
+    await wait(() => ctx.local.model.current()?.modelID === at((expert + 1) % modelPresets.length))
     app.mockInput.pressArrow("left")
     await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(modelPresets[4].seed)
-    await wait(() => ctx.local.model.current()?.modelID === modelPresets[4].seed)
+    expect(ctx.local.model.current()?.modelID).toBe(at(expert))
+    await wait(() => ctx.local.model.current()?.modelID === at(expert))
     prompt.set(draft)
     await app.renderOnce()
     app.mockInput.pressArrow("right")
     await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(modelPresets[0].seed)
-    await wait(() => ctx.local.model.current()?.modelID === modelPresets[0].seed)
+    expect(ctx.local.model.current()?.modelID).toBe(at((expert + 1) % modelPresets.length))
+    await wait(() => ctx.local.model.current()?.modelID === at((expert + 1) % modelPresets.length))
     app.mockInput.pressArrow("left")
     await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(modelPresets[0].seed)
+    expect(ctx.local.model.current()?.modelID).toBe(at((expert + 1) % modelPresets.length))
     expect(prompt.current).toEqual(draft)
     prompt.reset()
-    ctx.local.model.set({ providerID: "teai", modelID: modelPresets[4].seed })
+    ctx.local.model.set({ providerID: "teai", modelID: at(last) })
     setDisabled(true)
     await app.renderOnce()
     app.mockInput.pressArrow("right")
     await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(modelPresets[4].seed)
+    expect(ctx.local.model.current()?.modelID).toBe(at(last))
     setDisabled(false)
 
     await app.renderOnce()
@@ -299,16 +357,16 @@ test.each([80, 140])("selects by click and slash in the real prompt at %i column
     await wait(() => app.renderer.currentFocusedRenderable instanceof InputRenderable)
     app.mockInput.pressArrow("right")
     await app.renderOnce()
-    expect(ctx.local.model.current()?.modelID).toBe(modelPresets[4].seed)
+    expect(ctx.local.model.current()?.modelID).toBe(at(last))
     expect(app.captureCharFrame()).toContain(modelBrowseText().recommended)
     app.mockInput.pressKey("s", { ctrl: true })
     await app.renderOnce()
     expect(app.captureCharFrame()).toContain(modelBrowseText().price)
-    // Price order moves the current model (the most expensive preset) to the last row, and
-    // the dialog scrolls it back into view two animation frames later. Wait for that settled
-    // frame, then jump to the first row, so the ordering check does not depend on whether the
-    // frame was captured before or after the scroll.
-    const selectedRow = `● ${presetName("expert")}`
+    // Price order re-sorts the list and the dialog scrolls the current model back into view
+    // two animation frames later. Wait for that settled frame, then jump to the first row, so
+    // the ordering check does not depend on whether the frame was captured before or after
+    // the scroll.
+    const selectedRow = `● ${presetName(modelPresets[last].id)}`
     for (const start = Date.now(); !app.captureCharFrame().includes(selectedRow); await app.renderOnce()) {
       if (Date.now() - start > 2000) throw new Error("price order never scrolled the current model into view")
       await Bun.sleep(10)
