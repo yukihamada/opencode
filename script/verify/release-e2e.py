@@ -26,9 +26,10 @@ base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 
 # cost-resume-e2e.py cases that exercise behaviour present on the release branch today:
-# a plain run, a tool-call round trip (two model calls), "401 is not retried", and
-# "a turn stopped by repeated 503s resumes by itself" (automatic resume, 2026-10-07).
-COST_CASES = ["gate-off", "gate-settles", "no-resume", "resume"]
+# "no limit set" (unlimited), "the default $1 gate stops before calling", a tool-call round
+# trip (two model calls), "401 is not retried", and "a turn stopped by repeated 503s resumes
+# by itself" (automatic resume, 2026-10-07).
+COST_CASES = ["gate-off", "gate-default", "gate-settles", "no-resume", "resume"]
 SEED = "sente-seed-many.db"
 SEED_SESSIONS = 50
 # A migration that only deletes derived rows, so applying it a second time is harmless. The
@@ -75,7 +76,10 @@ def cases(bench, channel, dev_guard=False):
         )
 
     def run(home, project, *flags, extra=None):
-        return call(home, project, "run", "--pure", "-m", "fake/pricey", *flags, "check", extra=extra)
+        # These cases exercise DB behaviour, not the cost gate, so lift the
+        # default $1 limit; the gate itself is covered by the COST_CASES below.
+        env = {"SENTE_COST_LIMIT_USD": "none", **(extra or {})}
+        return call(home, project, "run", "--pure", "-m", "fake/pricey", *flags, "check", extra=env)
 
     def db_path():
         home, project = bench.home()
@@ -178,7 +182,7 @@ def cases(bench, channel, dev_guard=False):
         bench.home = seeded
         try:
             flat = lambda shot: "".join(shot.split())
-            screen, path = bench.tui("db-notice", lambda shot: SEED in flat(shot) and base.OK_TEXT in shot)
+            screen, path = bench.tui("db-notice", lambda shot: SEED in flat(shot) and base.OK_TEXT in shot, {"SENTE_COST_LIMIT_USD": "none"})
         finally:
             bench.home = make
         text = flat(screen)
