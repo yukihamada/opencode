@@ -156,6 +156,7 @@ test("finish sends the whole recording with language and lexicon and returns the
   expect(url.origin + url.pathname).toBe("https://koe.live/api/stt")
   expect(url.searchParams.get("lang")).toBe("ja")
   expect(url.searchParams.get("lex")).toBe("Sente,KOE")
+  expect(url.searchParams.get("src")).toBe("dictation")
   // 録音した1秒ぶん(32000バイト)+ヘッダ44バイトを丸ごと送る(最後の言葉を落とさない)。
   expect(requests[0]!.bytes).toBe(32044)
 })
@@ -314,7 +315,7 @@ test("rate limit message explains the real limit", async () => {
   procs[0]!.stdout.write(pcm(true))
   await Bun.sleep(5)
   const result = await recording.finish()
-  expect(result.type === "error" && result.message).toContain("10分に20回")
+  expect(result.type === "error" && result.message).toContain("10分に60回")
 })
 
 test("SSH check can be overridden for stale tmux variables", () => {
@@ -335,7 +336,7 @@ test("a failure on the second piece keeps the first piece's text", async () => {
   const result = await recording.finish()
   expect(result.type).toBe("text")
   expect(result.type === "text" && result.text).toBe("前半です")
-  expect(result.type === "text" && result.warning).toContain("10分に20回")
+  expect(result.type === "text" && result.warning).toContain("10分に60回")
 })
 
 test("long dictation is transcribed while still talking; release only waits for the last part", async () => {
@@ -415,8 +416,8 @@ test("reads the key repeat delay on each OS", () => {
 
 test("near the rate limit, a long dictation stops sending parts early and sends once at release", async () => {
   const procs = fakeRecorder()
-  // 直近10分で既に14回送っている。
-  for (let i = 0; i < 14; i++) backend.sent.push(Date.now())
+  // 直近10分で既に50回送っている。
+  for (let i = 0; i < 50; i++) backend.sent.push(Date.now())
   let calls = 0
   backend.fetch = async () => (calls++, Response.json({ ok: true, text: "まとめて" }))
   const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
@@ -427,10 +428,10 @@ test("near the rate limit, a long dictation stops sending parts early and sends 
   expect(calls).toBe(0)
   expect(await recording.finish()).toEqual({ type: "text", text: "まとめて" })
   expect(calls).toBe(1)
-  expect(recentSends()).toBe(15)
+  expect(recentSends()).toBe(51)
 })
 
-test("two 2-minute dictations in 10 minutes stay under the 20-request limit", async () => {
+test("two 2-minute dictations in 10 minutes stay under the 60-request limit", async () => {
   let calls = 0
   for (let round = 0; round < 2; round++) {
     const procs = fakeRecorder()
@@ -444,7 +445,7 @@ test("two 2-minute dictations in 10 minutes stay under the 20-request limit", as
     await Bun.sleep(20)
     await recording.finish()
   }
-  expect(calls).toBeLessThanOrEqual(16)
+  expect(calls).toBeLessThanOrEqual(50)
 })
 
 test("a chosen microphone is passed to the recorder", () => {
@@ -460,10 +461,10 @@ test("send counts are shared through a file with other Sente processes", async (
   const path = await import("node:path")
   const dir = await mkdtemp(path.join(tmpdir(), "sente-voice-"))
   backend.sentFile = path.join(dir, "sends.json")
-  // 別の Sente が直近に14回送った記録。
+  // 別の Sente が直近に50回送った記録。
   const now = Date.now()
-  await writeFile(backend.sentFile, JSON.stringify(Array.from({ length: 14 }, (_, i) => now - i * 1000).concat([now - 700_000])))
-  expect(recentSends(now)).toBe(14)
+  await writeFile(backend.sentFile, JSON.stringify(Array.from({ length: 50 }, (_, i) => now - i * 1000).concat([now - 700_000])))
+  expect(recentSends(now)).toBe(50)
   const procs = fakeRecorder()
   let calls = 0
   backend.fetch = async () => (calls++, Response.json({ ok: true, text: "共有" }))
@@ -475,7 +476,7 @@ test("send counts are shared through a file with other Sente processes", async (
   expect(calls).toBe(0)
   await recording.finish()
   expect(calls).toBe(1)
-  expect(JSON.parse(await readFile(backend.sentFile, "utf8"))).toHaveLength(15)
+  expect(JSON.parse(await readFile(backend.sentFile, "utf8"))).toHaveLength(51)
 })
 
 test("the send log lives in a private state folder and is replaced atomically", async () => {
@@ -497,4 +498,24 @@ test("the send log lives in a private state folder and is replaced atomically", 
   }
   // 一時ファイルは残らない。
   expect((await readdir(path.dirname(backend.sentFile))).filter((name) => name.endsWith(".tmp"))).toEqual([])
+})
+
+test("with the dictation quota, a pause after about 5 seconds of speech already sends a part", async () => {
+  const procs = fakeRecorder()
+  let calls = 0
+  const partials: string[] = []
+  backend.fetch = async () => (calls++, Response.json({ ok: true, text: `文${calls}` }))
+  const recording = new Recording({ recorder: backend.findRecorder()!, english: false, onPartial: (text) => partials.push(text) })
+  procs[0]!.stdout.write(pcmOf(true, 5.5))
+  procs[0]!.stdout.write(pcmOf(false, 1.3))
+  await Bun.sleep(20)
+  expect(calls).toBe(1)
+  expect(partials).toEqual(["文1"])
+  // 言い淀み(0.8秒)では区切らない。
+  procs[0]!.stdout.write(pcmOf(true, 5.5))
+  procs[0]!.stdout.write(pcmOf(false, 0.8))
+  procs[0]!.stdout.write(pcmOf(true, 1))
+  await Bun.sleep(20)
+  expect(calls).toBe(1)
+  expect(await recording.finish()).toEqual({ type: "text", text: "文1文2" })
 })

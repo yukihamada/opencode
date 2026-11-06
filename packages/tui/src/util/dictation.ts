@@ -21,13 +21,13 @@ const STT_URL = "https://koe.live/api/stt"
 // 文字起こし側は1回3MBまで。16kHz・16bit なら約98秒なので、85秒を超えたら静かな所で分けて送る。
 const CHUNK_MAX_MS = 85_000
 const CHUNK_MIN_MS = 55_000
-// 話しながら文字にするための区切り。文字起こしは IP ごとに10分20回までなので、
-// 15秒以上話した後の1.2秒の間(言い淀みより長い)でだけ区切り、手元でも回数を数える。
-const SEGMENT_MIN_MS = 15_000
+// 話しながら文字にするための区切り。koe.live は音声入力(src=dictation)に IP ごと10分60回の枠を
+// 持つので、5秒以上話した後の1.2秒の間(言い淀みより長い)で区切り、手元でも回数を数える。
+const SEGMENT_MIN_MS = 5_000
 const SEGMENT_PAUSE_MS = 1_200
 const RATE_WINDOW_MS = 600_000
-// この回数を超えたら、録音中の区切りをやめて離した時にまとめて送る(上限20回に余裕を残す)。
-const RATE_SOFT_LIMIT = 14
+// この回数を超えたら、録音中の区切りをやめて離した時にまとめて送る(上限60回に余裕を残す)。
+const RATE_SOFT_LIMIT = 50
 
 /// 直近10分の送信回数。同じ端末の別の Sente の分も数えるため、時刻をファイルに残す(ファイルが正)。
 export function recentSends(now = Date.now()) {
@@ -581,6 +581,8 @@ export class Recording {
   private async transcribe(pcm: Buffer): Promise<string> {
     const text = (ja: string, en: string) => (this.options.english ? en : ja)
     const url = new URL(STT_URL)
+    // 音声入力専用の回数枠を使う(記録はしない。src=sente だけが記録対象)。
+    url.searchParams.set("src", "dictation")
     if (this.options.language) url.searchParams.set("lang", this.options.language)
     if (this.options.lexicon) url.searchParams.set("lex", this.options.lexicon)
     const response = await backend.fetch(url.toString(), {
@@ -593,8 +595,8 @@ export class Recording {
     if (response.status === 429)
       throw new RateLimited(
         text(
-          "文字起こしの回数上限(10分に20回)に達しました。数分おいてからどうぞ",
-          "Transcription limit reached (20 per 10 minutes). Try again in a few minutes",
+          "文字起こしの回数上限(10分に60回)に達しました。数分おいてからどうぞ",
+          "Transcription limit reached (60 per 10 minutes). Try again in a few minutes",
         ),
       )
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
