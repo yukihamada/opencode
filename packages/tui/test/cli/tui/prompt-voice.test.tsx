@@ -910,3 +910,25 @@ test("with a custom hold key, a Ctrl+Space recording still finishes with Space a
     await teardown(s)
   }
 })
+
+test("a space appears immediately even while a hold is being detected, and is removed if it turns into a hold", async () => {
+  const voice = fakeVoice()
+  const s = await setup()
+  try {
+    s.emit(key("space", "press", "raw"))
+    await s.app.renderOnce()
+    // 長押しかどうか分かる前から、空白は入っている(入力が遅れない)。
+    expect(s.prompt.current.input).toBe(" ")
+    await Bun.sleep(300)
+    for (let i = 0; i < 6; i++) {
+      s.emit(key("space", "press", "raw"))
+      await Bun.sleep(40)
+    }
+    // 長押しと分かったら空白は消え、録音になる。
+    expect(s.prompt.current.input).toBe("")
+    await wait(() => s.prompt.current.input === "テストを直して", 3000)
+    expect(voice.transcribed).toBe(1)
+  } finally {
+    await teardown(s)
+  }
+})

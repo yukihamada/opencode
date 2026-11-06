@@ -1161,13 +1161,20 @@ export function Prompt(props: PromptProps) {
   }
 
   // 長押し判定の結果「ただの Space」だった: 先行録音を捨て、空白を入れる。
+  // 長押し判定の結果「ただの Space」だった: 先行録音を捨てる(空白は押した時に入れてある)。
   function resolvePendingAsTap() {
     const pending = voicePending
     if (!pending) return
     clearTimeout(pending.timer)
     voicePending = undefined
     if (voiceRecording && !voiceConfirmed) cancelVoice(true)
-    if (pending.char && input && !input.isDestroyed) input.insertText(pending.char)
+  }
+
+  // 長押しと分かった時、押した時に入れておいた空白を取り除く(入力欄は空欄から始まっている)。
+  function removePendingChar(pending: { char: string }) {
+    if (!pending.char || !input || input.isDestroyed || input.plainText !== pending.char) return
+    input.setText("")
+    setStore("prompt", { input: "", parts: [] })
   }
 
   // キーリピートが途切れたら「離した」とみなす(kitty 以外の端末の長押し)。
@@ -1278,6 +1285,7 @@ export function Prompt(props: PromptProps) {
         }
         // kitty 以外: 2回目のスペース(=キーリピート)が来たら長押し。
         clearTimeout(voicePending.timer)
+        removePendingChar(voicePending)
         voicePending = undefined
         voiceLastSpace = now
         voiceRepeatGap = 0
@@ -1303,13 +1311,16 @@ export function Prompt(props: PromptProps) {
     const kitty = event.source === "kitty" && char !== "\u3000"
     voiceLastKitty = kitty
     startVoice("hold", false)
-    voicePending = {
+    // 空白はすぐに入れる(長押しを使わない人の入力を遅らせない)。長押しと分かったら取り除く。
+    if (char && input && !input.isDestroyed) input.insertText(char)
+    const pending = {
       kitty,
       char,
       timer: setTimeout(
         () => {
           if (!kitty) return resolvePendingAsTap()
           voicePending = undefined
+          removePendingChar(pending)
           if (!voiceCanStart()) return cancelVoice(true)
           if (voiceRecording) confirmVoice()
           else startVoice("hold")
@@ -1317,6 +1328,7 @@ export function Prompt(props: PromptProps) {
         kitty ? VOICE_KITTY_HOLD_MS : voiceRepeatWait(),
       ),
     }
+    voicePending = pending
   }
 
   function toggleVoice() {
