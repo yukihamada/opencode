@@ -904,7 +904,7 @@ export function Prompt(props: PromptProps) {
   >()
   const VOICE_KITTY_HOLD_MS = 200
   // キーリピートが始まるまでの待ち時間。macOS の設定(リピート入力認識までの時間)+余裕。読めなければ 650ms。
-  const voiceDoubleTapMs = () => Math.min(200, Math.max(60, (dictationBackend.keyRepeatDelayMs() ?? 400) * 0.6))
+  const voiceDoubleTapMs = () => Math.min(300, Math.max(60, (dictationBackend.keyRepeatDelayMs() ?? 400) * 0.8))
   const voiceRepeatWait = () => Math.min(2500, Math.max(650, (dictationBackend.keyRepeatDelayMs() ?? 400) + 250))
   let voiceRecording: Recording | undefined
   let voiceSource: VoiceSource | undefined
@@ -1015,7 +1015,11 @@ export function Prompt(props: PromptProps) {
     void DialogConfirm.show(
       dialog,
       text("音声入力を使いますか", "Use voice input?"),
-      privacyNotice(english()) + text("\n\nConfirm で使い始めます。", "\n\nPress Confirm to enable."),
+      privacyNotice(english()) +
+        text(
+          "\n\n長押しを見分けるため、空欄で Space を押した瞬間からマイクを開きます(ただの空白なら送らずに捨てます)。Enter で使い始めます。",
+          "\n\nTo detect a hold, the microphone opens as soon as you press Space on an empty prompt (a plain space is discarded, never sent). Press Enter to enable.",
+        ),
       // DialogConfirm の label は「やめる」側のボタン名。
       text("使わない", "Not now"),
     ).then((ok) => {
@@ -1336,7 +1340,26 @@ export function Prompt(props: PromptProps) {
       voiceDisposed = true
       if (voicePending) clearTimeout(voicePending.timer)
       voicePending = undefined
-      cancelVoice(true)
+      // 権限確認などで入力欄が画面から外れた時、話していた内容を捨てずに下書きへ退避する。
+      const recording = voiceRecording
+      if (recording && voiceConfirmed) {
+        voiceRecording = undefined
+        clearInterval(voiceReleaseTimer)
+        const text = (ja: string, en: string) => (english() ? en : ja)
+        void recording.finish().then((result) => {
+          if (result.type !== "text") return
+          stash.push({ input: result.text, parts: [], mode: "normal" })
+          toast.show({
+            title: "🎤",
+            message: text(
+              `入力欄が閉じたので、話した内容を下書きに退避しました: ${result.text.slice(0, 40)}(コマンド一覧の Stash list から戻せます)`,
+              `The prompt closed, so your dictation was stashed: ${result.text.slice(0, 40)} (restore from Stash list in the command palette)`,
+            ),
+            variant: "info",
+            duration: 10000,
+          })
+        })
+      } else cancelVoice(true)
       offPress()
       offRelease()
     })

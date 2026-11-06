@@ -3,7 +3,7 @@ import { expect, test } from "bun:test"
 import { KeyEvent, TextareaRenderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import { onCleanup } from "solid-js"
+import { createSignal, onCleanup, Show } from "solid-js"
 import type { Model } from "@sente-ai/sdk/v2"
 import path from "node:path"
 import { ArgsProvider } from "../../../src/context/args"
@@ -23,7 +23,7 @@ import { DataProvider } from "../../../src/context/data"
 import { EditorContextProvider } from "../../../src/context/editor"
 import { LocationProvider } from "../../../src/context/location"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
-import { PromptStashProvider } from "../../../src/prompt/stash"
+import { PromptStashProvider, usePromptStash } from "../../../src/prompt/stash"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { TuiConfigProvider } from "../../../src/config"
 import { OpencodeKeymapProvider, registerOpencodeKeymap, SENTE_BASE_MODE, useBindings } from "../../../src/keymap"
@@ -84,6 +84,8 @@ async function mount(
   const createdSessions: string[] = []
   const posts: string[] = []
   const appCalls = { exit: 0, interrupt: 0 }
+  const [promptShown, setPromptShown] = createSignal(true)
+  let stashList: () => Array<{ input: string }> = () => []
   const base = createFetch((url) => {
     if (url.pathname === "/config/providers") return json({ providers: [provider], default: { teai: "auto" } })
     if (url.pathname === "/provider") return json({ all: [provider], default: { teai: "auto" }, connected: ["teai"] })
@@ -148,12 +150,15 @@ async function mount(
             <PromptHistoryProvider>
               <EditorContextProvider integration={{}}>
                 <LocationProvider>
-                  <Prompt
-                    sessionID={promptSessionID}
-                    ref={(value) => {
-                      if (value) prompt = value
-                    }}
-                  />
+                  <StashProbe />
+                  <Show when={promptShown()}>
+                    <Prompt
+                      sessionID={promptSessionID}
+                      ref={(value) => {
+                        if (value) prompt = value
+                      }}
+                    />
+                  </Show>
                 </LocationProvider>
               </EditorContextProvider>
             </PromptHistoryProvider>
@@ -161,6 +166,11 @@ async function mount(
         </PromptStashProvider>
       </DataProvider>
     )
+  }
+  function StashProbe() {
+    const stash = usePromptStash()
+    stashList = () => stash.list()
+    return null
   }
   function Harness() {
     const renderer = useRenderer()
@@ -203,7 +213,7 @@ async function mount(
   }
   const app = await testRender(() => <Harness />, { width, height, kittyKeyboard: true })
   await wait(() => !!ctx && ctx.local.model.ready && ctx.sync.status === "complete")
-  return { app, ctx, prompt, commands, commandRequests, createdSessions, posts, appCalls }
+  return { app, ctx, prompt, commands, commandRequests, createdSessions, posts, appCalls, setPromptShown, stashList: () => stashList() }
 }
 
 
@@ -660,6 +670,39 @@ test("recording hint lists every voice key, including the leader one", async () 
     const frame = s.app.captureCharFrame()
     expect(frame).toContain("録音中")
     expect(frame).toMatch(/ctrl\+space か \S+ v/)
+  } finally {
+    await teardown(s)
+  }
+})
+
+test("if the prompt closes mid-recording (e.g. a permission prompt), the dictation is stashed, not lost", async () => {
+  const voice = fakeVoice("権限の確認中に話した内容")
+  const s = await setup()
+  try {
+    s.emit(key("space", "press", "kitty"))
+    await Bun.sleep(400)
+    s.setPromptShown(false)
+    await s.app.renderOnce()
+    await wait(() => voice.transcribed === 1)
+    await wait(() => s.stashList().some((entry) => entry.input === "権限の確認中に話した内容"))
+    expect(voice.killed).toBe(1)
+  } finally {
+    s.app.renderer.destroy()
+    await s.tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("a 250 ms double space is still two spaces with the default repeat delay", async () => {
+  const voice = fakeVoice()
+  const s = await setup()
+  try {
+    s.emit(key("space", "press", "raw"))
+    await Bun.sleep(250)
+    s.emit(key("space", "press", "raw"))
+    await s.app.renderOnce()
+    expect(s.prompt.current.input).toBe("  ")
+    await wait(() => voice.killed === voice.spawned)
+    expect(voice.transcribed).toBe(0)
   } finally {
     await teardown(s)
   }
