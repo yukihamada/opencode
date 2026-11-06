@@ -1048,6 +1048,42 @@ export function Prompt(props: PromptProps) {
     })
   }
 
+  // 録音を入力欄に戻せない時(入力欄が閉じた・ダイアログが開いた)、文字にして下書き(stash)へ退避する。
+  function stashVoice() {
+    const recording = voiceRecording
+    if (!recording) return
+    voiceRecording = undefined
+    voiceSource = undefined
+    voiceConfirmed = false
+    voiceFinishSubmit = undefined
+    clearInterval(voiceReleaseTimer)
+    voiceReleaseTimer = undefined
+    if (!voiceDisposed) setVoiceUi(undefined)
+    const text = (ja: string, en: string) => (english() ? en : ja)
+    void recording.finish().then((result) => {
+      if (result.type === "cancelled" || result.type === "empty") return
+      if (result.type === "error") {
+        toast.show({
+          title: "🎤",
+          message: text(`話した内容を文字にできませんでした: ${result.message}`, `Your dictation could not be transcribed: ${result.message}`),
+          variant: "error",
+          duration: 10000,
+        })
+        return
+      }
+      stash.push({ input: result.text, parts: [], mode: "normal" })
+      toast.show({
+        title: "🎤",
+        message: text(
+          `話した内容を下書きに退避しました: ${result.text.slice(0, 40)}(コマンド一覧の Stash list から戻せます)`,
+          `Your dictation was stashed: ${result.text.slice(0, 40)} (restore from Stash list in the command palette)`,
+        ),
+        variant: "info",
+        duration: 10000,
+      })
+    })
+  }
+
   function finishVoice(tailMs: number, submitAfter?: boolean) {
     const recording = voiceRecording
     if (!recording) return
@@ -1147,13 +1183,14 @@ export function Prompt(props: PromptProps) {
       }
     }
 
-    // ダイアログ(権限確認など)が開いたらキーはそちらへ。録音中なら止める。
+    // ダイアログが開いたらキーはそちらへ。録音中なら、話した内容を下書きへ退避する。
     if (dialog.stack.length > 0) {
       if (voicePending) {
         clearTimeout(voicePending.timer)
         voicePending = undefined
       }
-      if (voiceRecording) cancelVoice(!voiceConfirmed)
+      if (voiceRecording && voiceConfirmed) stashVoice()
+      else if (voiceRecording) cancelVoice(true)
       return
     }
 
@@ -1341,25 +1378,8 @@ export function Prompt(props: PromptProps) {
       if (voicePending) clearTimeout(voicePending.timer)
       voicePending = undefined
       // 権限確認などで入力欄が画面から外れた時、話していた内容を捨てずに下書きへ退避する。
-      const recording = voiceRecording
-      if (recording && voiceConfirmed) {
-        voiceRecording = undefined
-        clearInterval(voiceReleaseTimer)
-        const text = (ja: string, en: string) => (english() ? en : ja)
-        void recording.finish().then((result) => {
-          if (result.type !== "text") return
-          stash.push({ input: result.text, parts: [], mode: "normal" })
-          toast.show({
-            title: "🎤",
-            message: text(
-              `入力欄が閉じたので、話した内容を下書きに退避しました: ${result.text.slice(0, 40)}(コマンド一覧の Stash list から戻せます)`,
-              `The prompt closed, so your dictation was stashed: ${result.text.slice(0, 40)} (restore from Stash list in the command palette)`,
-            ),
-            variant: "info",
-            duration: 10000,
-          })
-        })
-      } else cancelVoice(true)
+      if (voiceRecording && voiceConfirmed) stashVoice()
+      else cancelVoice(true)
       offPress()
       offRelease()
     })

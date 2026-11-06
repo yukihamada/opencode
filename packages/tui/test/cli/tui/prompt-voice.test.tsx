@@ -16,8 +16,9 @@ import { PermissionProvider } from "../../../src/context/permission"
 import { ExitProvider } from "../../../src/context/exit"
 import { ThemeProvider } from "../../../src/context/theme"
 import { RouteProvider } from "../../../src/context/route"
-import { ToastProvider } from "../../../src/ui/toast"
+import { ToastProvider, useToast } from "../../../src/ui/toast"
 import { DialogProvider, useDialog } from "../../../src/ui/dialog"
+import { DialogAlert } from "../../../src/ui/dialog-alert"
 import { Prompt, type PromptRef } from "../../../src/component/prompt"
 import { DataProvider } from "../../../src/context/data"
 import { EditorContextProvider } from "../../../src/context/editor"
@@ -86,6 +87,7 @@ async function mount(
   const appCalls = { exit: 0, interrupt: 0 }
   const [promptShown, setPromptShown] = createSignal(true)
   let stashList: () => Array<{ input: string }> = () => []
+  let toastMessage: () => string = () => ""
   const base = createFetch((url) => {
     if (url.pathname === "/config/providers") return json({ providers: [provider], default: { teai: "auto" } })
     if (url.pathname === "/provider") return json({ all: [provider], default: { teai: "auto" }, connected: ["teai"] })
@@ -169,7 +171,9 @@ async function mount(
   }
   function StashProbe() {
     const stash = usePromptStash()
+    const toast = useToast()
     stashList = () => stash.list()
+    toastMessage = () => toast.currentToast?.message ?? ""
     return null
   }
   function Harness() {
@@ -213,7 +217,7 @@ async function mount(
   }
   const app = await testRender(() => <Harness />, { width, height, kittyKeyboard: true })
   await wait(() => !!ctx && ctx.local.model.ready && ctx.sync.status === "complete")
-  return { app, ctx, prompt, commands, commandRequests, createdSessions, posts, appCalls, setPromptShown, stashList: () => stashList() }
+  return { app, ctx, prompt, commands, commandRequests, createdSessions, posts, appCalls, setPromptShown, stashList: () => stashList(), toastMessage: () => toastMessage() }
 }
 
 
@@ -270,6 +274,17 @@ function key(name: string, eventType: "press" | "repeat" | "release", source: "k
   })
 }
 
+
+async function waitRecording(s: { app: { renderOnce: () => Promise<void>; captureCharFrame: () => string } }, timeout = 5000) {
+  const start = Date.now()
+  while (true) {
+    await s.app.renderOnce()
+    if (s.app.captureCharFrame().includes("録音中")) return
+    if (Date.now() - start > timeout) throw new Error("recording indicator did not appear")
+    await Bun.sleep(20)
+  }
+}
+
 async function setup(kv: Record<string, unknown> = { voice_input: { enabled: true }, voice_input_consent: true }) {
   const tmp = await tmpdir()
   await Bun.write(path.join(tmp.path, "kv.json"), JSON.stringify(kv))
@@ -311,9 +326,7 @@ test("kitty: hold space to talk, release inserts the transcript without sending 
   try {
     s.emit(key("space", "press", "kitty"))
     await wait(() => voice.spawned === 1)
-    await Bun.sleep(250)
-    await s.app.renderOnce()
-    expect(s.app.captureCharFrame()).toContain("録音中")
+    await waitRecording(s)
     s.emit(key("space", "repeat", "kitty"))
     await Bun.sleep(80)
     s.emit(key("space", "release", "kitty"))
@@ -379,8 +392,7 @@ test("Esc cancels a recording: nothing is transcribed or inserted", async () => 
   const s = await setup()
   try {
     s.emit(key("space", "press", "kitty"))
-    await wait(() => voice.spawned === 1)
-    await Bun.sleep(250)
+    await waitRecording(s)
     s.emit(key("escape", "press", "kitty"))
     await wait(() => voice.killed === 1)
     s.emit(key("space", "release", "kitty"))
@@ -439,7 +451,7 @@ test("/v starts a recording that Ctrl+Space finishes", async () => {
     await s.app.mockInput.typeText("/v")
     await s.app.renderOnce()
     s.app.mockInput.pressEnter()
-    await wait(() => voice.spawned === 1)
+    await waitRecording(s)
     expect(s.prompt.current.input).toBe("")
     await Bun.sleep(600)
     s.emit(key("space", "press", "kitty", { ctrl: true }))
@@ -456,8 +468,7 @@ test("Ctrl+C while recording cancels instead of quitting Sente", async () => {
   const s = await setup()
   try {
     s.emit(key("space", "press", "kitty"))
-    await wait(() => voice.spawned === 1)
-    await Bun.sleep(250)
+    await waitRecording(s)
     s.emit(key("c", "press", "kitty", { ctrl: true }))
     await wait(() => voice.killed === 1)
     expect(s.appCalls.exit).toBe(0)
@@ -476,7 +487,7 @@ test("Esc while recording cancels and is not passed on as an interrupt", async (
   const s = await setup()
   try {
     s.emit(key("space", "press", "kitty"))
-    await Bun.sleep(260)
+    await waitRecording(s)
     s.emit(key("escape", "press", "kitty"))
     await wait(() => voice.killed === 1)
     expect(s.appCalls.interrupt).toBe(0)
@@ -534,7 +545,8 @@ test("dictation appended to Japanese text gets no extra space", async () => {
     await s.app.mockInput.typeText("この関数を直して")
     await s.app.renderOnce()
     s.emit(key("space", "press", "kitty", { ctrl: true }))
-    await Bun.sleep(300)
+    await waitRecording(s)
+    await Bun.sleep(400)
     s.emit(key("space", "press", "kitty", { ctrl: true }))
     await wait(() => s.prompt.current.input === "この関数を直してテストも直して")
   } finally {
@@ -567,7 +579,8 @@ test("Enter pressed while transcribing sends once the text arrives", async () =>
   const s = await setup()
   try {
     s.emit(key("space", "press", "kitty"))
-    await Bun.sleep(600)
+    await waitRecording(s)
+    await Bun.sleep(400)
     s.emit(key("space", "release", "kitty"))
     await wait(() => voice.transcribed === 1)
     s.emit(key("return", "press", "kitty"))
@@ -665,8 +678,7 @@ test("recording hint lists every voice key, including the leader one", async () 
   const s = await setup()
   try {
     s.emit(key("space", "press", "kitty", { ctrl: true }))
-    await Bun.sleep(150)
-    await s.app.renderOnce()
+    await waitRecording(s)
     const frame = s.app.captureCharFrame()
     expect(frame).toContain("録音中")
     expect(frame).toMatch(/ctrl\+space か \S+ v/)
@@ -680,6 +692,7 @@ test("if the prompt closes mid-recording (e.g. a permission prompt), the dictati
   const s = await setup()
   try {
     s.emit(key("space", "press", "kitty"))
+    await waitRecording(s)
     await Bun.sleep(400)
     s.setPromptShown(false)
     await s.app.renderOnce()
@@ -705,5 +718,43 @@ test("a 250 ms double space is still two spaces with the default repeat delay", 
     expect(voice.transcribed).toBe(0)
   } finally {
     await teardown(s)
+  }
+})
+
+test("if a dialog opens mid-recording, the dictation is stashed and keys go to the dialog", async () => {
+  const voice = fakeVoice("ダイアログ中に話した内容")
+  const s = await setup()
+  try {
+    s.emit(key("space", "press", "kitty"))
+    await waitRecording(s)
+    await Bun.sleep(300)
+    void DialogAlert.show(s.ctx.dialog, "権限の確認", "テスト")
+    await s.app.renderOnce()
+    s.emit(key("space", "release", "kitty"))
+    await wait(() => s.stashList().some((entry) => entry.input === "ダイアログ中に話した内容"))
+    expect(voice.killed).toBe(1)
+    expect(s.prompt.current.input).toBe("")
+  } finally {
+    s.ctx.dialog.clear()
+    await teardown(s)
+  }
+})
+
+test("if transcription fails after the prompt closed, the user is told", async () => {
+  const voice = fakeVoice()
+  backend.fetch = async () => (voice.transcribed++, new Response("{}", { status: 500 }))
+  const s = await setup()
+  try {
+    s.emit(key("space", "press", "kitty"))
+    await waitRecording(s)
+    await Bun.sleep(300)
+    s.setPromptShown(false)
+    await s.app.renderOnce()
+    await wait(() => voice.transcribed === 1)
+    await wait(() => s.toastMessage().includes("文字にできませんでした"))
+    expect(s.stashList()).toEqual([])
+  } finally {
+    s.app.renderer.destroy()
+    await s.tmp[Symbol.asyncDispose]()
   }
 })
