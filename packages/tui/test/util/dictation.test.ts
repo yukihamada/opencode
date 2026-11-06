@@ -477,3 +477,24 @@ test("send counts are shared through a file with other Sente processes", async (
   expect(calls).toBe(1)
   expect(JSON.parse(await readFile(backend.sentFile, "utf8"))).toHaveLength(15)
 })
+
+test("the send log lives in a private state folder and is replaced atomically", async () => {
+  const { mkdtemp, readFile, stat, readdir } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const path = await import("node:path")
+  const dir = await mkdtemp(path.join(tmpdir(), "sente-state-"))
+  backend.sentFile = path.join(dir, "sente", "voice-sends.json")
+  const procs = fakeRecorder()
+  backend.fetch = async () => Response.json({ ok: true, text: "記録" })
+  const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
+  procs[0]!.stdout.write(pcmOf(true, 1))
+  await Bun.sleep(10)
+  await recording.finish()
+  expect(JSON.parse(await readFile(backend.sentFile, "utf8"))).toHaveLength(1)
+  if (process.platform !== "win32") {
+    expect((await stat(path.dirname(backend.sentFile))).mode & 0o777).toBe(0o700)
+    expect((await stat(backend.sentFile)).mode & 0o777).toBe(0o600)
+  }
+  // 一時ファイルは残らない。
+  expect((await readdir(path.dirname(backend.sentFile))).filter((name) => name.endsWith(".tmp"))).toEqual([])
+})

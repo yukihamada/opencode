@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn, spawnSync, type ChildProcess } from "node:child_process"
-import { readFileSync, writeFileSync } from "node:fs"
-import { tmpdir, userInfo } from "node:os"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import path from "node:path"
 
 // 音声入力(話した言葉を入力欄に入れる機能)。録音・無音検出・文字起こしを TUI の
@@ -42,8 +42,12 @@ function recordSend(at = Date.now()) {
   const next = [...liveSends(at), at]
   backend.sent.splice(0, backend.sent.length, ...next)
   if (!backend.sentFile) return
+  // 利用者専用のフォルダに、一時ファイルを書いてから名前を変える(途中の状態を他から読ませない)。
   try {
-    writeFileSync(backend.sentFile, JSON.stringify(next))
+    mkdirSync(path.dirname(backend.sentFile), { recursive: true, mode: 0o700 })
+    const temp = `${backend.sentFile}.${process.pid}.tmp`
+    writeFileSync(temp, JSON.stringify(next), { mode: 0o600 })
+    renameSync(temp, backend.sentFile)
   } catch {}
 }
 
@@ -299,14 +303,6 @@ export function readKeyRepeatDelay(
   return undefined
 }
 
-function userInfoId() {
-  try {
-    return String(userInfo().uid >= 0 ? userInfo().uid : userInfo().username)
-  } catch {
-    return "user"
-  }
-}
-
 let recorderCache: { done: boolean; device?: string; value?: Recorder } = { done: false }
 let repeatCache: { done: boolean; value?: number } = { done: false }
 
@@ -314,8 +310,14 @@ let repeatCache: { done: boolean; value?: number } = { done: false }
 export const backend = {
   /// 文字起こしへ送った時刻(直近10分の回数を数える)。
   sent: [] as number[],
-  /// 送信時刻を共有するファイル(同じ利用者の Sente 同士で合算する)。テストでは undefined。
-  sentFile: process.env.NODE_ENV === "test" ? undefined : (path.join(tmpdir(), `sente-voice-sends-${userInfoId()}.json`) as string | undefined),
+  /// 送信時刻を共有するファイル(同じ利用者の Sente 同士で合算する)。共有の /tmp ではなく
+  /// 利用者専用の状態フォルダに置く。テストでは undefined。
+  sentFile:
+    process.env.NODE_ENV === "test"
+      ? undefined
+      : (path.join(process.env.XDG_STATE_HOME || path.join(homedir(), ".local", "state"), "sente", "voice-sends.json") as
+          | string
+          | undefined),
   /// 自動停止の時間(テストで短くする)。
   limits: { silenceMs: SILENCE_STOP_MS, maxMs: MAX_RECORDING_MS },
   spawn: (command: string, args: string[]): ChildProcess => nodeSpawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }),
