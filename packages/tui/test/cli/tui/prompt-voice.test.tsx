@@ -300,7 +300,8 @@ async function waitRecording(
 
 async function setup(kv: Record<string, unknown> = { voice_input: { enabled: true }, voice_input_consent: true }) {
   const tmp = await tmpdir()
-  await Bun.write(path.join(tmp.path, "kv.json"), JSON.stringify(kv))
+  // CI の端末ロケールは英語。画面の文言を日本語で確かめるため言語を固定する。
+  await Bun.write(path.join(tmp.path, "kv.json"), JSON.stringify({ language: "ja", ...kv }))
   await Bun.write(path.join(tmp.path, "model.json"), JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }))
   const mounted = await mount(tmp.path, 100, 24)
   mounted.prompt.focus()
