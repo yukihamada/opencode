@@ -46,6 +46,7 @@ import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
+import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
@@ -73,7 +74,7 @@ import { stopSpeaking } from "../../util/voice"
 import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
-import { SENTE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
+import { formatKeySequence, SENTE_BASE_MODE, useBindings, useKeymapSelector, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
@@ -887,14 +888,23 @@ export function Prompt(props: PromptProps) {
       language: config.language,
     }
   })
-  const voiceShortcut = useCommandShortcut("prompt.voice")
-  const voiceKeyLabel = () => voiceShortcut() || "Ctrl+Space"
+  // 割り当てを全部見せる(macOS は Ctrl+Space が入力ソース切替に取られていることが多い)。
+  const voiceBindings = useKeymapSelector((keymap) =>
+    keymap.getCommandBindings({ visibility: "registered", commands: ["prompt.voice"] }).get("prompt.voice"),
+  )
+  const voiceKeyLabel = () =>
+    (voiceBindings() ?? [])
+      .map((binding) => formatKeySequence(binding.sequence, tuiConfig))
+      .filter(Boolean)
+      .join(english() ? " or " : " か ") || "Ctrl+Space"
+  const voiceConsented = () => kv.get("voice_input_consent", false) === true
   type VoiceSource = "hold" | "tap" | "toggle"
   const [voiceUi, setVoiceUi] = createSignal<
     { phase: "recording" | "transcribing"; source: VoiceSource; level: number; elapsed: number } | undefined
   >()
   const VOICE_KITTY_HOLD_MS = 200
   // キーリピートが始まるまでの待ち時間。macOS の設定(リピート入力認識までの時間)+余裕。読めなければ 650ms。
+  const voiceDoubleTapMs = () => Math.min(200, Math.max(60, (dictationBackend.keyRepeatDelayMs() ?? 400) * 0.6))
   const voiceRepeatWait = () => Math.min(2500, Math.max(650, (dictationBackend.keyRepeatDelayMs() ?? 400) + 250))
   let voiceRecording: Recording | undefined
   let voiceSource: VoiceSource | undefined
@@ -943,6 +953,11 @@ export function Prompt(props: PromptProps) {
   // 録音を始める。visible=false は長押し判定前の先行録音(画面に出さず、外れたら捨てる)。
   function startVoice(source: VoiceSource, visible = true) {
     if (voiceRecording) return false
+    // 初回は送信先を説明して同意を取るまで、マイクを一切開かない。
+    if (!voiceConsented()) {
+      if (visible) askVoiceConsent(source)
+      return false
+    }
     const reason = unavailableReason(english())
     if (reason) {
       if (visible) toast.show({ title: "🎤", message: reason, variant: "error", duration: 8000 })
@@ -987,11 +1002,46 @@ export function Prompt(props: PromptProps) {
     voiceConfirmed = true
     // Sente の声(KOE)が読み上げ中なら止める。自分の声だけを拾うため。
     if (process.env.NODE_ENV !== "test") stopSpeaking()
-    if (!kv.get("voice_input_notice_seen", false)) {
-      kv.set("voice_input_notice_seen", true)
-      toast.show({ title: "🎤", message: privacyNotice(english()), variant: "info", duration: 9000 })
-    }
     setVoiceUi({ phase: "recording", source: voiceSource ?? "toggle", level: 0, elapsed: 0 })
+  }
+
+  let voiceAsking = false
+  function askVoiceConsent(source: VoiceSource) {
+    if (voiceAsking) return
+    voiceAsking = true
+    const text = (ja: string, en: string) => (english() ? en : ja)
+    // 長押し中に開いた時、押し続けている Space をダイアログへ渡さない。
+    if (source === "hold") voiceSwallow = { kitty: voiceLastKitty }
+    void DialogConfirm.show(
+      dialog,
+      text("音声入力を使いますか", "Use voice input?"),
+      privacyNotice(english()) + text("\n\nConfirm で使い始めます。", "\n\nPress Confirm to enable."),
+      // DialogConfirm の label は「やめる」側のボタン名。
+      text("使わない", "Not now"),
+    ).then((ok) => {
+      voiceAsking = false
+      if (voiceDisposed) return
+      if (ok) {
+        kv.set("voice_input_consent", true)
+        kv.set("voice_input", { ...((kv.get("voice_input", {}) ?? {}) as object), enabled: true })
+        if (source === "hold" || source === "tap") {
+          toast.show({
+            title: "🎤",
+            message:
+              source === "hold"
+                ? text("使えるようになりました。Space を長押しして話してください", "Ready. Hold Space and speak")
+                : text("使えるようになりました。Space を押して話してください", "Ready. Tap Space and speak"),
+            variant: "info",
+            duration: 4000,
+          })
+          return
+        }
+        setTimeout(() => startVoice(source), 0)
+        return
+      }
+      kv.set("voice_input", { ...((kv.get("voice_input", {}) ?? {}) as object), enabled: false })
+      toast.show({ title: "🎤", message: text("音声入力はオフのままです(/v on で使えます)", "Voice input stays off (/v on to enable)"), variant: "info", duration: 4000 })
+    })
   }
 
   function finishVoice(tailMs: number, submitAfter?: boolean) {
@@ -1040,6 +1090,7 @@ export function Prompt(props: PromptProps) {
       return
     }
     if (!input || input.isDestroyed) return
+    if (result.warning) toast.show({ title: "🎤", message: result.warning, variant: "warning", duration: 8000 })
     input.insertText(joinTranscript(input.plainText.slice(0, input.cursorOffset), result.text))
     const send =
       submitAfter ??
@@ -1092,6 +1143,16 @@ export function Prompt(props: PromptProps) {
       }
     }
 
+    // ダイアログ(権限確認など)が開いたらキーはそちらへ。録音中なら止める。
+    if (dialog.stack.length > 0) {
+      if (voicePending) {
+        clearTimeout(voicePending.timer)
+        voicePending = undefined
+      }
+      if (voiceRecording) cancelVoice(!voiceConfirmed)
+      return
+    }
+
     // 録音中・文字起こし中
     if (voiceRecording && voiceConfirmed) {
       if (release) {
@@ -1138,6 +1199,12 @@ export function Prompt(props: PromptProps) {
       if (space && plain) {
         consume(event)
         if (voicePending.kitty) return
+        // キーリピートは「リピート開始までの時間」より前には来ない。それより速い2回目は素早い2連打。
+        if (now - voiceLastSpace < voiceDoubleTapMs()) {
+          resolvePendingAsTap()
+          if (input && !input.isDestroyed) input.insertText(char)
+          return
+        }
         // kitty 以外: 2回目のスペース(=キーリピート)が来たら長押し。
         clearTimeout(voicePending.timer)
         voicePending = undefined
@@ -1161,7 +1228,8 @@ export function Prompt(props: PromptProps) {
       startVoice("tap")
       return
     }
-    const kitty = event.source === "kitty"
+    // 日本語入力の全角空白は、離した合図が来ない端末があるため常にキーリピートで判定する。
+    const kitty = event.source === "kitty" && char === " "
     voiceLastKitty = kitty
     startVoice("hold", false)
     voicePending = {

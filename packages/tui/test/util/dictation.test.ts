@@ -310,3 +310,18 @@ test("SSH check can be overridden for stale tmux variables", () => {
   expect(unavailableReason(false, { SSH_CONNECTION: "x", SENTE_VOICE_LOCAL: "1" }, "darwin", recorder)).toBeUndefined()
   expect(unavailableReason(false, { SSH_TTY: "/dev/ttys1" }, "darwin", recorder)).toContain("SENTE_VOICE_LOCAL=1")
 })
+
+test("a failure on the second piece keeps the first piece's text", async () => {
+  const procs = fakeRecorder()
+  let n = 0
+  backend.fetch = async () => (n++ === 0 ? Response.json({ ok: true, text: "前半です" }) : new Response("{}", { status: 429 }))
+  const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
+  procs[0]!.stdout.write(pcmOf(true, 60))
+  procs[0]!.stdout.write(pcmOf(false, 0.5))
+  procs[0]!.stdout.write(pcmOf(true, 59))
+  await Bun.sleep(10)
+  const result = await recording.finish()
+  expect(result.type).toBe("text")
+  expect(result.type === "text" && result.text).toBe("前半です")
+  expect(result.type === "text" && result.warning).toContain("10分に20回")
+})

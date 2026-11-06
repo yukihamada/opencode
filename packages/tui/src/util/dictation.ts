@@ -272,7 +272,7 @@ export function splitPcm(pcm: Buffer, maxMs = CHUNK_MAX_MS, minMs = CHUNK_MIN_MS
   return chunks
 }
 
-export type RecordingResult = { type: "text"; text: string } | { type: "empty" } | { type: "cancelled" } | { type: "error"; message: string }
+export type RecordingResult = { type: "text"; text: string; warning?: string } | { type: "empty" } | { type: "cancelled" } | { type: "error"; message: string }
 
 export type RecordingEvents = {
   /// 0〜1 の音量と経過ミリ秒。画面表示用。
@@ -281,6 +281,8 @@ export type RecordingEvents = {
   onAutoStop?: (reason: "silence" | "limit") => void
   onTranscribing?: () => void
 }
+
+class RateLimited extends Error {}
 
 /// 1回分の録音。finish() で文字起こし、cancel() で破棄。result はどちらでも1回だけ決まる。
 export class Recording {
@@ -390,8 +392,8 @@ export class Recording {
     this.resolve(value)
   }
 
-  /// 1区切りを文字にする。聞き取れなければ ""。結果が決まった(429 等)なら undefined。
-  private async transcribe(pcm: Buffer): Promise<string | undefined> {
+  /// 1区切りを文字にする。聞き取れなければ ""。
+  private async transcribe(pcm: Buffer): Promise<string> {
     const text = (ja: string, en: string) => (this.options.english ? en : ja)
     const url = new URL(STT_URL)
     if (this.options.language) url.searchParams.set("lang", this.options.language)
@@ -403,16 +405,13 @@ export class Recording {
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(30_000)]),
     })
     if (response.status === 422) return ""
-    if (response.status === 429) {
-      this.settle({
-        type: "error",
-        message: text(
+    if (response.status === 429)
+      throw new RateLimited(
+        text(
           "文字起こしの回数上限(10分に20回)に達しました。数分おいてからどうぞ",
           "Transcription limit reached (20 per 10 minutes). Try again in a few minutes",
         ),
-      })
-      return undefined
-    }
+      )
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const body = (await response.json()) as { ok?: boolean; text?: unknown }
     return body.ok && usableTranscript(body.text) ? body.text.trim() : ""
@@ -448,12 +447,25 @@ export class Recording {
     try {
       for (const piece of splitPcm(pcm)) {
         const heard = await this.transcribe(piece)
-        if (heard === undefined) return this.result
         if (heard) joined = joined ? joined + joinTranscript(joined, heard) : heard
       }
       this.settle(joined ? { type: "text", text: joined } : { type: "empty" })
     } catch (error) {
       if (this.abort.signal.aborted) return this.settle({ type: "cancelled" }), this.result
+      // 長い録音の途中で失敗しても、文字になった前半は残す。
+      if (joined)
+        return (
+          this.settle({
+            type: "text",
+            text: joined,
+            warning:
+              error instanceof RateLimited
+                ? error.message
+                : text("後半の文字起こしに失敗しました。続きをもう一度どうぞ", "The rest could not be transcribed. Please repeat it"),
+          }),
+          this.result
+        )
+      if (error instanceof RateLimited) return this.settle({ type: "error", message: error.message }), this.result
       this.settle({
         type: "error",
         message: text(
@@ -477,6 +489,9 @@ export function describeVoice(settings: VoiceSettings, english: boolean, keyLabe
     text(`音声入力: ${settings.enabled ? "ON" : "OFF"}(${settings.mode === "hold" ? "長押し" : "タップ"})`, `Voice input: ${settings.enabled ? "on" : "off"} (${settings.mode})`),
     settings.enabled ? how : text("/v on で有効にできます", "Turn on with /v on"),
     text(`${keyLabel} でも開始・確定できます。Esc で取消`, `${keyLabel} also starts/finishes. Esc cancels`),
+    ...(process.platform === "darwin"
+      ? [text("Ctrl+Space が入力ソースの切り替えに使われている Mac では、もう一方のキーを使ってください", "If macOS uses Ctrl+Space to switch input sources, use the other key")]
+      : []),
     text(`自動送信: ${settings.autoSubmit ? "ON" : "OFF"}(/v auto on|off)`, `Auto-submit: ${settings.autoSubmit ? "on" : "off"} (/v auto on|off)`),
     privacyNotice(english),
   ].join("\n")
