@@ -626,7 +626,8 @@ test("tap mode in other terminals: holding the space a little longer does not fi
 
 test("before consent, a space never opens the microphone and a hold asks first", async () => {
   const voice = fakeVoice()
-  const s = await setup({})
+  // 既定 ON は macOS だけなので、どの OS でも「ON だが未同意」から始める。
+  const s = await setup({ voice_input: { enabled: true } })
   try {
     // ただのタップ: マイクは一度も開かない。
     s.emit(key("space", "press", "kitty"))
