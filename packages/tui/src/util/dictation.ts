@@ -19,9 +19,20 @@ const STT_URL = "https://koe.live/api/stt"
 // 文字起こし側は1回3MBまで。16kHz・16bit なら約98秒なので、85秒を超えたら静かな所で分けて送る。
 const CHUNK_MAX_MS = 85_000
 const CHUNK_MIN_MS = 55_000
-// 話しながら文字にするための区切り。短すぎると回数上限(10分20回)にすぐ届くので6秒以上話してから。
-const SEGMENT_MIN_MS = 6_000
-const SEGMENT_PAUSE_MS = 700
+// 話しながら文字にするための区切り。文字起こしは IP ごとに10分20回までなので、
+// 15秒以上話した後の1.2秒の間(言い淀みより長い)でだけ区切り、手元でも回数を数える。
+const SEGMENT_MIN_MS = 15_000
+const SEGMENT_PAUSE_MS = 1_200
+const RATE_WINDOW_MS = 600_000
+// この回数を超えたら、録音中の区切りをやめて離した時にまとめて送る(上限20回に余裕を残す)。
+const RATE_SOFT_LIMIT = 14
+
+/// 直近10分の送信回数。
+export function recentSends(now = Date.now()) {
+  const sent = backend.sent
+  while (sent.length && now - sent[0]! > RATE_WINDOW_MS) sent.shift()
+  return sent.length
+}
 
 export type VoiceCommand =
   | { type: "start" }
@@ -146,6 +157,7 @@ export function findRecorder(
   platform: NodeJS.Platform = process.platform,
   which: (name: string) => boolean = commandExists,
   windowsMic: () => string | undefined = listWindowsMic,
+  device?: string,
 ): Recorder | undefined {
   const raw = ["-ac", "1", "-ar", String(SAMPLE_RATE), "-f", "s16le", "-"]
   const ffmpeg = ["-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -155,19 +167,23 @@ export function findRecorder(
     args: ["-q", "-t", "raw", "-r", String(SAMPLE_RATE), "-c", "1", "-b", "16", "-e", "signed-integer", "-"],
   }
   if (platform === "darwin") {
-    if (which("ffmpeg")) return { name: "ffmpeg", command: "ffmpeg", args: [...ffmpeg, "-f", "avfoundation", "-i", ":default", ...raw] }
+    if (which("ffmpeg")) return { name: "ffmpeg", command: "ffmpeg", args: [...ffmpeg, "-f", "avfoundation", "-i", `:${device ?? "default"}`, ...raw] }
     if (which("rec")) return sox
     return undefined
   }
   if (platform === "linux") {
     if (which("arecord"))
-      return { name: "arecord", command: "arecord", args: ["-q", "-f", "S16_LE", "-r", String(SAMPLE_RATE), "-c", "1", "-t", "raw"] }
+      return {
+        name: "arecord",
+        command: "arecord",
+        args: ["-q", ...(device ? ["-D", device] : []), "-f", "S16_LE", "-r", String(SAMPLE_RATE), "-c", "1", "-t", "raw"],
+      }
     if (which("rec")) return sox
-    if (which("ffmpeg")) return { name: "ffmpeg", command: "ffmpeg", args: [...ffmpeg, "-f", "pulse", "-i", "default", ...raw] }
+    if (which("ffmpeg")) return { name: "ffmpeg", command: "ffmpeg", args: [...ffmpeg, "-f", "pulse", "-i", device ?? "default", ...raw] }
   }
   if (platform === "win32" && which("ffmpeg")) {
-    // DirectShow は機器名の指定が必要。最初に見つかった録音機器を使う。
-    const mic = windowsMic()
+    // DirectShow は機器名の指定が必要。設定(voice.device)が無ければ一覧の最初の録音機器を使う。
+    const mic = device ?? windowsMic()
     if (mic) return { name: "ffmpeg", command: "ffmpeg", args: [...ffmpeg, "-f", "dshow", "-i", `audio=${mic}`, ...raw] }
   }
   return undefined
@@ -213,8 +229,9 @@ export function unavailableReason(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   given?: Recorder | null,
+  device?: string,
 ) {
-  const recorder = given === undefined ? backend.findRecorder(platform) : (given ?? undefined)
+  const recorder = given === undefined ? backend.findRecorder(platform, device) : (given ?? undefined)
   const text = (ja: string, en: string) => (english ? en : ja)
   if ((env.SSH_CONNECTION || env.SSH_TTY) && env.SENTE_VOICE_LOCAL !== "1")
     return text(
@@ -238,32 +255,56 @@ export function unavailableReason(
   return undefined
 }
 
-let recorderCache: { done: boolean; value?: Recorder } = { done: false }
+/// OS のキーリピート開始までの時間(ミリ秒)。macOS は InitialKeyRepeat、Linux(X)は xset、
+/// Windows は KeyboardDelay(0〜3 = 250〜1000ms)。読めなければ undefined。
+export function readKeyRepeatDelay(
+  platform: NodeJS.Platform,
+  run: (command: string, args: string[]) => string | undefined,
+): number | undefined {
+  if (platform === "darwin") {
+    const n = Number(run("defaults", ["read", "-g", "InitialKeyRepeat"])?.trim())
+    return Number.isFinite(n) && n > 0 ? n * 15 : undefined
+  }
+  if (platform === "linux") {
+    const match = /auto repeat delay:\s*(\d+)/.exec(run("xset", ["q"]) ?? "")
+    return match ? Number(match[1]) : undefined
+  }
+  if (platform === "win32") {
+    const match = /KeyboardDelay\s+REG_SZ\s+(\d)/.exec(run("reg", ["query", "HKCU\\Control Panel\\Keyboard", "/v", "KeyboardDelay"]) ?? "")
+    return match ? (Number(match[1]) + 1) * 250 : undefined
+  }
+  return undefined
+}
+
+let recorderCache: { done: boolean; device?: string; value?: Recorder } = { done: false }
 let repeatCache: { done: boolean; value?: number } = { done: false }
 
 /// テストで録音と通信を差し替えるための入口。
 export const backend = {
+  /// 文字起こしへ送った時刻(直近10分の回数を数える)。
+  sent: [] as number[],
   /// 自動停止の時間(テストで短くする)。
   limits: { silenceMs: SILENCE_STOP_MS, maxMs: MAX_RECORDING_MS },
   spawn: (command: string, args: string[]): ChildProcess => nodeSpawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }),
   fetch: (input: string, init: RequestInit) => globalThis.fetch(input, init),
-  findRecorder: (platform?: NodeJS.Platform) => {
-    if (platform && platform !== process.platform) return findRecorder(platform)
-    if (!recorderCache.done) recorderCache = { done: true, value: findRecorder() }
+  findRecorder: (platform?: NodeJS.Platform, device?: string) => {
+    if (platform && platform !== process.platform) return findRecorder(platform, commandExists, listWindowsMic, device)
+    if (!recorderCache.done || recorderCache.device !== device)
+      recorderCache = { done: true, device, value: findRecorder(process.platform, commandExists, listWindowsMic, device) }
     return recorderCache.value
   },
   /// macOS の「リピート入力認識までの時間」(ミリ秒)。読めなければ undefined。
   keyRepeatDelayMs: () => {
-    if (process.platform !== "darwin") return undefined
     if (repeatCache.done) return repeatCache.value
-    let value: number | undefined
-    try {
-      const out = spawnSync("defaults", ["read", "-g", "InitialKeyRepeat"], { encoding: "utf8", timeout: 1000 })
-      const n = Number(out.stdout.trim())
-      if (out.status === 0 && Number.isFinite(n) && n > 0) value = n * 15
-    } catch {}
-    repeatCache = { done: true, value }
-    return value
+    repeatCache = { done: true, value: readKeyRepeatDelay(process.platform, (command, args) => {
+      try {
+        const out = spawnSync(command, args, { encoding: "utf8", timeout: 1000 })
+        return out.status === 0 ? out.stdout : undefined
+      } catch {
+        return undefined
+      }
+    }) }
+    return repeatCache.value
   },
   gitBranch: (directory: string) => {
     try {
@@ -429,7 +470,12 @@ export class Recording {
     if (this.finishing) return
     const segmentMs = this.bytes / ((SAMPLE_RATE * 2) / 1000)
     // 話の切れ目で区切って先に送る。85秒を超えたら一番静かな所で切る(1回3MBの上限対策)。
-    if (this.segmentVoicedMs >= VOICED_MS && segmentMs >= SEGMENT_MIN_MS && this.quietMs >= SEGMENT_PAUSE_MS)
+    if (
+      this.segmentVoicedMs >= VOICED_MS &&
+      segmentMs >= SEGMENT_MIN_MS &&
+      this.quietMs >= SEGMENT_PAUSE_MS &&
+      recentSends() < RATE_SOFT_LIMIT
+    )
       return this.cut(false)
     if (segmentMs > CHUNK_MAX_MS) this.cut(true)
   }
@@ -445,6 +491,7 @@ export class Recording {
   }
 
   private send(pcm: Buffer) {
+    backend.sent.push(Date.now())
     const index = this.pieces.length
     const piece = this.transcribe(pcm).then(
       (text): Piece => ({ text }),
@@ -604,8 +651,8 @@ export function describeVoice(settings: VoiceSettings, english: boolean, keyLabe
 /// 送信先の説明(初回と /v status で出す)。
 export function privacyNotice(english: boolean) {
   return english
-    ? "Audio is sent to koe.live and transcribed by ElevenLabs or Cloudflare, with the folder and branch name as vocabulary hints. Nothing is kept on this machine. /v off disables it"
-    : "音声は koe.live に送られ、ElevenLabs または Cloudflare が文字にします(フォルダ名・ブランチ名を語彙ヒントに使います)。手元には残しません。/v off で無効"
+    ? "Audio is sent to koe.live and transcribed by ElevenLabs or Cloudflare, with the folder and branch name as vocabulary hints. Long dictation is sent in parts while you speak, so parts already sent stay sent even if you cancel. Nothing is kept on this machine. /v off disables it"
+    : "音声は koe.live に送られ、ElevenLabs または Cloudflare が文字にします(フォルダ名・ブランチ名を語彙ヒントに使います)。長く話す時は話しながら区切って送るので、取り消す前に送った部分は送信済みです。手元には残しません。/v off で無効"
 }
 
 /// 設定を変えた時の1行表示。

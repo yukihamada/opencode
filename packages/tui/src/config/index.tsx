@@ -73,7 +73,11 @@ export const Voice = Schema.Struct({
     description: "Dictation language as a name or BCP 47 code (e.g. japanese, en). Defaults to the UI language",
   }),
   hold_key: Schema.optional(Schema.String).annotate({
-    description: "Key to hold for dictation: space (default, empty prompt only), or e.g. f5, ctrl+k, alt+v (works with text in the prompt)",
+    description:
+      "Key to hold for dictation: space (default, empty prompt only), or e.g. f5, ctrl+k (works with text in the prompt). On macOS, alt+ keys need Option set as Meta in the terminal",
+  }),
+  device: Schema.optional(Schema.String).annotate({
+    description: "Microphone to record from: macOS avfoundation index or name, Linux ALSA/Pulse device, Windows DirectShow device name. Default: system default (Windows: first device)",
   }),
 }).annotate({ description: "Voice input (dictation) settings" })
 

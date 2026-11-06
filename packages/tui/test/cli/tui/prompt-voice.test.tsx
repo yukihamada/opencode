@@ -222,7 +222,10 @@ async function mount(
 
 
 const original = { ...backend, limits: { ...backend.limits } }
-afterEach(() => Object.assign(backend, { ...original, limits: { ...original.limits } }))
+afterEach(() => {
+  Object.assign(backend, { ...original, limits: { ...original.limits } })
+  backend.sent.length = 0
+})
 
 // 録音プログラムと文字起こしを差し替える。録音が始まると声相当の音を流し続ける。
 // script を渡すと、20ミリ秒ごとに「その回に流す音」を決められる(早送りで長い発話を再現する)。
@@ -791,8 +794,8 @@ function tone(seconds: number, loud: boolean) {
 }
 
 test("long dictation shows what has been transcribed while still talking", async () => {
-  // 1回ごとに0.5秒ぶんを流す: 7秒話す → 1秒黙る → 話し続ける
-  const voice = fakeVoice(["最初の文です", "続きです"], 0, (tick) => tone(0.5, !(tick >= 14 && tick < 16)))
+  // 1回ごとに0.5秒ぶんを流す: 16秒話す → 1.5秒黙る → 話し続ける
+  const voice = fakeVoice(["最初の文です", "続きです"], 0, (tick) => tone(0.5, !(tick >= 32 && tick < 35)))
   const s = await setup()
   try {
     s.emit(key("space", "press", "kitty"))
@@ -860,6 +863,33 @@ test("a modifier hold key (ctrl+k) is matched with its modifier", async () => {
     await Bun.sleep(300)
     s.emit(key("k", "release", "kitty", { ctrl: true }))
     await wait(() => s.prompt.current.input === "テスト")
+  } finally {
+    await teardown(s)
+  }
+})
+
+test("a modifier hold key stops even if the modifier is released first", async () => {
+  const voice = fakeVoice("止まる")
+  const s = await setup(undefined, { voice: { hold_key: "ctrl+k" } })
+  try {
+    // kitty: Ctrl を先に離し、K を離す合図は Ctrl なしで届く。
+    s.emit(key("k", "press", "kitty", { ctrl: true }))
+    await waitRecording(s)
+    await Bun.sleep(300)
+    s.emit(key("k", "release", "kitty"))
+    await wait(() => s.prompt.current.input === "止まる")
+    s.prompt.reset()
+    await s.app.renderOnce()
+    // kitty 以外: Ctrl を離した後のキーリピートは「k」だけで届く。入力欄に漏らさない。
+    s.emit(key("k", "press", "raw", { ctrl: true }))
+    await Bun.sleep(300)
+    s.emit(key("k", "press", "raw", { ctrl: true }))
+    for (let i = 0; i < 6; i++) {
+      await Bun.sleep(40)
+      s.emit(key("k", "press", "raw"))
+    }
+    await wait(() => s.prompt.current.input === "止まる", 3000)
+    expect(voice.transcribed).toBe(2)
   } finally {
     await teardown(s)
   }

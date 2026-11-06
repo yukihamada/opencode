@@ -947,9 +947,11 @@ export function Prompt(props: PromptProps) {
 
   const voiceHoldKey = createMemo(() => parseHoldKey(tuiConfig.voice?.hold_key))
   // 長押しキーなら、押した時に入る文字(Space は空白、ほかのキーは何も入れない)。違うキーなら undefined。
-  function holdChar(event: KeyEvent) {
+  // loose=true(長押しの最中・離した時)はキー名だけで判定する。修飾キーを先に離しても止まるように。
+  function holdChar(event: KeyEvent, loose = false) {
     const key = voiceHoldKey()
     if (!key) return spaceChar(event)
+    if (loose && event.name === key.name) return ""
     const match =
       event.name === key.name &&
       !!event.ctrl === key.ctrl &&
@@ -973,12 +975,12 @@ export function Prompt(props: PromptProps) {
       if (visible) askVoiceConsent(source)
       return false
     }
-    const reason = unavailableReason(english())
+    const reason = unavailableReason(english(), process.env, process.platform, undefined, tuiConfig.voice?.device)
     if (reason) {
       if (visible) toast.show({ title: "🎤", message: reason, variant: "error", duration: 8000 })
       return false
     }
-    const recorder = dictationBackend.findRecorder()
+    const recorder = dictationBackend.findRecorder(undefined, tuiConfig.voice?.device)
     if (!recorder) return false
     const directory = project.instance.path().worktree || project.instance.path().directory || process.cwd()
     const recording = new Recording({
@@ -1183,7 +1185,10 @@ export function Prompt(props: PromptProps) {
   }
 
   function onVoiceKey(event: KeyEvent) {
-    const char = holdChar(event)
+    const char = holdChar(
+      event,
+      event.eventType === "release" || !!voicePending || !!voiceSwallow || (!!voiceRecording && voiceSource === "hold"),
+    )
     const space = char !== undefined
     const noMods = !event.ctrl && !event.meta && !event.option && !event.shift && !event.super && !event.hyper
     // 修飾キー付きの長押しキーは、修飾キーごと一致した時点で「素の押下」とみなす。
@@ -1377,7 +1382,7 @@ export function Prompt(props: PromptProps) {
         return
       }
       kv.set("voice_input", { ...((kv.get("voice_input", {}) ?? {}) as object), ...command.settings })
-      const reason = command.settings.enabled ? unavailableReason(english()) : undefined
+      const reason = command.settings.enabled ? unavailableReason(english(), process.env, process.platform, undefined, tuiConfig.voice?.device) : undefined
       toast.show({
         title: "🎤",
         message: reason ?? summarizeVoice(voiceSettings(), english()),
@@ -2079,7 +2084,8 @@ export function Prompt(props: PromptProps) {
                 const hint = () => {
                   const t = (ja: string, en: string) => (english() ? en : ja)
                   if (ui().source === "hold") return t("離すと確定 · Esc で取消", "release to insert · Esc to cancel")
-                  if (ui().source === "tap") return t("Space で送信 · Esc で取消", "Space to send · Esc to cancel")
+                  const key = voiceHoldKey()?.label ?? "Space"
+                  if (ui().source === "tap") return t(`${key} で送信 · Esc で取消`, `${key} to send · Esc to cancel`)
                   return t(`${voiceKeyLabel()} か Space で確定 · Enter で送信 · Esc で取消`, `${voiceKeyLabel()} or Space to finish · Enter to send · Esc to cancel`)
                 }
                 // 録音中に先に文字になった分。長い時は末尾だけ見せる。

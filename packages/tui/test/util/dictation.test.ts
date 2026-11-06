@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 import {
   backend,
+  readKeyRepeatDelay,
+  recentSends,
   buildLexicon,
   parseDshowAudioDevice,
   parseHoldKey,
@@ -19,7 +21,10 @@ import {
 } from "../../src/util/dictation"
 
 const original = { ...backend, limits: { ...backend.limits } }
-afterEach(() => Object.assign(backend, { ...original, limits: { ...original.limits } }))
+afterEach(() => {
+  Object.assign(backend, { ...original, limits: { ...original.limits } })
+  backend.sent.length = 0
+})
 
 export function fakeRecorder() {
   const procs: Array<EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill: (s?: string) => void; killed: boolean }> = []
@@ -342,19 +347,19 @@ test("long dictation is transcribed while still talking; release only waits for 
   }
   const partials: string[] = []
   const recording = new Recording({ recorder: backend.findRecorder()!, english: false, onPartial: (text) => partials.push(text) })
-  // 7秒話して0.8秒黙る → ここで1つ目を先に送る。
-  procs[0]!.stdout.write(pcmOf(true, 7))
-  procs[0]!.stdout.write(pcmOf(false, 0.8))
+  // 16秒話して1.3秒黙る → ここで1つ目を先に送る。
+  procs[0]!.stdout.write(pcmOf(true, 16))
+  procs[0]!.stdout.write(pcmOf(false, 1.3))
   await Bun.sleep(20)
   expect(requests).toHaveLength(1)
   expect(partials).toEqual(["最初の文です"])
-  procs[0]!.stdout.write(pcmOf(true, 6.5))
-  procs[0]!.stdout.write(pcmOf(false, 0.8))
+  procs[0]!.stdout.write(pcmOf(true, 15.5))
+  procs[0]!.stdout.write(pcmOf(false, 1.3))
   await Bun.sleep(20)
   expect(partials.at(-1)).toBe("最初の文です次の文です")
-  // 短い間(0.3秒)では区切らない。
+  // 言い淀み程度の間(0.8秒)では区切らない。
   procs[0]!.stdout.write(pcmOf(true, 2))
-  procs[0]!.stdout.write(pcmOf(false, 0.3))
+  procs[0]!.stdout.write(pcmOf(false, 0.8))
   procs[0]!.stdout.write(pcmOf(true, 1))
   await Bun.sleep(20)
   expect(requests).toHaveLength(2)
@@ -397,4 +402,53 @@ test("parses hold key settings", () => {
   expect(parseHoldKey("ctrl+k")).toMatchObject({ name: "k", ctrl: true, meta: false, label: "ctrl+k" })
   expect(parseHoldKey("alt+v")).toMatchObject({ name: "v", option: true, label: "option+v" })
   expect(parseHoldKey("hyper+v")).toBeUndefined()
+})
+
+test("reads the key repeat delay on each OS", () => {
+  const run = (out: string) => () => out
+  expect(readKeyRepeatDelay("darwin", run("25\n"))).toBe(375)
+  expect(readKeyRepeatDelay("linux", run("Keyboard Control:\n  auto repeat:  on    key click percent:  0\n  auto repeat delay:  660    repeat rate:  25"))).toBe(660)
+  expect(readKeyRepeatDelay("win32", run("HKEY_CURRENT_USER\\Control Panel\\Keyboard\n    KeyboardDelay    REG_SZ    0"))).toBe(250)
+  expect(readKeyRepeatDelay("linux", () => undefined)).toBeUndefined()
+})
+
+test("near the rate limit, a long dictation stops sending parts early and sends once at release", async () => {
+  const procs = fakeRecorder()
+  // 直近10分で既に14回送っている。
+  for (let i = 0; i < 14; i++) backend.sent.push(Date.now())
+  let calls = 0
+  backend.fetch = async () => (calls++, Response.json({ ok: true, text: "まとめて" }))
+  const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
+  procs[0]!.stdout.write(pcmOf(true, 16))
+  procs[0]!.stdout.write(pcmOf(false, 1.3))
+  procs[0]!.stdout.write(pcmOf(true, 16))
+  await Bun.sleep(20)
+  expect(calls).toBe(0)
+  expect(await recording.finish()).toEqual({ type: "text", text: "まとめて" })
+  expect(calls).toBe(1)
+  expect(recentSends()).toBe(15)
+})
+
+test("two 2-minute dictations in 10 minutes stay under the 20-request limit", async () => {
+  let calls = 0
+  for (let round = 0; round < 2; round++) {
+    const procs = fakeRecorder()
+    backend.fetch = async () => (calls++, Response.json({ ok: true, text: "文" }))
+    const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
+    // 8秒話して1.3秒黙る、を約2分くり返す(自然な間が多い口述)
+    for (let i = 0; i < 13; i++) {
+      procs[0]!.stdout.write(pcmOf(true, 8))
+      procs[0]!.stdout.write(pcmOf(false, 1.3))
+    }
+    await Bun.sleep(20)
+    await recording.finish()
+  }
+  expect(calls).toBeLessThanOrEqual(16)
+})
+
+test("a chosen microphone is passed to the recorder", () => {
+  const has = (...names: string[]) => (name: string) => names.includes(name)
+  expect(findRecorder("darwin", has("ffmpeg"), () => undefined, "1")?.args).toContain(":1")
+  expect(findRecorder("linux", has("arecord"), () => undefined, "hw:1,0")?.args).toEqual(expect.arrayContaining(["-D", "hw:1,0"]))
+  expect(findRecorder("win32", has("ffmpeg"), () => "First Mic", "USB Mic")?.args).toContain("audio=USB Mic")
 })
