@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Readable } from "node:stream"
-import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "@/cli/cmd/run/runtime.stdin"
+import { INTERACTIVE_INPUT_ERROR, readRunStdin, resolveInteractiveStdin } from "@/cli/cmd/run/runtime.stdin"
 
 function stream(isTTY: boolean) {
   return Object.assign(new Readable({ read() {} }), { isTTY }) as NodeJS.ReadStream
@@ -67,5 +67,43 @@ describe("run interactive stdin", () => {
         "linux",
       ),
     ).toThrow(INTERACTIVE_INPUT_ERROR)
+  })
+})
+
+describe("run piped stdin", () => {
+  const socket = () => ({ isFIFO: () => false, isFile: () => false })
+  const fifo = () => ({ isFIFO: () => true, isFile: () => false })
+  const never = () => new Promise<string>(() => {})
+
+  test("does not wait forever on an idle socket when a message is given", async () => {
+    const started = Date.now()
+    const result = await readRunStdin({ hasMessage: true, stdin: stream(false), stat: socket, readAll: never, graceMs: 50 })
+    expect(result).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
+  test("still reads data that arrives on a socket", async () => {
+    const stdin = stream(false)
+    setTimeout(() => {
+      stdin.push("piped text")
+      stdin.push(null)
+    }, 10)
+    expect(await readRunStdin({ hasMessage: true, stdin, stat: socket, readAll: never, graceMs: 50 })).toBe("piped text")
+  })
+
+  test("keeps reading a pipe to the end when a message is given", async () => {
+    expect(await readRunStdin({ hasMessage: true, stdin: stream(false), stat: fifo, readAll: async () => "from pipe" })).toBe(
+      "from pipe",
+    )
+  })
+
+  test("reads stdin when no message is given", async () => {
+    expect(await readRunStdin({ hasMessage: false, stdin: stream(false), stat: socket, readAll: async () => "only stdin" })).toBe(
+      "only stdin",
+    )
+  })
+
+  test("ignores stdin on a tty", async () => {
+    expect(await readRunStdin({ hasMessage: false, stdin: stream(true), readAll: never })).toBeUndefined()
   })
 })

@@ -24,7 +24,7 @@ import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
 import { createSenteClient, type SenteClient, type ToolPart } from "@sente-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
-import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { INTERACTIVE_INPUT_ERROR, readRunStdin, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { ExitCode, diagnostic, exitCodeForError } from "../exit-code"
 import { Unattended } from "@/permission/unattended"
 import { ShellSandbox } from "@/tool/shell/sandbox"
@@ -504,7 +504,7 @@ export const RunCommand = effectCmd({
         }
       }
 
-      const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()
+      const piped = await readRunStdin({ hasMessage: Boolean(message?.trim()) })
       message = resolveRunInput(message, piped) ?? ""
       const initialInput = resolveRunInput(rawMessage, piped)
 
