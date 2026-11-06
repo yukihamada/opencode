@@ -24,6 +24,7 @@ const original = { ...backend, limits: { ...backend.limits } }
 afterEach(() => {
   Object.assign(backend, { ...original, limits: { ...original.limits } })
   backend.sent.length = 0
+  backend.sentFile = undefined
 })
 
 export function fakeRecorder() {
@@ -451,4 +452,28 @@ test("a chosen microphone is passed to the recorder", () => {
   expect(findRecorder("darwin", has("ffmpeg"), () => undefined, "1")?.args).toContain(":1")
   expect(findRecorder("linux", has("arecord"), () => undefined, "hw:1,0")?.args).toEqual(expect.arrayContaining(["-D", "hw:1,0"]))
   expect(findRecorder("win32", has("ffmpeg"), () => "First Mic", "USB Mic")?.args).toContain("audio=USB Mic")
+})
+
+test("send counts are shared through a file with other Sente processes", async () => {
+  const { mkdtemp, writeFile, readFile } = await import("node:fs/promises")
+  const { tmpdir } = await import("node:os")
+  const path = await import("node:path")
+  const dir = await mkdtemp(path.join(tmpdir(), "sente-voice-"))
+  backend.sentFile = path.join(dir, "sends.json")
+  // 別の Sente が直近に14回送った記録。
+  const now = Date.now()
+  await writeFile(backend.sentFile, JSON.stringify(Array.from({ length: 14 }, (_, i) => now - i * 1000).concat([now - 700_000])))
+  expect(recentSends(now)).toBe(14)
+  const procs = fakeRecorder()
+  let calls = 0
+  backend.fetch = async () => (calls++, Response.json({ ok: true, text: "共有" }))
+  const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
+  procs[0]!.stdout.write(pcmOf(true, 16))
+  procs[0]!.stdout.write(pcmOf(false, 1.3))
+  procs[0]!.stdout.write(pcmOf(true, 2))
+  await Bun.sleep(20)
+  expect(calls).toBe(0)
+  await recording.finish()
+  expect(calls).toBe(1)
+  expect(JSON.parse(await readFile(backend.sentFile, "utf8"))).toHaveLength(15)
 })

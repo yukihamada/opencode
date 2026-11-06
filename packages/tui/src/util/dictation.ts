@@ -1,4 +1,6 @@
 import { spawn as nodeSpawn, spawnSync, type ChildProcess } from "node:child_process"
+import { readFileSync, writeFileSync } from "node:fs"
+import { tmpdir, userInfo } from "node:os"
 import path from "node:path"
 
 // 音声入力(話した言葉を入力欄に入れる機能)。録音・無音検出・文字起こしを TUI の
@@ -27,11 +29,32 @@ const RATE_WINDOW_MS = 600_000
 // この回数を超えたら、録音中の区切りをやめて離した時にまとめて送る(上限20回に余裕を残す)。
 const RATE_SOFT_LIMIT = 14
 
-/// 直近10分の送信回数。
+/// 直近10分の送信回数。同じ端末の別の Sente の分も数えるため、時刻をファイルに残す(ファイルが正)。
 export function recentSends(now = Date.now()) {
-  const sent = backend.sent
-  while (sent.length && now - sent[0]! > RATE_WINDOW_MS) sent.shift()
-  return sent.length
+  return liveSends(now).length
+}
+
+function liveSends(now: number) {
+  return (backend.sentFile ? readSentFile() : backend.sent).filter((at) => now - at <= RATE_WINDOW_MS)
+}
+
+function recordSend(at = Date.now()) {
+  const next = [...liveSends(at), at]
+  backend.sent.splice(0, backend.sent.length, ...next)
+  if (!backend.sentFile) return
+  try {
+    writeFileSync(backend.sentFile, JSON.stringify(next))
+  } catch {}
+}
+
+function readSentFile(): number[] {
+  if (!backend.sentFile) return []
+  try {
+    const value: unknown = JSON.parse(readFileSync(backend.sentFile, "utf8"))
+    return Array.isArray(value) ? value.filter((at): at is number => typeof at === "number") : []
+  } catch {
+    return []
+  }
 }
 
 export type VoiceCommand =
@@ -276,6 +299,14 @@ export function readKeyRepeatDelay(
   return undefined
 }
 
+function userInfoId() {
+  try {
+    return String(userInfo().uid >= 0 ? userInfo().uid : userInfo().username)
+  } catch {
+    return "user"
+  }
+}
+
 let recorderCache: { done: boolean; device?: string; value?: Recorder } = { done: false }
 let repeatCache: { done: boolean; value?: number } = { done: false }
 
@@ -283,6 +314,8 @@ let repeatCache: { done: boolean; value?: number } = { done: false }
 export const backend = {
   /// 文字起こしへ送った時刻(直近10分の回数を数える)。
   sent: [] as number[],
+  /// 送信時刻を共有するファイル(同じ利用者の Sente 同士で合算する)。テストでは undefined。
+  sentFile: process.env.NODE_ENV === "test" ? undefined : (path.join(tmpdir(), `sente-voice-sends-${userInfoId()}.json`) as string | undefined),
   /// 自動停止の時間(テストで短くする)。
   limits: { silenceMs: SILENCE_STOP_MS, maxMs: MAX_RECORDING_MS },
   spawn: (command: string, args: string[]): ChildProcess => nodeSpawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }),
@@ -491,7 +524,7 @@ export class Recording {
   }
 
   private send(pcm: Buffer) {
-    backend.sent.push(Date.now())
+    recordSend()
     const index = this.pieces.length
     const piece = this.transcribe(pcm).then(
       (text): Piece => ({ text }),

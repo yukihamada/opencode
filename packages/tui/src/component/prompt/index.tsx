@@ -1185,10 +1185,14 @@ export function Prompt(props: PromptProps) {
   }
 
   function onVoiceKey(event: KeyEvent) {
-    const char = holdChar(
-      event,
-      event.eventType === "release" || !!voicePending || !!voiceSwallow || (!!voiceRecording && voiceSource === "hold"),
-    )
+    // Ctrl+Space・/v で始めた録音とタップでは、長押しキーを変えていても Space で確定できる(案内どおり)。
+    const toggleSpace = !!voiceRecording && voiceConfirmed && voiceSource !== "hold" ? spaceChar(event) : undefined
+    const char =
+      toggleSpace ??
+      holdChar(
+        event,
+        event.eventType === "release" || !!voicePending || !!voiceSwallow || (!!voiceRecording && voiceSource === "hold"),
+      )
     const space = char !== undefined
     const noMods = !event.ctrl && !event.meta && !event.option && !event.shift && !event.super && !event.hyper
     // 修飾キー付きの長押しキーは、修飾キーごと一致した時点で「素の押下」とみなす。

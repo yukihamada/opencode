@@ -894,3 +894,19 @@ test("a modifier hold key stops even if the modifier is released first", async (
     await teardown(s)
   }
 })
+
+test("with a custom hold key, a Ctrl+Space recording still finishes with Space as the hint says", async () => {
+  const voice = fakeVoice("確定できる")
+  const s = await setup(undefined, { voice: { hold_key: "f5" } })
+  try {
+    s.emit(key("space", "press", "kitty", { ctrl: true }))
+    await waitRecording(s)
+    expect(s.app.captureCharFrame()).toContain("Space で確定")
+    await Bun.sleep(400)
+    s.emit(key("space", "press", "kitty"))
+    await wait(() => s.prompt.current.input === "確定できる")
+    expect(voice.transcribed).toBe(1)
+  } finally {
+    await teardown(s)
+  }
+})
