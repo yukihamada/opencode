@@ -19,6 +19,9 @@ const STT_URL = "https://koe.live/api/stt"
 // 文字起こし側は1回3MBまで。16kHz・16bit なら約98秒なので、85秒を超えたら静かな所で分けて送る。
 const CHUNK_MAX_MS = 85_000
 const CHUNK_MIN_MS = 55_000
+// 話しながら文字にするための区切り。短すぎると回数上限(10分20回)にすぐ届くので6秒以上話してから。
+const SEGMENT_MIN_MS = 6_000
+const SEGMENT_PAUSE_MS = 700
 
 export type VoiceCommand =
   | { type: "start" }
@@ -117,12 +120,32 @@ export function sttLanguage(value: string | undefined) {
   return Object.entries(LANGUAGES).find(([, names]) => names.includes(raw))?.[0]
 }
 
+export type HoldKey = { name: string; ctrl: boolean; meta: boolean; shift: boolean; option: boolean; label: string }
+
+/// 長押しキーの設定("space"・"f5"・"ctrl+k"・"alt+v" など)。Space(既定)と読めない値は undefined。
+export function parseHoldKey(value: string | undefined): HoldKey | undefined {
+  const parts = (value ?? "").trim().toLowerCase().split("+").filter(Boolean)
+  const name = parts.pop()
+  if (!name || name === "space") return undefined
+  const mods = new Set(parts.map((part) => ({ alt: "option", opt: "option", cmd: "meta", command: "meta", control: "ctrl" })[part] ?? part))
+  if ([...mods].some((mod) => !["ctrl", "meta", "shift", "option"].includes(mod))) return undefined
+  return {
+    name,
+    ctrl: mods.has("ctrl"),
+    meta: mods.has("meta"),
+    shift: mods.has("shift"),
+    option: mods.has("option"),
+    label: [...mods, name].join("+"),
+  }
+}
+
 export type Recorder = { command: string; args: string[]; name: string }
 
 /// 使える録音プログラムを選ぶ。どれも 16kHz・モノラル・16bit の生データを標準出力に流す。
 export function findRecorder(
   platform: NodeJS.Platform = process.platform,
   which: (name: string) => boolean = commandExists,
+  windowsMic: () => string | undefined = listWindowsMic,
 ): Recorder | undefined {
   const raw = ["-ac", "1", "-ar", String(SAMPLE_RATE), "-f", "s16le", "-"]
   const ffmpeg = ["-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -142,11 +165,42 @@ export function findRecorder(
     if (which("rec")) return sox
     if (which("ffmpeg")) return { name: "ffmpeg", command: "ffmpeg", args: [...ffmpeg, "-f", "pulse", "-i", "default", ...raw] }
   }
+  if (platform === "win32" && which("ffmpeg")) {
+    // DirectShow は機器名の指定が必要。最初に見つかった録音機器を使う。
+    const mic = windowsMic()
+    if (mic) return { name: "ffmpeg", command: "ffmpeg", args: [...ffmpeg, "-f", "dshow", "-i", `audio=${mic}`, ...raw] }
+  }
   return undefined
+}
+
+/// `ffmpeg -list_devices true -f dshow -i dummy` の出力から最初の録音機器名を取り出す。
+export function parseDshowAudioDevice(output: string) {
+  const lines = output.split(/\r?\n/)
+  // 新しい ffmpeg: 行末に (audio) が付く
+  const tagged = lines.find((line) => /"[^"]+"\s*\(audio\)/.test(line))
+  if (tagged) return /"([^"]+)"/.exec(tagged)?.[1]
+  // 古い ffmpeg: 「DirectShow audio devices」見出しの後の最初の名前
+  const heading = lines.findIndex((line) => /DirectShow audio devices/i.test(line))
+  if (heading < 0) return undefined
+  const named = lines.slice(heading + 1).find((line) => /"[^"]+"/.test(line) && !/Alternative name/i.test(line))
+  return named ? /"([^"]+)"/.exec(named)?.[1] : undefined
+}
+
+function listWindowsMic() {
+  try {
+    const out = spawnSync("ffmpeg", ["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"], {
+      encoding: "utf8",
+      timeout: 5000,
+    })
+    return parseDshowAudioDevice(`${out.stdout ?? ""}\n${out.stderr ?? ""}`)
+  } catch {
+    return undefined
+  }
 }
 
 function commandExists(name: string) {
   try {
+    if (process.platform === "win32") return spawnSync("where", [name], { stdio: "ignore", timeout: 2000 }).status === 0
     return spawnSync("/bin/sh", ["-c", `command -v ${name}`], { stdio: "ignore", timeout: 2000 }).status === 0
   } catch {
     return false
@@ -174,8 +228,13 @@ export function unavailableReason(
       "音声入力には録音プログラムが必要です: sudo apt install alsa-utils(または sox)",
       "Voice input needs a recorder: sudo apt install alsa-utils (or sox)",
     )
+  if (platform === "win32" && !recorder)
+    return text(
+      "音声入力には ffmpeg とマイクが必要です: winget install ffmpeg(入れたら Sente を起動し直してください)",
+      "Voice input needs ffmpeg and a microphone: winget install ffmpeg (then restart Sente)",
+    )
   if (!recorder)
-    return text("この OS ではまだ音声入力を使えません(macOS・Linux に対応)", "Voice input supports macOS and Linux only")
+    return text("この OS ではまだ音声入力を使えません(macOS・Linux・Windows に対応)", "Voice input supports macOS, Linux and Windows")
   return undefined
 }
 
@@ -280,11 +339,15 @@ export type RecordingEvents = {
   /// 自動停止(15秒無音・2分)で録音が終わり文字起こしに入った時。
   onAutoStop?: (reason: "silence" | "limit") => void
   onTranscribing?: () => void
+  /// 録音中に先に文字になった分(先頭から続けて決まった所まで)。
+  onPartial?: (text: string) => void
 }
 
 class RateLimited extends Error {}
 
 /// 1回分の録音。finish() で文字起こし、cancel() で破棄。result はどちらでも1回だけ決まる。
+/// 話しながら文字にするため、6秒以上話した後の短い間(0.7秒)で区切り、その区切りを
+/// 録音中から順に文字起こしへ送る(onPartial で途中経過を返す)。離した時に残るのは最後の区切りだけ。
 export class Recording {
   readonly result: Promise<RecordingResult>
   private resolve!: (value: RecordingResult) => void
@@ -293,12 +356,17 @@ export class Recording {
   private bytes = 0
   private heardVoice = false
   private voicedMs = 0
-  private peakDb = -120
+  private segmentVoicedMs = 0
+  private quietMs = 0
   private lastVoiceAt: number
   private readonly startedAt = Date.now()
   private timer?: ReturnType<typeof setInterval>
   private done = false
+  private finishing = false
+  private tailUntil = 0
   private abort = new AbortController()
+  private pieces: Array<Promise<Piece>> = []
+  private settled: Array<Piece | undefined> = []
 
   constructor(
     private readonly options: { recorder: Recorder; language?: string; lexicon?: string; english: boolean } & RecordingEvents,
@@ -308,7 +376,7 @@ export class Recording {
     const text = (ja: string, en: string) => (options.english ? en : ja)
     try {
       this.proc = backend.spawn(options.recorder.command, options.recorder.args)
-    } catch (error) {
+    } catch {
       this.settle({ type: "error", message: text("マイクを開けませんでした", "Could not open the microphone") })
       return
     }
@@ -326,13 +394,13 @@ export class Recording {
         return
       }
       // 録音プログラムが自分から終わった(マイク権限なし・機器なし等)。
-      const denied = /permission|not authorized|denied|Input\/output error|No such/i.test(stderr)
+      const denied = /permission|not authorized|denied|Input\/output error|No such|Could not find|I\/O error/i.test(stderr)
       this.settle({
         type: "error",
         message: denied
           ? text(
-              "マイクを使えません。システム設定 → プライバシーとセキュリティ → マイク で、このターミナルを許可してください",
-              "Microphone unavailable. Allow this terminal in System Settings → Privacy & Security → Microphone",
+              "マイクを使えません。OS の設定(macOS はシステム設定 → プライバシーとセキュリティ → マイク)で、このターミナルを許可してください",
+              "Microphone unavailable. Allow this terminal in your OS settings (macOS: System Settings → Privacy & Security → Microphone)",
             )
           : text(`録音が止まりました(${options.recorder.name} code ${code})`, `Recording stopped (${options.recorder.name} code ${code})`),
       })
@@ -340,26 +408,61 @@ export class Recording {
     this.timer = setInterval(() => this.tick(), 250)
   }
 
-  private finishing = false
-
   get elapsedMs() {
     return Date.now() - this.startedAt
   }
-
-  private tailUntil = 0
 
   private onAudio(chunk: Buffer) {
     if (this.done || (this.finishing && Date.now() > this.tailUntil)) return
     this.chunks.push(chunk)
     this.bytes += chunk.length
     const db = levelDb(chunk)
-    this.peakDb = Math.max(this.peakDb, db)
+    const ms = (chunk.length / 2 / SAMPLE_RATE) * 1000
     if (db >= SPEECH_DB) {
-      this.voicedMs += (chunk.length / 2 / SAMPLE_RATE) * 1000
+      this.voicedMs += ms
+      this.segmentVoicedMs += ms
+      this.quietMs = 0
       if (this.voicedMs >= VOICED_MS) this.heardVoice = true
       this.lastVoiceAt = Date.now()
-    }
+    } else this.quietMs += ms
     this.options.onLevel?.(Math.max(0, Math.min(1, (db + 60) / 50)), this.elapsedMs)
+    if (this.finishing) return
+    const segmentMs = this.bytes / ((SAMPLE_RATE * 2) / 1000)
+    // 話の切れ目で区切って先に送る。85秒を超えたら一番静かな所で切る(1回3MBの上限対策)。
+    if (this.segmentVoicedMs >= VOICED_MS && segmentMs >= SEGMENT_MIN_MS && this.quietMs >= SEGMENT_PAUSE_MS)
+      return this.cut(false)
+    if (segmentMs > CHUNK_MAX_MS) this.cut(true)
+  }
+
+  private cut(keepRest: boolean) {
+    const pcm = Buffer.concat(this.chunks, this.bytes)
+    const parts = keepRest ? splitPcm(pcm) : [pcm]
+    const rest = keepRest ? parts.pop()! : undefined
+    for (const part of parts) this.send(part)
+    this.chunks = rest ? [rest] : []
+    this.bytes = rest?.length ?? 0
+    this.segmentVoicedMs = rest ? VOICED_MS : 0
+  }
+
+  private send(pcm: Buffer) {
+    const index = this.pieces.length
+    const piece = this.transcribe(pcm).then(
+      (text): Piece => ({ text }),
+      (error: unknown): Piece => ({ error }),
+    )
+    this.pieces.push(piece)
+    void piece.then((value) => {
+      this.settled[index] = value
+      if (this.done) return
+      // 先頭から続けて文字になった分を途中経過として返す。
+      const ready: string[] = []
+      for (const item of this.settled) {
+        if (!item || !("text" in item)) break
+        ready.push(item.text)
+      }
+      const partial = ready.filter(Boolean).reduce((joined, text) => (joined ? joined + joinTranscript(joined, text) : text), "")
+      if (partial) this.options.onPartial?.(partial)
+    })
   }
 
   private tick() {
@@ -435,56 +538,57 @@ export class Recording {
     this.stopProcess()
     const pcm = Buffer.concat(this.chunks, this.bytes)
     this.chunks = []
-    const seconds = pcm.length / (SAMPLE_RATE * 2)
-    // 声らしい音がない録音は送らない(文字起こしの費用と幻聴を避ける)。
-    if (!this.heardVoice || seconds < 0.4) {
+    // 声らしい音がない区切りは送らない(文字起こしの費用と幻聴を避ける)。
+    if (this.segmentVoicedMs >= VOICED_MS && pcm.length / (SAMPLE_RATE * 2) >= 0.4) for (const part of splitPcm(pcm)) this.send(part)
+    if (!this.heardVoice || this.pieces.length === 0) {
       this.settle({ type: "empty" })
       return this.result
     }
     this.options.onTranscribing?.()
-    const text = (ja: string, en: string) => (this.options.english ? en : ja)
-    let joined = ""
-    try {
-      for (const piece of splitPcm(pcm)) {
-        const heard = await this.transcribe(piece)
-        if (heard) joined = joined ? joined + joinTranscript(joined, heard) : heard
-      }
+    const results = await Promise.all(this.pieces)
+    if (this.abort.signal.aborted) return this.settle({ type: "cancelled" }), this.result
+    const joined = results
+      .flatMap((item) => ("text" in item && item.text ? [item.text] : []))
+      .reduce((all, text) => (all ? all + joinTranscript(all, text) : text), "")
+    const failed = results.find((item): item is { error: unknown } => "error" in item)?.error
+    if (!failed) {
       this.settle(joined ? { type: "text", text: joined } : { type: "empty" })
-    } catch (error) {
-      if (this.abort.signal.aborted) return this.settle({ type: "cancelled" }), this.result
-      // 長い録音の途中で失敗しても、文字になった前半は残す。
-      if (joined)
-        return (
-          this.settle({
-            type: "text",
-            text: joined,
-            warning:
-              error instanceof RateLimited
-                ? error.message
-                : text("後半の文字起こしに失敗しました。続きをもう一度どうぞ", "The rest could not be transcribed. Please repeat it"),
-          }),
-          this.result
-        )
-      if (error instanceof RateLimited) return this.settle({ type: "error", message: error.message }), this.result
-      this.settle({
-        type: "error",
-        message: text(
-          `文字起こしに失敗しました(${error instanceof Error ? error.message : String(error)})。もう一度どうぞ`,
-          `Transcription failed (${error instanceof Error ? error.message : String(error)}). Try again`,
-        ),
-      })
+      return this.result
     }
+    const text = (ja: string, en: string) => (this.options.english ? en : ja)
+    // 一部の区切りで失敗しても、文字になった分は残す。
+    if (joined)
+      return (
+        this.settle({
+        type: "text",
+        text: joined,
+        warning:
+          failed instanceof RateLimited
+            ? failed.message
+            : text("一部を文字にできませんでした。抜けた所をもう一度どうぞ", "Part of it could not be transcribed. Please repeat the missing part"),
+        }),
+        this.result
+      )
+    if (failed instanceof RateLimited) return this.settle({ type: "error", message: failed.message }), this.result
+    const reason = failed instanceof Error ? failed.message : String(failed)
+    this.settle({
+      type: "error",
+      message: text(`文字起こしに失敗しました(${reason})。もう一度どうぞ`, `Transcription failed (${reason}). Try again`),
+    })
     return this.result
   }
 }
 
+type Piece = { text: string } | { error: unknown }
+
 /// `/v status` の表示。
-export function describeVoice(settings: VoiceSettings, english: boolean, keyLabel: string) {
+export function describeVoice(settings: VoiceSettings, english: boolean, keyLabel: string, holdKey?: HoldKey) {
   const text = (ja: string, en: string) => (english ? en : ja)
+  const where = holdKey ? holdKey.label : text("空欄で Space", "Space on an empty prompt")
   const how =
     settings.mode === "hold"
-      ? text("空欄で Space を長押しして話し、離すと入力欄に入ります", "Hold Space on an empty prompt, release to insert")
-      : text("空欄で Space を1回押して話し、もう1回押すと送信します", "Tap Space on an empty prompt, tap again to send")
+      ? text(`${where} を長押しして話し、離すと入力欄に入ります`, `Hold ${where}, release to insert`)
+      : text(`${where} を1回押して話し、もう1回押すと送信します`, `Tap ${where}, tap again to send`)
   return [
     text(`音声入力: ${settings.enabled ? "ON" : "OFF"}(${settings.mode === "hold" ? "長押し" : "タップ"})`, `Voice input: ${settings.enabled ? "on" : "off"} (${settings.mode})`),
     settings.enabled ? how : text("/v on で有効にできます", "Turn on with /v on"),

@@ -59,6 +59,7 @@ import {
   buildLexicon,
   describeVoice,
   joinTranscript,
+  parseHoldKey,
   longEnoughToSubmit,
   privacyNotice,
   summarizeVoice,
@@ -900,7 +901,7 @@ export function Prompt(props: PromptProps) {
   const voiceConsented = () => kv.get("voice_input_consent", false) === true
   type VoiceSource = "hold" | "tap" | "toggle"
   const [voiceUi, setVoiceUi] = createSignal<
-    { phase: "recording" | "transcribing"; source: VoiceSource; level: number; elapsed: number } | undefined
+    { phase: "recording" | "transcribing"; source: VoiceSource; level: number; elapsed: number; partial?: string } | undefined
   >()
   const VOICE_KITTY_HOLD_MS = 200
   // キーリピートが始まるまでの待ち時間。macOS の設定(リピート入力認識までの時間)+余裕。読めなければ 650ms。
@@ -939,9 +940,23 @@ export function Prompt(props: PromptProps) {
       voiceCanToggle() &&
       input.focused &&
       !leader() &&
-      store.prompt.input.trim() === "" &&
-      store.prompt.parts.length === 0
+      // Space 以外の長押しキーなら、入力欄に文字があっても始められる。
+      (!!voiceHoldKey() || (store.prompt.input.trim() === "" && store.prompt.parts.length === 0))
     )
+  }
+
+  const voiceHoldKey = createMemo(() => parseHoldKey(tuiConfig.voice?.hold_key))
+  // 長押しキーなら、押した時に入る文字(Space は空白、ほかのキーは何も入れない)。違うキーなら undefined。
+  function holdChar(event: KeyEvent) {
+    const key = voiceHoldKey()
+    if (!key) return spaceChar(event)
+    const match =
+      event.name === key.name &&
+      !!event.ctrl === key.ctrl &&
+      !!event.meta === key.meta &&
+      !!event.shift === key.shift &&
+      !!event.option === key.option
+    return match ? "" : undefined
   }
 
   function spaceChar(event: KeyEvent) {
@@ -978,6 +993,10 @@ export function Prompt(props: PromptProps) {
       onTranscribing: () => {
         const ui = voiceUi()
         if (ui) setVoiceUi({ ...ui, phase: "transcribing" })
+      },
+      onPartial: (partial) => {
+        const ui = voiceUi()
+        if (ui) setVoiceUi({ ...ui, partial })
       },
       onAutoStop: () => {
         clearInterval(voiceReleaseTimer)
@@ -1146,7 +1165,7 @@ export function Prompt(props: PromptProps) {
     clearTimeout(pending.timer)
     voicePending = undefined
     if (voiceRecording && !voiceConfirmed) cancelVoice(true)
-    if (input && !input.isDestroyed) input.insertText(pending.char)
+    if (pending.char && input && !input.isDestroyed) input.insertText(pending.char)
   }
 
   // キーリピートが途切れたら「離した」とみなす(kitty 以外の端末の長押し)。
@@ -1164,9 +1183,11 @@ export function Prompt(props: PromptProps) {
   }
 
   function onVoiceKey(event: KeyEvent) {
-    const char = spaceChar(event)
+    const char = holdChar(event)
     const space = char !== undefined
-    const plain = !event.ctrl && !event.meta && !event.option && !event.shift && !event.super && !event.hyper
+    const noMods = !event.ctrl && !event.meta && !event.option && !event.shift && !event.super && !event.hyper
+    // 修飾キー付きの長押しキーは、修飾キーごと一致した時点で「素の押下」とみなす。
+    const plain = voiceHoldKey() ? space : noMods
     const release = event.eventType === "release"
     const repeat = event.eventType === "repeat"
     const now = Date.now()
@@ -1208,7 +1229,7 @@ export function Prompt(props: PromptProps) {
         cancelVoice()
         return
       }
-      if (event.name === "return" && plain) {
+      if (event.name === "return" && noMods) {
         consume(event)
         // 文字起こし中に押した Enter も「入ったら送信」として受け付ける。
         if (voiceUi()?.phase === "recording") finishVoice(150, true)
@@ -1243,7 +1264,7 @@ export function Prompt(props: PromptProps) {
         // キーリピートは「リピート開始までの時間」より前には来ない。それより速い2回目は素早い2連打。
         if (now - voiceLastSpace < voiceDoubleTapMs()) {
           resolvePendingAsTap()
-          if (input && !input.isDestroyed) input.insertText(char)
+          if (char && input && !input.isDestroyed) input.insertText(char)
           return
         }
         // kitty 以外: 2回目のスペース(=キーリピート)が来たら長押し。
@@ -1270,7 +1291,7 @@ export function Prompt(props: PromptProps) {
       return
     }
     // 日本語入力の全角空白は、離した合図が来ない端末があるため常にキーリピートで判定する。
-    const kitty = event.source === "kitty" && char === " "
+    const kitty = event.source === "kitty" && char !== "\u3000"
     voiceLastKitty = kitty
     startVoice("hold", false)
     voicePending = {
@@ -1346,7 +1367,7 @@ export function Prompt(props: PromptProps) {
       return
     }
     if (command.type === "status") {
-      void DialogAlert.show(dialog, text("音声入力", "Voice input"), describeVoice(voiceSettings(), english(), voiceKeyLabel()))
+      void DialogAlert.show(dialog, text("音声入力", "Voice input"), describeVoice(voiceSettings(), english(), voiceKeyLabel(), voiceHoldKey()))
       return
     }
     if (command.type === "set") {
@@ -2061,19 +2082,29 @@ export function Prompt(props: PromptProps) {
                   if (ui().source === "tap") return t("Space で送信 · Esc で取消", "Space to send · Esc to cancel")
                   return t(`${voiceKeyLabel()} か Space で確定 · Enter で送信 · Esc で取消`, `${voiceKeyLabel()} or Space to finish · Enter to send · Esc to cancel`)
                 }
+                // 録音中に先に文字になった分。長い時は末尾だけ見せる。
+                const partial = () => {
+                  const text = ui().partial ?? ""
+                  return text.length > 60 ? "…" + text.slice(-60) : text
+                }
                 return (
-                  <Show
-                    when={ui().phase === "recording"}
-                    fallback={<text fg={theme.textMuted}>{english() ? "🎤 Transcribing…" : "🎤 文字起こし中…"}</text>}
-                  >
-                    <text>
-                      <span style={{ fg: theme.error, bold: true }}>●</span>
-                      <span style={{ fg: theme.text }}>{english() ? " Listening " : " 録音中 "}</span>
-                      <span style={{ fg: theme.textMuted }}>{clock()} </span>
-                      <span style={{ fg: theme.success }}>{meter()}</span>
-                      <span style={{ fg: theme.textMuted }}> {hint()}</span>
-                    </text>
-                  </Show>
+                  <>
+                    <Show
+                      when={ui().phase === "recording"}
+                      fallback={<text fg={theme.textMuted}>{english() ? "🎤 Transcribing…" : "🎤 文字起こし中…"}</text>}
+                    >
+                      <text>
+                        <span style={{ fg: theme.error, bold: true }}>●</span>
+                        <span style={{ fg: theme.text }}>{english() ? " Listening " : " 録音中 "}</span>
+                        <span style={{ fg: theme.textMuted }}>{clock()} </span>
+                        <span style={{ fg: theme.success }}>{meter()}</span>
+                        <span style={{ fg: theme.textMuted }}> {hint()}</span>
+                      </text>
+                    </Show>
+                    <Show when={partial()}>
+                      <text fg={theme.textMuted}>{partial()}</text>
+                    </Show>
+                  </>
                 )
               }}
             </Show>

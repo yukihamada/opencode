@@ -75,7 +75,7 @@ async function mount(
   state: string,
   width: number,
   height: number,
-  options: { sessionID?: string | null; sessionDelayMs?: number } = {},
+  options: { sessionID?: string | null; sessionDelayMs?: number; tui?: Parameters<typeof createTuiResolvedConfig>[0] } = {},
 ) {
   const promptSessionID = options.sessionID === undefined ? sessionID : (options.sessionID ?? undefined)
   const provider = { id: "teai", name: "teai", env: [], models: { auto: model("auto") } }
@@ -179,7 +179,7 @@ async function mount(
   function Harness() {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
-    const config = createTuiResolvedConfig({})
+    const config = createTuiResolvedConfig(options.tui ?? {})
     onCleanup(registerOpencodeKeymap(keymap, renderer, config))
     return (
       <TestTuiContexts paths={{ state, home: state }}>
@@ -225,7 +225,8 @@ const original = { ...backend, limits: { ...backend.limits } }
 afterEach(() => Object.assign(backend, { ...original, limits: { ...original.limits } }))
 
 // 録音プログラムと文字起こしを差し替える。録音が始まると声相当の音を流し続ける。
-function fakeVoice(text = "テストを直して", delayMs = 0) {
+// script を渡すと、20ミリ秒ごとに「その回に流す音」を決められる(早送りで長い発話を再現する)。
+function fakeVoice(text: string | string[] = "テストを直して", delayMs = 0, script?: (tick: number) => Buffer) {
   const state = { spawned: 0, killed: 0, transcribed: 0, text }
   backend.findRecorder = () => ({ name: "fake", command: "fake", args: [] })
   backend.gitBranch = () => "feat/voice"
@@ -246,14 +247,16 @@ function fakeVoice(text = "テストを直して", delayMs = 0) {
     })
     const loud = Buffer.alloc(3200)
     for (let i = 0; i < 1600; i++) loud.writeInt16LE(Math.round(Math.sin(i / 5) * 8000), i * 2)
-    const timer = setInterval(() => stdout.write(loud), 20)
+    let tick = 0
+    const timer = setInterval(() => stdout.write(script ? script(tick++) : loud), 20)
     return proc as never
   }
   backend.keyRepeatDelayMs = () => undefined
   backend.fetch = async () => {
     state.transcribed++
     if (delayMs) await Bun.sleep(delayMs)
-    return Response.json({ ok: true, text: state.text })
+    const reply = Array.isArray(state.text) ? state.text[state.transcribed - 1] : state.text
+    return Response.json({ ok: true, text: reply })
   }
   return state
 }
@@ -298,12 +301,15 @@ async function waitRecording(
   }
 }
 
-async function setup(kv: Record<string, unknown> = { voice_input: { enabled: true }, voice_input_consent: true }) {
+async function setup(
+  kv: Record<string, unknown> = { voice_input: { enabled: true }, voice_input_consent: true },
+  tui?: Parameters<typeof createTuiResolvedConfig>[0],
+) {
   const tmp = await tmpdir()
   // CI の端末ロケールは英語。画面の文言を日本語で確かめるため言語を固定する。
   await Bun.write(path.join(tmp.path, "kv.json"), JSON.stringify({ language: "ja", ...kv }))
   await Bun.write(path.join(tmp.path, "model.json"), JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }))
-  const mounted = await mount(tmp.path, 100, 24)
+  const mounted = await mount(tmp.path, 100, 24, { tui })
   mounted.prompt.focus()
   await wait(() => mounted.app.renderer.currentFocusedEditor instanceof TextareaRenderable)
   const emit = (event: KeyEvent) =>
@@ -774,5 +780,87 @@ test("if transcription fails after the prompt closed, the user is told", async (
   } finally {
     s.app.renderer.destroy()
     await s.tmp[Symbol.asyncDispose]()
+  }
+})
+
+function tone(seconds: number, loud: boolean) {
+  const samples = Math.round(16000 * seconds)
+  const buffer = Buffer.alloc(samples * 2)
+  if (loud) for (let i = 0; i < samples; i++) buffer.writeInt16LE(Math.round(Math.sin(i / 5) * 8000), i * 2)
+  return buffer
+}
+
+test("long dictation shows what has been transcribed while still talking", async () => {
+  // 1回ごとに0.5秒ぶんを流す: 7秒話す → 1秒黙る → 話し続ける
+  const voice = fakeVoice(["最初の文です", "続きです"], 0, (tick) => tone(0.5, !(tick >= 14 && tick < 16)))
+  const s = await setup()
+  try {
+    s.emit(key("space", "press", "kitty"))
+    await waitRecording(s)
+    await wait(() => voice.transcribed === 1, 5000)
+    // 押したまま、先に文字になった分が表示される。
+    const start = Date.now()
+    while (!s.app.captureCharFrame().includes("最初の文です")) {
+      if (Date.now() - start > 5000) throw new Error("partial not shown\n" + s.app.captureCharFrame())
+      await Bun.sleep(20)
+      await s.app.renderOnce()
+    }
+    expect(s.prompt.current.input).toBe("")
+    s.emit(key("space", "release", "kitty"))
+    await wait(() => s.prompt.current.input === "最初の文です続きです", 5000)
+    expect(voice.transcribed).toBe(2)
+  } finally {
+    await teardown(s)
+  }
+})
+
+test("a custom hold key (f5) works even with text in the prompt; space stays a plain space", async () => {
+  const voice = fakeVoice("and add a test")
+  const s = await setup(undefined, { voice: { hold_key: "f5" } })
+  try {
+    await s.app.mockInput.typeText("fix the bug")
+    await s.app.renderOnce()
+    // Space は普通の空白。
+    s.emit(key("space", "press", "kitty"))
+    await Bun.sleep(300)
+    s.emit(key("space", "release", "kitty"))
+    await s.app.renderOnce()
+    expect(voice.spawned).toBe(0)
+    expect(s.prompt.current.input).toBe("fix the bug ")
+    // F5 の短押しは何も入れず、文字起こしにも送らない。
+    s.emit(key("f5", "press", "kitty"))
+    await Bun.sleep(60)
+    s.emit(key("f5", "release", "kitty"))
+    await wait(() => voice.killed === voice.spawned)
+    expect(voice.transcribed).toBe(0)
+    expect(s.prompt.current.input).toBe("fix the bug ")
+    // F5 の長押しで録音し、離すと続きに入る。
+    s.emit(key("f5", "press", "kitty"))
+    await waitRecording(s)
+    await Bun.sleep(300)
+    s.emit(key("f5", "release", "kitty"))
+    await wait(() => s.prompt.current.input === "fix the bug and add a test")
+  } finally {
+    await teardown(s)
+  }
+})
+
+test("a modifier hold key (ctrl+k) is matched with its modifier", async () => {
+  const voice = fakeVoice("テスト")
+  const s = await setup(undefined, { voice: { hold_key: "ctrl+k" } })
+  try {
+    s.emit(key("k", "press", "kitty"))
+    await Bun.sleep(300)
+    s.emit(key("k", "release", "kitty"))
+    expect(voice.spawned).toBe(0)
+    s.prompt.reset()
+    await s.app.renderOnce()
+    s.emit(key("k", "press", "kitty", { ctrl: true }))
+    await waitRecording(s)
+    await Bun.sleep(300)
+    s.emit(key("k", "release", "kitty", { ctrl: true }))
+    await wait(() => s.prompt.current.input === "テスト")
+  } finally {
+    await teardown(s)
   }
 })

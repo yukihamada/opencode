@@ -72,6 +72,9 @@ export const Voice = Schema.Struct({
   language: Schema.optional(Schema.String).annotate({
     description: "Dictation language as a name or BCP 47 code (e.g. japanese, en). Defaults to the UI language",
   }),
+  hold_key: Schema.optional(Schema.String).annotate({
+    description: "Key to hold for dictation: space (default, empty prompt only), or e.g. f5, ctrl+k, alt+v (works with text in the prompt)",
+  }),
 }).annotate({ description: "Voice input (dictation) settings" })
 
 export const Info = Schema.Struct({

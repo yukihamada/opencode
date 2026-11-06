@@ -4,6 +4,8 @@ import { PassThrough } from "node:stream"
 import {
   backend,
   buildLexicon,
+  parseDshowAudioDevice,
+  parseHoldKey,
   joinTranscript,
   splitPcm,
   findRecorder,
@@ -106,7 +108,10 @@ test("picks a recorder per platform", () => {
   expect(findRecorder("darwin", has())).toBeUndefined()
   expect(findRecorder("linux", has("arecord", "ffmpeg"))?.name).toBe("arecord")
   expect(findRecorder("linux", has("ffmpeg"))?.args).toContain("pulse")
-  expect(findRecorder("win32", has("ffmpeg"))).toBeUndefined()
+  expect(findRecorder("win32", has("ffmpeg"), () => "Microphone (Realtek(R) Audio)")?.args).toContain("audio=Microphone (Realtek(R) Audio)")
+  expect(findRecorder("win32", has("ffmpeg"), () => undefined)).toBeUndefined()
+  expect(findRecorder("win32", has(), () => "Mic")).toBeUndefined()
+  expect(findRecorder("freebsd", has("ffmpeg"))).toBeUndefined()
 })
 
 test("explains why voice input is unavailable", () => {
@@ -114,7 +119,8 @@ test("explains why voice input is unavailable", () => {
   expect(unavailableReason(false, { SSH_CONNECTION: "1 2 3 4" }, "darwin", recorder)).toContain("SSH")
   expect(unavailableReason(false, {}, "darwin", null)).toContain("brew install ffmpeg")
   expect(unavailableReason(true, {}, "linux", null)).toContain("alsa-utils")
-  expect(unavailableReason(true, {}, "win32", null)).toContain("macOS and Linux")
+  expect(unavailableReason(true, {}, "win32", null)).toContain("winget install ffmpeg")
+  expect(unavailableReason(true, {}, "freebsd", null)).toContain("macOS, Linux and Windows")
   expect(unavailableReason(false, {}, "darwin", recorder)).toBeUndefined()
 })
 
@@ -324,4 +330,71 @@ test("a failure on the second piece keeps the first piece's text", async () => {
   expect(result.type).toBe("text")
   expect(result.type === "text" && result.text).toBe("前半です")
   expect(result.type === "text" && result.warning).toContain("10分に20回")
+})
+
+test("long dictation is transcribed while still talking; release only waits for the last part", async () => {
+  const procs = fakeRecorder()
+  const requests: number[] = []
+  const texts = ["最初の文です", "次の文です", "最後の文です"]
+  backend.fetch = async (_url, init) => {
+    requests.push((init.body as Uint8Array).length)
+    return Response.json({ ok: true, text: texts[requests.length - 1] })
+  }
+  const partials: string[] = []
+  const recording = new Recording({ recorder: backend.findRecorder()!, english: false, onPartial: (text) => partials.push(text) })
+  // 7秒話して0.8秒黙る → ここで1つ目を先に送る。
+  procs[0]!.stdout.write(pcmOf(true, 7))
+  procs[0]!.stdout.write(pcmOf(false, 0.8))
+  await Bun.sleep(20)
+  expect(requests).toHaveLength(1)
+  expect(partials).toEqual(["最初の文です"])
+  procs[0]!.stdout.write(pcmOf(true, 6.5))
+  procs[0]!.stdout.write(pcmOf(false, 0.8))
+  await Bun.sleep(20)
+  expect(partials.at(-1)).toBe("最初の文です次の文です")
+  // 短い間(0.3秒)では区切らない。
+  procs[0]!.stdout.write(pcmOf(true, 2))
+  procs[0]!.stdout.write(pcmOf(false, 0.3))
+  procs[0]!.stdout.write(pcmOf(true, 1))
+  await Bun.sleep(20)
+  expect(requests).toHaveLength(2)
+  expect(await recording.finish()).toEqual({ type: "text", text: "最初の文です次の文です最後の文です" })
+  expect(requests).toHaveLength(3)
+})
+
+test("a short dictation stays a single request (keeps within the rate limit)", async () => {
+  const procs = fakeRecorder()
+  let calls = 0
+  backend.fetch = async () => (calls++, Response.json({ ok: true, text: "短い指示" }))
+  const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
+  procs[0]!.stdout.write(pcmOf(true, 2))
+  procs[0]!.stdout.write(pcmOf(false, 1))
+  procs[0]!.stdout.write(pcmOf(true, 2))
+  await Bun.sleep(10)
+  expect(await recording.finish()).toEqual({ type: "text", text: "短い指示" })
+  expect(calls).toBe(1)
+})
+
+test("finds the first DirectShow microphone in both ffmpeg output styles", () => {
+  const modern = `[dshow @ 0001] "Integrated Camera" (video)
+[dshow @ 0001]   Alternative name "@device_pnp_x"
+[dshow @ 0001] "Microphone Array (Intel Smart Sound)" (audio)
+[dshow @ 0001]   Alternative name "@device_cm_y"`
+  expect(parseDshowAudioDevice(modern)).toBe("Microphone Array (Intel Smart Sound)")
+  const legacy = `[dshow @ 0002] DirectShow video devices
+[dshow @ 0002]  "Integrated Camera"
+[dshow @ 0002] DirectShow audio devices
+[dshow @ 0002]  "マイク (Realtek High Definition Audio)"
+[dshow @ 0002]     Alternative name "@device_cm_z"`
+  expect(parseDshowAudioDevice(legacy)).toBe("マイク (Realtek High Definition Audio)")
+  expect(parseDshowAudioDevice("no devices")).toBeUndefined()
+})
+
+test("parses hold key settings", () => {
+  expect(parseHoldKey(undefined)).toBeUndefined()
+  expect(parseHoldKey("space")).toBeUndefined()
+  expect(parseHoldKey("F5")).toMatchObject({ name: "f5", ctrl: false, label: "f5" })
+  expect(parseHoldKey("ctrl+k")).toMatchObject({ name: "k", ctrl: true, meta: false, label: "ctrl+k" })
+  expect(parseHoldKey("alt+v")).toMatchObject({ name: "v", option: true, label: "option+v" })
+  expect(parseHoldKey("hyper+v")).toBeUndefined()
 })
