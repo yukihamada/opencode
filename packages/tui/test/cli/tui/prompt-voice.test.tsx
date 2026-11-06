@@ -275,12 +275,25 @@ function key(name: string, eventType: "press" | "repeat" | "release", source: "k
 }
 
 
-async function waitRecording(s: { app: { renderOnce: () => Promise<void>; captureCharFrame: () => string } }, timeout = 5000) {
+async function waitRecording(
+  s: {
+    app: { renderOnce: () => Promise<void>; captureCharFrame: () => string }
+    toastMessage?: () => string
+    ctx?: { dialog: { stack: unknown[] } }
+  },
+  timeout = 5000,
+) {
   const start = Date.now()
   while (true) {
     await s.app.renderOnce()
     if (s.app.captureCharFrame().includes("録音中")) return
-    if (Date.now() - start > timeout) throw new Error("recording indicator did not appear")
+    if (Date.now() - start > timeout)
+      throw new Error(
+        "recording indicator did not appear\n" +
+          JSON.stringify({ toast: s.toastMessage?.(), dialogs: s.ctx?.dialog.stack.length, env: { ssh: !!(process.env.SSH_CONNECTION || process.env.SSH_TTY), platform: process.platform } }) +
+          "\n" +
+          s.app.captureCharFrame().split("\n").filter((line) => line.trim()).join("\n"),
+      )
     await Bun.sleep(20)
   }
 }
