@@ -639,10 +639,13 @@ test("before consent, a space never opens the microphone and a hold asks first",
     await s.app.renderOnce()
     // 長押し: 録音せずに説明と確認を出す。
     s.emit(key("space", "press", "kitty"))
-    await Bun.sleep(300)
-    await s.app.renderOnce()
+    const start = Date.now()
+    while (!s.app.captureCharFrame().includes("音声入力を使いますか")) {
+      if (Date.now() - start > 5000) throw new Error("consent dialog did not appear\n" + s.app.captureCharFrame())
+      await Bun.sleep(20)
+      await s.app.renderOnce()
+    }
     expect(voice.spawned).toBe(0)
-    expect(s.app.captureCharFrame()).toContain("音声入力を使いますか")
     expect(s.app.captureCharFrame()).toContain("ElevenLabs")
     s.emit(key("space", "release", "kitty"))
     expect(voice.transcribed).toBe(0)
