@@ -519,3 +519,19 @@ test("with the dictation quota, a pause after about 5 seconds of speech already 
   expect(calls).toBe(1)
   expect(await recording.finish()).toEqual({ type: "text", text: "文1文2" })
 })
+
+test("the rate limit message follows the server's reason (count, 10-minute or daily seconds)", async () => {
+  for (const [body, expected] of [
+    [{ detail: "混雑中" }, "10分に60回"],
+    [{ detail: "x", limit: "window" }, "10分で15分ぶん"],
+    [{ detail: "x", limit: "day" }, "明日また使えます"],
+  ] as const) {
+    const procs = fakeRecorder()
+    backend.fetch = async () => Response.json(body, { status: 429 })
+    const recording = new Recording({ recorder: backend.findRecorder()!, english: false })
+    procs[0]!.stdout.write(pcm(true))
+    await Bun.sleep(5)
+    const result = await recording.finish()
+    expect(result.type === "error" && result.message).toContain(expected)
+  }
+})

@@ -592,13 +592,20 @@ export class Recording {
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(30_000)]),
     })
     if (response.status === 422) return ""
-    if (response.status === 429)
+    if (response.status === 429) {
+      // 上限の種類(回数・10分の秒数・1日の秒数)はサーバーが知っているので、その案内を出す。
+      const body = (await response.json().catch(() => ({}))) as { detail?: unknown; limit?: unknown }
+      if (body.limit === "day")
+        throw new RateLimited(text("音声入力の1日の上限(120分ぶん)に達しました。明日また使えます", "Daily voice input limit (120 minutes) reached. Try again tomorrow"))
+      if (body.limit === "window")
+        throw new RateLimited(text("音声入力の上限(10分で15分ぶん)に達しました。10分ほど待ってからどうぞ", "Voice input limit (15 minutes per 10 minutes) reached. Try again in about 10 minutes"))
       throw new RateLimited(
         text(
           "文字起こしの回数上限(10分に60回)に達しました。数分おいてからどうぞ",
           "Transcription limit reached (60 per 10 minutes). Try again in a few minutes",
         ),
       )
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const body = (await response.json()) as { ok?: boolean; text?: unknown }
     return body.ok && usableTranscript(body.text) ? body.text.trim() : ""
