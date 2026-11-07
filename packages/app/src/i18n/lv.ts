@@ -700,6 +700,8 @@ export const dict = {
   "home.sessions.group.today": "Šodien",
   "home.sessions.group.yesterday": "Vakar",
   "home.sessions.group.older": "Vecākas",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "Pievienojiet vairāk nekā 75 pakalpojumu sniedzējus, lai izmantotu citus modeļus, tostarp Claude, GPT, Gemini u.c.",
   "session.tab.session": "Sesija",

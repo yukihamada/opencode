@@ -697,6 +697,8 @@ export const dict = {
   "home.sessions.group.today": "ថ្ងៃនេះ",
   "home.sessions.group.yesterday": "ម្សិលមិញ",
   "home.sessions.group.older": "ចាស់ជាង",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "ភ្ជាប់ជាមួយអ្នកផ្តល់សេវា 75+ ដើម្បីប្រើម៉ូដែលផ្សេងទៀត រួមទាំង Claude, GPT, Gemini ជាដើម។",
   "session.tab.session": "សម័យ",
   "session.tab.review": "ពិនិត្យ",

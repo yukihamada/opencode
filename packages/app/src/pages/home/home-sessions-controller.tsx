@@ -16,7 +16,8 @@ import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { sessionHasOpenTab, useTabs } from "@/context/tabs"
 import { compareSessionTime, displayName, errorMessage, projectForSession } from "@/pages/layout/helpers"
-import { useSessionTabAvatarState } from "@/pages/layout/project-avatar-state"
+import { useSessionTabAvatarState, type SessionTabStatus } from "@/pages/layout/project-avatar-state"
+import { createHomeSessionInsights } from "./home-session-insights"
 import { pathKey } from "@/utils/path-key"
 import { showToast } from "@/utils/toast"
 import { Binary } from "@sente-ai/core/util/binary"
@@ -163,6 +164,8 @@ export function createHomeSessionsController(home: HomeController) {
     },
   ])
 
+  const insights = createHomeSessionInsights(home, records)
+
   return {
     copy: {
       language,
@@ -173,6 +176,7 @@ export function createHomeSessionsController(home: HomeController) {
       loading: () => sessionLoad.isLoading,
       searchRecords: allRecords,
     },
+    insights,
     session: {
       showProjectName: () => !home.project.selected(),
       server: () => home.selection.value().server,
@@ -305,7 +309,12 @@ export function HomeSessionStatusController(props: {
   server: Accessor<ServerConnection.Key>
   record: HomeSessionRecord
   isOpenTab: (record: HomeSessionRecord) => boolean
-  render: (state: { unread: Accessor<boolean>; loading: Accessor<boolean>; open: Accessor<boolean> }) => JSX.Element
+  render: (state: {
+    unread: Accessor<boolean>
+    loading: Accessor<boolean>
+    status: Accessor<SessionTabStatus>
+    open: Accessor<boolean>
+  }) => JSX.Element
 }) {
   const avatar = useSessionTabAvatarState(
     props.server,
@@ -315,6 +324,7 @@ export function HomeSessionStatusController(props: {
   return props.render({
     unread: avatar.unread,
     loading: avatar.loading,
+    status: avatar.status,
     open: () => props.isOpenTab(props.record),
   })
 }

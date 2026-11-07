@@ -709,6 +709,8 @@ export const dict = {
   "home.sessions.group.today": "Hôm nay",
   "home.sessions.group.yesterday": "Hôm qua",
   "home.sessions.group.older": "Cũ hơn",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Kết nối với hơn 75 nhà cung cấp để sử dụng các mô hình khác, bao gồm Claude, GPT, Gemini, v.v.",
   "session.tab.session": "Phiên",
   "session.tab.review": "Xem lại",

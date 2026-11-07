@@ -24,6 +24,7 @@ export function HomeSessions(props: {
       searchNoResultsLabel={props.search.result.noResultsLabel}
       titleOpacity={props.scroll.header.titleOpacity}
       isOpenTab={props.sessions.tab.isOpen}
+      insights={props.sessions.insights}
       onCreateSession={props.sessions.session.create}
       onOpenSession={props.sessions.session.open}
       onArchiveSession={props.sessions.session.archive}

@@ -711,6 +711,8 @@ export const dict: Record<string, string> = {
   "home.sessions.group.today": "ད་རེས",
   "home.sessions.group.yesterday": "ཁ༌ཙ",
   "home.sessions.group.older": "རྒས་ཤོས།",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Claude, GPT, Gemini, ལ་སོགས་པ་ཚུ་རྩིས་ཏེ་ དཔེ་ཚད་གཞན་ལག་ལེན་འཐབ་ནི་ལུ་ ༧༥+ བྱིན་མི་ལུ་མཐུད།",
   "session.tab.session": "ལཱ་ཡུན།",
   "session.tab.review": "བསྐྱར་ཞིབ",

@@ -597,6 +597,8 @@ export const dict = {
   "home.sessions.group.today": "Tänään",
   "home.sessions.group.yesterday": "Eilen",
   "home.sessions.group.older": "Vanhemmat",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Yhdistä yli 75 palveluntarjoajaan käyttääksesi muita malleja, kuten Claude, GPT, Gemini jne",
   "session.tab.session": "Istunto",
   "session.tab.review": "Tarkistus",

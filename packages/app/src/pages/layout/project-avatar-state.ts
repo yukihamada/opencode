@@ -38,12 +38,21 @@ export function useSessionTabAvatarState(
     if (!connection()) return
     return notification.ensureServerState(server())
   })
-  const unread = createMemo(() => needsAttention() || (notificationState()?.session.unseenCount(sessionId()) ?? 0) > 0)
+  const hasUnseen = createMemo(() => (notificationState()?.session.unseenCount(sessionId()) ?? 0) > 0)
+  const unread = createMemo(() => needsAttention() || hasUnseen())
   const loading = createMemo(() => {
     const serverSync = sync()
     if (!serverSync) return false
     if (needsAttention()) return false
     return serverSync.session.data.session_working(sessionId())
   })
-  return { unread, loading }
+  const status = createMemo<SessionTabStatus>(() => {
+    if (needsAttention()) return "attention"
+    if (loading()) return "working"
+    if (hasUnseen()) return "done"
+    return "idle"
+  })
+  return { unread, loading, status }
 }
+
+export type SessionTabStatus = "attention" | "working" | "done" | "idle"

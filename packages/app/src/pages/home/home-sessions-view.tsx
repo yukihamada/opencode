@@ -9,6 +9,7 @@ import { TooltipV2 } from "@sente-ai/ui/v2/tooltip-v2"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { SessionTabAvatarView } from "@/pages/layout/session-tab-avatar"
+import type { SessionTabStatus } from "@/pages/layout/project-avatar-state"
 import { sessionTitle } from "@/utils/session-title"
 import { shouldOpenSessionInBackground } from "../home-session-open"
 import {
@@ -18,6 +19,7 @@ import {
   type HomeSessionRecord,
   type OpenSessionOptions,
 } from "./home-sessions-controller"
+import type { HomeSessionInsights } from "./home-session-insights"
 
 const SHOW_HOME_SESSION_ARCHIVE = false
 const HOME_SECTION_LABEL = "text-v2-text-text-muted [font-weight:440]"
@@ -51,6 +53,7 @@ export type HomeSessionsViewProps = {
   searchNoResultsLabel: Accessor<string>
   titleOpacity: (id: HomeSessionGroup["id"]) => number
   isOpenTab: (record: HomeSessionRecord) => boolean
+  insights: HomeSessionInsights
   onCreateSession: () => void
   onOpenSession: (session: Session, options?: OpenSessionOptions) => void
   onArchiveSession: (session: Session) => Promise<void>
@@ -139,11 +142,96 @@ export function HomeSessionsView(props: HomeSessionsViewProps) {
                   </>
                 )}
               </For>
+              <HomeSessionInsightsView insights={props.insights} onOpenSession={props.onOpenSession} />
             </div>
           </Show>
         </Suspense>
       </div>
     </section>
+  )
+}
+
+function HomeSessionInsightsView(props: {
+  insights: HomeSessionInsights
+  onOpenSession: (session: Session, options?: OpenSessionOptions) => void
+}) {
+  const language = useLanguage()
+  return (
+    <Show when={props.insights.data.hasAny()}>
+      <div class="mt-6 flex flex-col gap-6">
+        <Show when={props.insights.data.todos().length > 0}>
+          <div class="flex flex-col gap-1">
+            <div class={HOME_SECTION_LABEL}>{language.t("home.insights.todos")}</div>
+            <div class="flex flex-col gap-px pt-1">
+              <For each={props.insights.data.todos()}>
+                {(todo) => (
+                  <button
+                    type="button"
+                    data-component="home-insight-todo-row"
+                    class={`
+                      flex h-8 min-w-0 w-full cursor-default items-center gap-2 rounded-[6px] border-0 bg-transparent
+                      pl-3 pr-3 text-left transition-[background-color] duration-[120ms] ease-in-out
+                      hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none
+                    `}
+                    onClick={() => props.onOpenSession(todo.session)}
+                  >
+                    <span
+                      class="size-1.5 shrink-0 rounded-full"
+                      classList={{
+                        "bg-v2-state-fg-success": todo.status === "completed",
+                        "bg-v2-background-bg-accent": todo.status === "in_progress",
+                        "bg-v2-icon-icon-faint": todo.status === "pending",
+                      }}
+                      aria-hidden="true"
+                    />
+                    <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-muted [font-weight:440]">
+                      {todo.content}
+                    </span>
+                    <span class="shrink-0 truncate text-[12px] text-v2-text-text-faint [font-weight:440]">
+                      {todo.sessionTitle}
+                    </span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+        </Show>
+        <Show when={props.insights.data.changes().length > 0}>
+          <div class="flex flex-col gap-1">
+            <div class={HOME_SECTION_LABEL}>{language.t("home.insights.changes")}</div>
+            <div class="flex flex-col gap-px pt-1">
+              <For each={props.insights.data.changes()}>
+                {(change) => (
+                  <button
+                    type="button"
+                    data-component="home-insight-change-row"
+                    class={`
+                      flex h-8 min-w-0 w-full cursor-default items-center gap-2 rounded-[6px] border-0 bg-transparent
+                      pl-3 pr-3 text-left transition-[background-color] duration-[120ms] ease-in-out
+                      hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none
+                    `}
+                    onClick={() => props.onOpenSession(change.session)}
+                  >
+                    <span class="min-w-0 flex-1 truncate text-[13px] text-v2-text-text-muted [font-weight:440]">
+                      {change.file}
+                    </span>
+                    <span class="shrink-0 text-[12px] text-v2-state-fg-success [font-weight:440]">
+                      +{change.additions}
+                    </span>
+                    <span class="shrink-0 text-[12px] text-v2-text-text-faint [font-weight:440]">
+                      -{change.deletions}
+                    </span>
+                    <span class="shrink-0 truncate text-[12px] text-v2-text-text-faint [font-weight:440]">
+                      {change.sessionTitle}
+                    </span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </div>
+        </Show>
+      </div>
+    </Show>
   )
 }
 
@@ -163,8 +251,7 @@ function HomeSessionLeadingController(props: {
           record={props.record}
           revealProjectOnHover={props.revealProjectOnHover}
           open={state.open()}
-          unread={state.unread()}
-          loading={state.loading()}
+          status={state.status()}
         />
       )}
     />
@@ -175,8 +262,7 @@ function HomeSessionLeading(props: {
   record: HomeSessionRecord
   revealProjectOnHover: boolean
   open: boolean
-  unread: boolean
-  loading: boolean
+  status: SessionTabStatus
 }) {
   return (
     <div class="relative shrink-0">
@@ -194,8 +280,7 @@ function HomeSessionLeading(props: {
         project={props.record.project}
         directory={props.record.session.directory}
         revealProjectOnHover={props.revealProjectOnHover}
-        unread={props.unread}
-        loading={props.loading}
+        status={props.status}
       />
     </div>
   )
