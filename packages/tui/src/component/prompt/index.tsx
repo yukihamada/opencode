@@ -1038,7 +1038,7 @@ export function Prompt(props: PromptProps) {
       text("音声入力を使いますか", "Use voice input?"),
       privacyNotice(english()) +
         text(
-          "\n\n長押しを見分けるため、空欄で Space を押した瞬間からマイクを開きます(ただの空白なら送らずに捨てます)。Enter で使い始めます。",
+          "\n\n長押しを見分けるため、空欄で Space を押した瞬間にマイクを開きます。ただの空白だった時は送らずに捨てます。\nEnter で使い始めます。",
           "\n\nTo detect a hold, the microphone opens as soon as you press Space on an empty prompt (a plain space is discarded, never sent). Press Enter to enable.",
         ),
       // DialogConfirm の label は「やめる」側のボタン名。

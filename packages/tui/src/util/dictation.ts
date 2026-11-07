@@ -696,7 +696,7 @@ export function describeVoice(settings: VoiceSettings, english: boolean, keyLabe
 export function privacyNotice(english: boolean) {
   return english
     ? "Audio is sent to koe.live and transcribed by ElevenLabs or Cloudflare, with the folder and branch name as vocabulary hints. Long dictation is sent in parts while you speak, so parts already sent stay sent even if you cancel. Nothing is kept on this machine. /v off disables it"
-    : "音声は koe.live に送られ、ElevenLabs または Cloudflare が文字にします(フォルダ名・ブランチ名を語彙ヒントに使います)。長く話す時は話しながら区切って送るので、取り消す前に送った部分は送信済みです。手元には残しません。/v off で無効"
+    : "音声は koe.live に送られ、ElevenLabs または Cloudflare が文字にします。フォルダ名とブランチ名を語彙のヒントに使います。\n長く話す時は区切って送るので、取り消す前に送った部分は送信済みです。手元には残しません。/v off で無効にできます"
 }
 
 /// 設定を変えた時の1行表示。
