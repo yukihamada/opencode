@@ -663,6 +663,8 @@ export const dict = {
   "home.sessions.group.today": "Today",
   "home.sessions.group.yesterday": "Yesterday",
   "home.sessions.group.older": "Older",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Connect to 75+ providers to use other models, including Claude, GPT, Gemini, etc",
 
   "session.tab.session": "Session",

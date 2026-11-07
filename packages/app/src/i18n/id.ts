@@ -762,6 +762,8 @@ export const dict = {
   "home.sessions.group.today": "Hari ini",
   "home.sessions.group.yesterday": "Kemarin",
   "home.sessions.group.older": "Lebih lama",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "Hubungkan ke 75+ penyedia untuk menggunakan model lain, termasuk Claude, GPT, Gemini, dan lainnya",
 

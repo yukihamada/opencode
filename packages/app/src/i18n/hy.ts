@@ -703,6 +703,8 @@ export const dict = {
   "home.sessions.group.today": "Այսօր",
   "home.sessions.group.yesterday": "Երեկ",
   "home.sessions.group.older": "Հին",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "Միացեք 75+ մատակարարների՝ այլ մոդելներ օգտագործելու համար, այդ թվում՝ Claude, GPT, Gemini և այլն",
   "session.tab.session": "Նիստ",

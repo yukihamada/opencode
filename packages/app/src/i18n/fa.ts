@@ -698,6 +698,8 @@ export const dict = {
   "home.sessions.group.today": "امروز",
   "home.sessions.group.yesterday": "دیروز",
   "home.sessions.group.older": "قدیمی تر",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "برای استفاده از مدل‌های دیگر، از جمله Claude، GPT، Gemini و غیره به بیش از 75 ارائه‌دهنده متصل شوید.",
   "session.tab.session": "جلسه",

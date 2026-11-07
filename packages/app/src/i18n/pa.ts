@@ -708,6 +708,8 @@ export const dict = {
   "home.sessions.group.today": "آج",
   "home.sessions.group.yesterday": "کل",
   "home.sessions.group.older": "پرانا",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "دوجے ماڈل استعمال کرن لئی 75+ فراہم کرن آلیاں نال جڑو، جنہاں چ Claude، GPT، Gemini، وغیرہ شامل نیں",
   "session.tab.session": "سیشن",

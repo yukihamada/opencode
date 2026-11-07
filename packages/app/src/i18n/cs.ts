@@ -699,6 +699,8 @@ export const dict = {
   "home.sessions.group.today": "dnes",
   "home.sessions.group.yesterday": "včera",
   "home.sessions.group.older": "Starší",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "Připojte se k více než 75 poskytovatelům a použijte další modely, včetně Claude, GPT, Gemini atd",
   "session.tab.session": "Relace",

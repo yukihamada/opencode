@@ -686,6 +686,8 @@ export const dict = {
   "home.sessions.group.today": "اليوم",
   "home.sessions.group.yesterday": "أمس",
   "home.sessions.group.older": "الأقدم",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "اتصل بأكثر من 75 موفرًا لاستخدام نماذج أخرى، بما فيها Claude وGPT وGemini وغيرها",
   "session.tab.session": "جلسة",
   "session.tab.review": "مراجعة",

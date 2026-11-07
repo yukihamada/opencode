@@ -615,6 +615,8 @@ export const dict = {
   "home.sessions.group.today": "Oggi",
   "home.sessions.group.yesterday": "Ieri",
   "home.sessions.group.older": "Meno recenti",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Connettiti a oltre 75 provider per utilizzare altri modelli, inclusi Claude, GPT, Gemini, ecc.",
   "session.tab.session": "Sessione",
   "session.tab.review": "Revisione",

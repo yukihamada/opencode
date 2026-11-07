@@ -702,6 +702,8 @@ export const dict = {
   "home.sessions.group.today": "Bugun",
   "home.sessions.group.yesterday": "Kecha",
   "home.sessions.group.older": "Kattaroq",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "Claude, GPT, Gemini va boshqalar kabi boshqa modellardan foydalanish uchun 75 dan ortiq provayderlarga ulaning.",
   "session.tab.session": "Sessiya",

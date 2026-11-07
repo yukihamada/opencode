@@ -699,6 +699,8 @@ export const dict = {
   "home.sessions.group.today": "Bu gün",
   "home.sessions.group.yesterday": "Düýn",
   "home.sessions.group.older": "Köne",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Claude, GPT, Gemini we ş.m. ýaly beýleki modelleri ulanmak üçin 75+ üpjün edijä birikdiriň.",
   "session.tab.session": "Sessiýa",
   "session.tab.review": "Syn",

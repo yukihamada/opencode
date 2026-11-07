@@ -5,6 +5,7 @@ import { SessionV1 } from "@sente-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { SessionAutoResume } from "./auto-resume"
+import { SessionOutputLimit } from "./output-limit"
 import { MessageV2 } from "./message-v2"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
@@ -1092,6 +1093,8 @@ const layer = Layer.effect(
         let step = 0
         // Consecutive automatic resumes of this request; a turn that gets through resets it.
         let autoResumes = 0
+        // Consecutive automatic continuations after an output-limit stop; a turn that gets through resets it.
+        let outputContinues = 0
         // Model used instead of the user's choice after its upstream account was blocked.
         let fallback: { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined
         const blockedFamilies = new Set<string>()
@@ -1322,6 +1325,42 @@ const layer = Layer.effect(
             }
 
             if (handle.message.finish === "length" && !handle.message.error) {
+              // The model ran out of output tokens. Usually it has more to say, so ask
+              // it to resume from where it stopped instead of ending the turn with an
+              // error. Bounded, because each continuation is a billed request and a
+              // model that keeps overrunning must not loop forever.
+              if (SessionOutputLimit.canContinue(outputContinues)) {
+                outputContinues++
+                const continueMsg: SessionV1.User = {
+                  id: MessageID.ascending(),
+                  role: "user",
+                  sessionID,
+                  time: { created: Date.now() },
+                  agent: lastUser.agent,
+                  model: lastUser.model,
+                }
+                yield* sessions.updateMessage(continueMsg)
+                yield* sessions.updatePart({
+                  id: PartID.ascending(),
+                  messageID: continueMsg.id,
+                  sessionID,
+                  type: "text",
+                  synthetic: true,
+                  text: SessionOutputLimit.continuePrompt(),
+                  time: { start: Date.now(), end: Date.now() },
+                })
+                yield* Effect.logInfo("output limit continue", {
+                  "session.id": sessionID,
+                  attempt: outputContinues,
+                })
+                yield* status.set(sessionID, {
+                  type: "retry",
+                  attempt: outputContinues,
+                  message: SessionOutputLimit.continueNote(outputContinues),
+                  next: Date.now(),
+                })
+                return "continue" as const
+              }
               handle.message.error = new SessionV1.OutputLengthError({}).toObject()
               yield* sessions.updateMessage(handle.message)
               yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
@@ -1410,7 +1449,10 @@ const layer = Layer.effect(
               yield* status.set(sessionID, { type: "busy" })
               return "continue" as const
             }
-            if (result === "continue") autoResumes = 0
+            if (result === "continue") {
+              autoResumes = 0
+              outputContinues = 0
+            }
             if (result === "compact") {
               // A compaction message would replace lastUser and bypass the loop's
               // finished-turn check, causing an unsolicited summary/continue loop.
