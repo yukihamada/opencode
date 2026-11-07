@@ -191,6 +191,7 @@ const TIPS: Tip[] = [
   (shortcuts) => `The leader key is ${shortcutText(shortcuts.leader())}; combine with other keys for quick actions`,
   (shortcuts) => press(shortcuts.modelCycleRecent(), "to quickly switch between recently used models"),
   (shortcuts) => press(shortcuts.koeToggle(), "to turn Sente's voice (KOE) on or off"),
+  "Hold {highlight}Space{/highlight} on an empty prompt (or your voice.hold_key) to dictate; release to insert. Run {highlight}/v status{/highlight} for options",
   (shortcuts) => press(shortcuts.helpShow(), "to see the main keyboard shortcuts"),
   (shortcuts) => press(shortcuts.sessionSidebarToggle(), "in a session to show or hide the sidebar panel"),
   (shortcuts) =>
