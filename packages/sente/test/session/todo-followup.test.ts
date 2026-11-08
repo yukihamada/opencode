@@ -22,6 +22,11 @@ describe("todo follow-up", () => {
     expect(SessionTodoFollowup.canFollowup(0, { SENTE_TODO_FOLLOWUP: "off" })).toBe(false)
   })
 
+  test("stays off in a non-interactive one-shot run", () => {
+    expect(SessionTodoFollowup.canFollowup(0, { SENTE_NONINTERACTIVE: "1" })).toBe(false)
+    expect(SessionTodoFollowup.canFollowup(0, { SENTE_NONINTERACTIVE: "1", SENTE_TODO_FOLLOWUP: "1" })).toBe(false)
+  })
+
   test("prompt lists the open items and asks to finish or close them", () => {
     const prompt = SessionTodoFollowup.followupPrompt([todo("ログイン画面", "in_progress")], "ja")
     expect(prompt).toContain("[in_progress] ログイン画面")

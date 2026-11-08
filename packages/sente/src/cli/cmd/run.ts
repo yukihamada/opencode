@@ -337,6 +337,10 @@ export const RunCommand = effectCmd({
     yield* Effect.promise(async () => {
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const interactive = args.mini
+      // A one-shot run has nobody to act on an automatic todo follow-up, and the
+      // extra billed turn would push it past its cost limit. Mark the process so
+      // the in-process server skips the follow-up.
+      if (!interactive) process.env.SENTE_NONINTERACTIVE = "1"
       const auto = args.auto || args.yolo || args["dangerously-skip-permissions"]
       const unattendedPolicy = args["unattended-policy"] || process.env["SENTE_UNATTENDED_POLICY"] || undefined
       const unattended = args.unattended || Boolean(unattendedPolicy) || process.env["SENTE_UNATTENDED"] === "1"

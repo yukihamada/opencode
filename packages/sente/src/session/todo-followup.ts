@@ -13,8 +13,15 @@ import type { Info } from "./todo"
  */
 export const MAX_TODO_FOLLOWUPS = 2
 
-/** `SENTE_TODO_FOLLOWUP=0` (or false/off/no) turns the follow-up off. */
+/**
+ * `SENTE_TODO_FOLLOWUP=0` (or false/off/no) turns the follow-up off.
+ *
+ * A one-shot `sente run` sets `SENTE_NONINTERACTIVE=1`: nobody is there to act
+ * on the follow-up, and the extra billed turn would push a run past its cost
+ * limit and change its exit code. Only nudge when a person is watching.
+ */
 export function enabled(env: Record<string, string | undefined> = process.env): boolean {
+  if (env.SENTE_NONINTERACTIVE === "1") return false
   const raw = env.SENTE_TODO_FOLLOWUP
   if (raw === undefined || raw.trim() === "") return true
   return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase())
