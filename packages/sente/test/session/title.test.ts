@@ -45,11 +45,29 @@ describe("session title anchored to the first goal", () => {
     expect(content.length).toBeLessThan(2500)
   })
 
+  test("request tells the model to keep the current title's wording", () => {
+    const content = SessionTitle.request({
+      first: "ログイン画面を作る",
+      later: [],
+      current: "ログイン画面の作成",
+    })
+    expect(content).toContain("Keep its core words")
+  })
+
   test("detects a title that just echoes the latest follow-up", () => {
     const first = "ログイン画面を作る"
     expect(SessionTitle.echoesLatest({ candidate: "ボタンを青にして", first, latest: "ボタンを青にして!" })).toBe(true)
     expect(SessionTitle.echoesLatest({ candidate: "ログイン画面の作成", first, latest: "ボタンを青にして" })).toBe(false)
     expect(SessionTitle.echoesLatest({ candidate: "ログイン画面", first, latest: "ログイン画面のボタンを青に" })).toBe(false)
     expect(SessionTitle.echoesLatest({ candidate: "OK", first, latest: "OK" })).toBe(false)
+  })
+
+  test("keeps the current title when the candidate drops its wording", () => {
+    expect(SessionTitle.retainsCurrent({ candidate: "ログイン画面の作成", current: "ログイン画面の作成" })).toBe(true)
+    expect(SessionTitle.retainsCurrent({ candidate: "ログイン画面", current: "ログイン画面の作成" })).toBe(true)
+    expect(SessionTitle.retainsCurrent({ candidate: "ログイン画面の作成と配色", current: "ログイン画面の作成" })).toBe(true)
+    expect(SessionTitle.retainsCurrent({ candidate: "データベース移行", current: "ログイン画面の作成" })).toBe(false)
+    expect(SessionTitle.retainsCurrent({ candidate: "", current: "ログイン画面の作成" })).toBe(false)
+    expect(SessionTitle.retainsCurrent({ candidate: "anything", current: "" })).toBe(true)
   })
 })

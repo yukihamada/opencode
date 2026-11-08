@@ -28,7 +28,9 @@ export function request(input: { first: string; later: string[]; current?: strin
     "Generate a short title for this session. The title states the session's GOAL, which is set by the FIRST request.",
     "Later messages are follow-ups (corrections, details, small asks). Use them only to refine the goal's wording; never title the session after a later message, and never copy a message as the title.",
     ...(input.current
-      ? ["If the current title still fits the goal, output it unchanged. If you change it, keep its core wording so it is clearly the same goal, refined."]
+      ? [
+          "A current title already exists. Keep its core words in the new title so it stays clearly the same goal — refine, do not replace. If the goal is unchanged, output the current title unchanged.",
+        ]
       : []),
     "Use the same language as the first request.",
   ]
@@ -48,6 +50,20 @@ export function echoesLatest(input: { candidate: string; first: string; latest: 
   const candidate = normalize(input.candidate)
   if (candidate.length < 4) return false
   return normalize(input.latest).includes(candidate) && !normalize(input.first).includes(candidate)
+}
+
+// A refined title must keep the previous title's wording so the session is still recognizable
+// by its earlier name. When the candidate drops most of the current title, keep the current one.
+export function retainsCurrent(input: { candidate: string; current: string }) {
+  const candidate = normalize(input.candidate)
+  const current = normalize(input.current)
+  if (!current) return true
+  if (!candidate) return false
+  if (candidate.includes(current) || current.includes(candidate)) return true
+  const chars = new Set(current)
+  let shared = 0
+  for (const char of chars) if (candidate.includes(char)) shared++
+  return shared / chars.size >= 0.5
 }
 
 export * as SessionTitle from "./title"
