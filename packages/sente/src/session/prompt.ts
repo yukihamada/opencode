@@ -56,6 +56,8 @@ import { ProviderV2 } from "@sente-ai/core/provider"
 import { eq } from "drizzle-orm"
 import { SessionTable } from "@sente-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
+import { SessionTodoFollowup } from "./todo-followup"
+import { Todo } from "./todo"
 import { SessionTools } from "./tools"
 import { SessionTitle } from "./title"
 import { SessionModelFallback } from "./model-fallback"
@@ -145,6 +147,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const todo = yield* Todo.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -255,6 +258,7 @@ const layer = Layer.effect(
       if (t === input.session.title) return
       if (current && later.length && SessionTitle.echoesLatest({ candidate: t, first, latest: later[later.length - 1] }))
         return
+      if (current && !SessionTitle.retainsCurrent({ candidate: t, current })) return
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
         .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
@@ -1095,6 +1099,8 @@ const layer = Layer.effect(
         let autoResumes = 0
         // Consecutive automatic continuations after an output-limit stop; a turn that gets through resets it.
         let outputContinues = 0
+        // Consecutive automatic follow-ups for unfinished todos; a turn that closes them resets it.
+        let todoFollowups = 0
         // Model used instead of the user's choice after its upstream account was blocked.
         let fallback: { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined
         const blockedFamilies = new Set<string>()
@@ -1140,6 +1146,36 @@ const layer = Layer.effect(
                 tool: orphan.tool,
                 callID: orphan.callID,
               })
+            }
+            // A finished turn with unfinished todos usually means the list was left
+            // stale. Ask the model to finish or close them, bounded so it cannot loop.
+            const openTodos = session.parentID ? [] : SessionTodoFollowup.unfinished(yield* todo.get(sessionID))
+            if (openTodos.length > 0 && !orphan && SessionTodoFollowup.canFollowup(todoFollowups)) {
+              todoFollowups++
+              const followupMsg: SessionV1.User = {
+                id: MessageID.ascending(),
+                role: "user",
+                sessionID,
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+              }
+              yield* sessions.updateMessage(followupMsg)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: followupMsg.id,
+                sessionID,
+                type: "text",
+                synthetic: true,
+                text: SessionTodoFollowup.followupPrompt(openTodos),
+                time: { start: Date.now(), end: Date.now() },
+              })
+              yield* Effect.logInfo("todo followup", {
+                "session.id": sessionID,
+                attempt: todoFollowups,
+                remaining: openTodos.length,
+              })
+              continue
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
@@ -1778,6 +1814,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    Todo.node,
   ],
 })
 

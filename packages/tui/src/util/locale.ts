@@ -63,6 +63,30 @@ export function truncate(str: string, len: number): string {
   return str.slice(0, len - 1) + "…"
 }
 
+// Truncate at a natural boundary instead of mid-word. Prefers the last space,
+// Japanese punctuation, or a particle boundary inside the limit so titles do not
+// stop in the middle of a word; falls back to a hard cut when no reasonable
+// boundary exists.
+export function truncateWords(str: string, len: number): string {
+  if (str.length <= len) return str
+  const room = len - 1
+  const head = str.slice(0, room)
+  const marks = [" ", "　", "、", "。", "，", "・", "-", "—", "：", ":", "（", "("]
+  let boundary = -1
+  for (const mark of marks) boundary = Math.max(boundary, head.lastIndexOf(mark))
+  // Japanese has no spaces: break after a trailing particle so the cut lands on
+  // a phrase boundary (e.g. 「ログイン画面を…」) rather than mid-word.
+  const particle = head.match(/.*[はをがにでとへのやも]/u)
+  if (particle) boundary = Math.max(boundary, particle[0].length - 1)
+  // Only break at the boundary when it keeps most of the width; otherwise a hard
+  // cut reads better than dropping half the title.
+  if (boundary >= Math.floor(room * 0.6)) {
+    const trimmed = head.slice(0, boundary + 1).replace(/[\s、。，・\-—：:（(]+$/u, "").replace(/[はをがにでとへのやも]$/u, "")
+    if (trimmed) return trimmed + "…"
+  }
+  return head + "…"
+}
+
 export function truncateLeft(str: string, len: number): string {
   if (str.length <= len) return str
   return "…" + str.slice(-(len - 1))

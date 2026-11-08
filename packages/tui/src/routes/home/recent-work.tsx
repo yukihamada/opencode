@@ -84,6 +84,14 @@ export function RecentWork(props: { prompt?: PromptRef; maxWidth: number }) {
     // Idle or missing status is not evidence of a completed task.
     return ""
   }
+  function statusIcon(id: string) {
+    if (sync.data.permission[id]?.length) return { icon: "△", color: theme.warning }
+    if (sync.data.question[id]?.length) return { icon: "?", color: theme.info }
+    const value = sync.data.session_status[id]?.type
+    if (value === "busy") return { icon: "▶", color: theme.success }
+    if (value === "retry") return { icon: "↻", color: theme.warning }
+    return undefined
+  }
   const date = new Intl.DateTimeFormat(terminalLocale(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
   return (
     <box width="100%" maxWidth={props.maxWidth} paddingTop={1} flexShrink={0}>
@@ -95,31 +103,36 @@ export function RecentWork(props: { prompt?: PromptRef; maxWidth: number }) {
       <Show when={ready()}>
         <Show when={sessions()[0]} fallback={
           <box>
-            <text fg={theme.textMuted}>{labels.start}</text>
+            <text fg={theme.textMuted}>✦ {labels.start}</text>
             <For each={labels.examples}>{(example, index) => (
               <text id={`home-example-${index()}`} selectable={false} fg={empty() ? theme.text : theme.textMuted} onMouseUp={(e) => {
                 if (e.button !== 0 || !enabled()) return
                 props.prompt?.set({ input: example, parts: [] })
                 props.prompt?.focus()
-              }}>{example}</text>
+              }}><span style={{ fg: theme.primary }}>› </span>{example}</text>
             )}</For>
           </box>
         }>{(previous) => (
           <box>
-            <text fg={theme.textMuted}>{labels.previous}</text>
+            <text fg={theme.textMuted}>◆ {labels.previous}</text>
             <text id="home-previous-work" selectable={false} fg={empty() ? theme.primary : theme.textMuted} wrapMode="none" truncate onMouseUp={(e) => {
               if (e.button === 0) open(previous())
-            }}>{previous().title.replace(/\s+/g, " ")}</text>
-            <text fg={theme.textMuted}>{date.format(previous().time.updated)}{status(previous().id) ? ` · ${status(previous().id)}` : ""}</text>
+            }}>▸ {previous().title.replace(/\s+/g, " ")}</text>
+            <text fg={theme.textMuted}>
+              {date.format(previous().time.updated)}
+              <Show when={statusIcon(previous().id)}>{(s) => (
+                <span style={{ fg: s().color }}> · {s().icon} {status(previous().id)}</span>
+              )}</Show>
+            </text>
             <text id="home-resume" selectable={false} fg={empty() ? theme.primary : theme.textMuted} onMouseUp={(e) => {
               if (e.button === 0) open(previous())
-            }}>{empty() ? `${labels.open}${shortcut() ? `  ${shortcut()}` : ""}` : labels.draft}</text>
+            }}>{empty() ? `↩ ${labels.open}${shortcut() ? `  ${shortcut()}` : ""}` : labels.draft}</text>
             <Show when={dimensions().height >= 30 && sessions().length > 1}>
-              <text fg={theme.textMuted} marginTop={1}>{labels.recent}</text>
+              <text fg={theme.textMuted} marginTop={1}>◇ {labels.recent}</text>
               <For each={sessions().slice(1)}>{(session) => (
                 <text id={`home-recent-${session.id}`} selectable={false} fg={empty() ? theme.text : theme.textMuted} wrapMode="none" truncate onMouseUp={(e) => {
                   if (e.button === 0) open(session)
-                }}>{session.title.replace(/\s+/g, " ")}</text>
+                }}>▸ {session.title.replace(/\s+/g, " ")}</text>
               )}</For>
             </Show>
           </box>
