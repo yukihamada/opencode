@@ -14,8 +14,16 @@ import { ProviderQuota } from "@/provider/quota"
  */
 export const MAX_OUTPUT_CONTINUES = 3
 
+/** `SENTE_AUTO_CONTINUE=0` (or false/off/no) turns automatic continuation off. */
+export function enabled(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env.SENTE_AUTO_CONTINUE
+  if (raw === undefined || raw.trim() === "") return true
+  return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase())
+}
+
 /** Whether one more continuation is allowed. `count` is the number already done. */
-export function canContinue(count: number): boolean {
+export function canContinue(count: number, env: Record<string, string | undefined> = process.env): boolean {
+  if (!enabled(env)) return false
   return Number.isInteger(count) && count >= 0 && count < MAX_OUTPUT_CONTINUES
 }
 

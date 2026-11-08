@@ -1,8 +1,8 @@
 import { isRecord } from "./record"
 
 const outputLimitMessages = {
-  ja: "出力トークン上限に達したため、回答が途中で切れました。明示的に続行してください。",
-  en: "The response hit the output token limit and was cut off. Please continue explicitly.",
+  ja: "出力トークン上限に達したため、回答が途中で切れました。自動継続を試しましたが完了しませんでした。「続けて」と送ると続きから再開します。",
+  en: "The response hit the output token limit and was cut off. Automatic continuation did not finish it; send \"continue\" to resume from where it stopped.",
 }
 
 function outputLimitMessage() {
