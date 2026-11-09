@@ -449,6 +449,8 @@ export function Autocomplete(props: {
 
     for (const serverCommand of sync.data.command) {
       if (serverCommand.source === "skill") continue
+      // 音声入力の /v は入力画面側で動かす(旧版の拡張が登録したサーバー側 /v は重複になる)。
+      if (serverCommand.name === "v") continue
       const label = serverCommand.source === "mcp" ? ":mcp" : ""
       results.push({
         display: "/" + serverCommand.name + label,

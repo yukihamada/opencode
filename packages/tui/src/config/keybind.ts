@@ -118,6 +118,7 @@ export const Definitions = {
 
   stash_delete: keybind("ctrl+d", "Delete stash entry"),
   koe_toggle: keybind("f1", "Toggle Sente voice (KOE) on or off"),
+  voice_input: keybind("ctrl+space,<leader>v", "Start or finish voice input (dictation)"),
   model_provider_list: keybind("ctrl+a", "Open provider list from model dialog"),
   model_favorite_toggle: keybind("ctrl+f", "Toggle model favorite status"),
   model_list: keybind("<leader>m", "List available models"),
@@ -327,6 +328,7 @@ export const CommandMap = {
   session_quick_switch_9: "session.quick_switch.9",
   stash_delete: "stash.delete",
   koe_toggle: "koe.toggle",
+  voice_input: "prompt.voice",
   model_provider_list: "model.dialog.provider",
   model_favorite_toggle: "model.dialog.favorite",
   model_list: "model.list",
