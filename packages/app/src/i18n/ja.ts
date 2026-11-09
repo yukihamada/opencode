@@ -689,6 +689,8 @@ export const dict = {
   "home.sessions.group.today": "今日",
   "home.sessions.group.yesterday": "昨日",
   "home.sessions.group.older": "それ以前",
+  "home.insights.todos": "進行中のやること",
+  "home.insights.changes": "最近の変更",
   "home.providerTip": "75以上のプロバイダーに接続して、Claude、GPT、Geminiなどの他のモデルを利用できます",
   "session.tab.session": "セッション",
   "session.tab.review": "レビュー",

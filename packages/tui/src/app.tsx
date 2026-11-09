@@ -11,6 +11,7 @@ import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
+import { Locale } from "./util/locale"
 import { createCliRenderer, MouseButton, RenderableEvents, type CliRenderer } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
 import {
@@ -580,7 +581,7 @@ function App(props: {
         return
       }
 
-      const title = session.title.length > 40 ? session.title.slice(0, 37) + "…" : session.title
+      const title = session.title.length > 40 ? Locale.truncateWords(session.title, 40) : session.title
       renderer.setTerminalTitle(`OC | ${title}`)
       return
     }

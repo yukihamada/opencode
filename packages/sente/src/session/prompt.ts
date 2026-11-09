@@ -5,6 +5,7 @@ import { SessionV1 } from "@sente-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { SessionAutoResume } from "./auto-resume"
+import { SessionOutputLimit } from "./output-limit"
 import { MessageV2 } from "./message-v2"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
@@ -55,6 +56,8 @@ import { ProviderV2 } from "@sente-ai/core/provider"
 import { eq } from "drizzle-orm"
 import { SessionTable } from "@sente-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
+import { SessionTodoFollowup } from "./todo-followup"
+import { Todo } from "./todo"
 import { SessionTools } from "./tools"
 import { SessionTitle } from "./title"
 import { SessionModelFallback } from "./model-fallback"
@@ -144,6 +147,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const todo = yield* Todo.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -254,6 +258,7 @@ const layer = Layer.effect(
       if (t === input.session.title) return
       if (current && later.length && SessionTitle.echoesLatest({ candidate: t, first, latest: later[later.length - 1] }))
         return
+      if (current && !SessionTitle.retainsCurrent({ candidate: t, current })) return
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
         .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
@@ -1092,6 +1097,10 @@ const layer = Layer.effect(
         let step = 0
         // Consecutive automatic resumes of this request; a turn that gets through resets it.
         let autoResumes = 0
+        // Consecutive automatic continuations after an output-limit stop; a turn that gets through resets it.
+        let outputContinues = 0
+        // Consecutive automatic follow-ups for unfinished todos; a turn that closes them resets it.
+        let todoFollowups = 0
         // Model used instead of the user's choice after its upstream account was blocked.
         let fallback: { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined
         const blockedFamilies = new Set<string>()
@@ -1137,6 +1146,36 @@ const layer = Layer.effect(
                 tool: orphan.tool,
                 callID: orphan.callID,
               })
+            }
+            // A finished turn with unfinished todos usually means the list was left
+            // stale. Ask the model to finish or close them, bounded so it cannot loop.
+            const openTodos = session.parentID ? [] : SessionTodoFollowup.unfinished(yield* todo.get(sessionID))
+            if (openTodos.length > 0 && !orphan && SessionTodoFollowup.canFollowup(todoFollowups)) {
+              todoFollowups++
+              const followupMsg: SessionV1.User = {
+                id: MessageID.ascending(),
+                role: "user",
+                sessionID,
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+              }
+              yield* sessions.updateMessage(followupMsg)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: followupMsg.id,
+                sessionID,
+                type: "text",
+                synthetic: true,
+                text: SessionTodoFollowup.followupPrompt(openTodos),
+                time: { start: Date.now(), end: Date.now() },
+              })
+              yield* Effect.logInfo("todo followup", {
+                "session.id": sessionID,
+                attempt: todoFollowups,
+                remaining: openTodos.length,
+              })
+              continue
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
@@ -1322,6 +1361,42 @@ const layer = Layer.effect(
             }
 
             if (handle.message.finish === "length" && !handle.message.error) {
+              // The model ran out of output tokens. Usually it has more to say, so ask
+              // it to resume from where it stopped instead of ending the turn with an
+              // error. Bounded, because each continuation is a billed request and a
+              // model that keeps overrunning must not loop forever.
+              if (SessionOutputLimit.canContinue(outputContinues)) {
+                outputContinues++
+                const continueMsg: SessionV1.User = {
+                  id: MessageID.ascending(),
+                  role: "user",
+                  sessionID,
+                  time: { created: Date.now() },
+                  agent: lastUser.agent,
+                  model: lastUser.model,
+                }
+                yield* sessions.updateMessage(continueMsg)
+                yield* sessions.updatePart({
+                  id: PartID.ascending(),
+                  messageID: continueMsg.id,
+                  sessionID,
+                  type: "text",
+                  synthetic: true,
+                  text: SessionOutputLimit.continuePrompt(),
+                  time: { start: Date.now(), end: Date.now() },
+                })
+                yield* Effect.logInfo("output limit continue", {
+                  "session.id": sessionID,
+                  attempt: outputContinues,
+                })
+                yield* status.set(sessionID, {
+                  type: "retry",
+                  attempt: outputContinues,
+                  message: SessionOutputLimit.continueNote(outputContinues),
+                  next: Date.now(),
+                })
+                return "continue" as const
+              }
               handle.message.error = new SessionV1.OutputLengthError({}).toObject()
               yield* sessions.updateMessage(handle.message)
               yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
@@ -1410,7 +1485,10 @@ const layer = Layer.effect(
               yield* status.set(sessionID, { type: "busy" })
               return "continue" as const
             }
-            if (result === "continue") autoResumes = 0
+            if (result === "continue") {
+              autoResumes = 0
+              outputContinues = 0
+            }
             if (result === "compact") {
               // A compaction message would replace lastUser and bypass the loop's
               // finished-turn check, causing an unsolicited summary/continue loop.
@@ -1736,6 +1814,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    Todo.node,
   ],
 })
 

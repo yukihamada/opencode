@@ -204,7 +204,7 @@ export function Session() {
   })
 
   createEffect(() => {
-    const title = Locale.truncate(session()?.title ?? "", 50)
+    const title = Locale.truncateWords(session()?.title ?? "", 50)
     setEpilogue(sessionEpilogue({ title, sessionID: session()?.id }))
   })
   onCleanup(() => setEpilogue())

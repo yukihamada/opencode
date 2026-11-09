@@ -705,6 +705,8 @@ export const dict = {
   "home.sessions.group.today": "Šiandien",
   "home.sessions.group.yesterday": "vakar",
   "home.sessions.group.older": "Vyresni",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip":
     "Prisijunkite prie 75 ir daugiau tiekėjų, kad galėtumėte naudoti kitus modelius, įskaitant Claude, GPT, Gemini ir kt.",
   "session.tab.session": "Seansas",

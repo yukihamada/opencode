@@ -702,6 +702,8 @@ export const dict = {
   "home.sessions.group.today": "Í dag",
   "home.sessions.group.yesterday": "Í gær",
   "home.sessions.group.older": "Eldri",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Tengstu við 75+ veitendur til að nota aðrar gerðir, þar á meðal Claude, GPT, Gemini, osfrv",
   "session.tab.session": "Lota",
   "session.tab.review": "Upprifjun",

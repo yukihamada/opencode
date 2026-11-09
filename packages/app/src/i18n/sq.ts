@@ -702,6 +702,8 @@ export const dict = {
   "home.sessions.group.today": "Sot",
   "home.sessions.group.yesterday": "Dje",
   "home.sessions.group.older": "Më të vjetër",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Lidhu me 75+ ofrues për të përdorur modele të tjera, duke përfshirë Claude, GPT, Gemini, etj.",
   "session.tab.session": "Sesioni",
   "session.tab.review": "Rishikimi",

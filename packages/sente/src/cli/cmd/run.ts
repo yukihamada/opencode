@@ -24,7 +24,7 @@ import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
 import { createSenteClient, type SenteClient, type ToolPart } from "@sente-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
-import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { INTERACTIVE_INPUT_ERROR, readRunStdin, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { ExitCode, diagnostic, exitCodeForError } from "../exit-code"
 import { Unattended } from "@/permission/unattended"
 import { ShellSandbox } from "@/tool/shell/sandbox"
@@ -337,6 +337,10 @@ export const RunCommand = effectCmd({
     yield* Effect.promise(async () => {
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const interactive = args.mini
+      // A one-shot run has nobody to act on an automatic todo follow-up, and the
+      // extra billed turn would push it past its cost limit. Mark the process so
+      // the in-process server skips the follow-up.
+      if (!interactive) process.env.SENTE_NONINTERACTIVE = "1"
       const auto = args.auto || args.yolo || args["dangerously-skip-permissions"]
       const unattendedPolicy = args["unattended-policy"] || process.env["SENTE_UNATTENDED_POLICY"] || undefined
       const unattended = args.unattended || Boolean(unattendedPolicy) || process.env["SENTE_UNATTENDED"] === "1"
@@ -504,7 +508,7 @@ export const RunCommand = effectCmd({
         }
       }
 
-      const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()
+      const piped = await readRunStdin({ hasMessage: Boolean(message?.trim()) })
       message = resolveRunInput(message, piped) ?? ""
       const initialInput = resolveRunInput(rawMessage, piped)
 

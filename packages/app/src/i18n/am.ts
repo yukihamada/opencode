@@ -687,6 +687,8 @@ export const dict = {
   "home.sessions.group.today": "ዛሬ",
   "home.sessions.group.yesterday": "ትላንት",
   "home.sessions.group.older": "የቆየ",
+  "home.insights.todos": "Todos in progress",
+  "home.insights.changes": "Recent changes",
   "home.providerTip": "Claude፣ GPT፣ Gemini፣ ወዘተ] ጨምሮ ሌሎች ሞዴሎችን ለመጠቀም ከ75+ አቅራቢዎች ጋር ይገናኙ",
   "session.tab.session": "ክፍለ ጊዜ",
   "session.tab.review": "ግምገማ",
