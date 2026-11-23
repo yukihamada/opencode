@@ -4100,8 +4100,15 @@ export class Session2 extends HeyApiClient {
       directory?: string
       workspace?: string
       question?: string
-      providerID?: string
-      modelID?: string
+      model?: {
+        providerID: string
+        modelID: string
+      }
+      main?: {
+        providerID: string
+        modelID: string
+      }
+      approve?: boolean
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -4114,8 +4121,9 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "question" },
-            { in: "body", key: "providerID" },
-            { in: "body", key: "modelID" },
+            { in: "body", key: "model" },
+            { in: "body", key: "main" },
+            { in: "body", key: "approve" },
           ],
         },
       ],

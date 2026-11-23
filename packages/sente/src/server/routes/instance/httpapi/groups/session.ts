@@ -68,10 +68,15 @@ export const SummarizePayload = Schema.Struct({
   modelID: ModelV2.ID,
   auto: Schema.optional(Schema.Boolean),
 })
+const BtwModel = Schema.Struct({ providerID: ProviderV2.ID, modelID: ModelV2.ID })
 export const BtwPayload = Schema.Struct({
   question: Schema.String.check(Schema.isMinLength(1)),
-  providerID: Schema.optional(ProviderV2.ID),
-  modelID: Schema.optional(ModelV2.ID),
+  /** Answer with exactly this model; an error if it does not exist. */
+  model: Schema.optional(BtwModel),
+  /** The model currently selected in the client; its provider's small model answers by default. */
+  main: Schema.optional(BtwModel),
+  /** The user approved crossing the session's cost limit for this one call. */
+  approve: Schema.optional(Schema.Boolean),
 })
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))

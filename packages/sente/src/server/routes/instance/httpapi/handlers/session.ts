@@ -18,10 +18,8 @@ import { LLM } from "@/session/llm"
 import { Provider } from "@/provider/provider"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
-import { ProviderV2 } from "@sente-ai/core/provider"
-import { ModelV2 } from "@sente-ai/core/model"
 import { NamedError } from "@sente-ai/core/util/error"
-import { Cause, Effect, Option, Schema, Scope } from "effect"
+import { Cause, Effect, Option, Schema, Scope, Semaphore } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -42,7 +40,7 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { notFound, PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const tryParseJson = (text: string) =>
@@ -302,42 +300,69 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     // Read-only side question. It only reads the latest messages and never
     // touches run state, so it works while the main prompt is still running.
+    // Read-modify-write of the session metadata for /btw costs, one at a time.
+    const spendLock = Semaphore.makeUnsafe(1)
+
+    // Read-only side question. It only reads the latest messages and never
+    // touches run state, so it works while the main prompt is still running.
     const btw = Effect.fn("SessionHttpApi.btw")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof BtwPayload.Type
     }) {
       const info = yield* requireSession(ctx.params.sessionID)
+      // Only sessions of the instance this request was routed to.
+      const instance = yield* InstanceState.context
+      if (info.projectID !== instance.project.id) return yield* notFound(`Session not found: ${info.id}`)
       const question = ctx.payload.question.trim()
       if (!question) return yield* new HttpApiError.BadRequest({})
       const messages = yield* SessionError.mapStorageNotFound(
         session.messages({ sessionID: ctx.params.sessionID, limit: SessionBtw.MESSAGE_LIMIT }),
       )
-      const main =
-        SessionBtw.mainModel(messages) ??
-        (info.model ? { providerID: info.model.providerID, modelID: info.model.id } : undefined) ??
-        (yield* provider.defaultModel().pipe(Effect.catch(() => Effect.succeed(undefined))))
-      // An explicit model wins; otherwise the cheap small model (config
-      // `small_model`) of the session's provider, then the main model itself.
-      const lookup = (providerID: ProviderV2.ID, modelID: ModelV2.ID) =>
-        provider.getModel(providerID, modelID).pipe(Effect.map(Option.some), Effect.catch(() => Effect.succeed(Option.none())))
-      const chosen =
-        ctx.payload.providerID && ctx.payload.modelID
-          ? yield* lookup(ctx.payload.providerID, ctx.payload.modelID)
-          : Option.none<Provider.Model>()
-      const small = Option.isNone(chosen) && main ? yield* provider.getSmallModel(main.providerID) : undefined
-      const model = Option.isSome(chosen)
-        ? chosen.value
-        : (small ?? (main ? Option.getOrUndefined(yield* lookup(main.providerID, main.modelID)) : undefined))
-      if (!model)
+      const empty = { text: "", providerID: "", modelID: "", cost: 0, tokens: { input: 0, output: 0 } }
+      const resolved = yield* SessionBtw.resolveModel({
+        explicit: ctx.payload.model,
+        main:
+          ctx.payload.main ??
+          SessionBtw.mainModel(messages) ??
+          (info.model ? { providerID: info.model.providerID, modelID: info.model.id } : undefined) ??
+          (yield* provider.defaultModel().pipe(Effect.catch(() => Effect.succeed(undefined)))),
+        provider,
+      }).pipe(Effect.result)
+      if (resolved._tag === "Failure") return { ...empty, error: resolved.failure.message }
+      const model = resolved.success.model
+      const base = { ...empty, providerID: model.providerID, modelID: model.id, ...(resolved.success.fallback ? { fallback: true } : {}) }
+
+      const root = info.parentID ? yield* session.get(info.parentID).pipe(Effect.orElseSucceed(() => info)) : info
+      const check = SessionBtw.budget({
+        session: info,
+        root,
+        rootHistory: yield* session.messages({ sessionID: root.id }).pipe(Effect.orElseSucceed(() => [])),
+        sameRoot: root.id === info.id,
+        model,
+        content: SessionBtw.request({ title: info.title, messages, question }),
+      })
+      if (check.needsApproval && !ctx.payload.approve)
         return {
-          text: "",
-          providerID: "",
-          modelID: "",
-          cost: 0,
-          tokens: { input: 0, output: 0 },
-          error: "No model is available for side questions. Connect a provider first.",
+          ...base,
+          approval: { spent: check.spent, limit: check.limit, ...(check.estimate === undefined ? {} : { estimate: check.estimate }) },
         }
-      return yield* SessionBtw.ask({ session: info, messages, question, model, stream: llm.stream })
+
+      const record = (usd: number) =>
+        spendLock.withPermits(1)(
+          Effect.gen(function* () {
+            const current = yield* session.get(info.id)
+            yield* session.setMetadata({ sessionID: info.id, metadata: SessionBtw.withSpend(current.metadata, usd, Date.now()) })
+          }).pipe(Effect.catchCause((cause) => Effect.logWarning("failed to record /btw cost", { cause }))),
+        )
+      return yield* SessionBtw.ask({
+        session: info,
+        messages,
+        question,
+        model,
+        fallback: resolved.success.fallback,
+        stream: llm.stream,
+        record,
+      })
     })
 
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {

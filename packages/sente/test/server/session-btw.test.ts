@@ -1,6 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
-import { Config, Effect, Layer } from "effect"
+import { Config, Effect, Fiber, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { AppNodeBuilder } from "@sente-ai/core/effect/app-node-builder"
@@ -14,6 +14,7 @@ import { InstanceStore } from "../../src/project/instance-store"
 import { Project } from "../../src/project/project"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
+import { SessionBtw } from "@/session/btw"
 import { Session } from "@/session/session"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideInstanceEffect, tmpdirScoped } from "../fixture/fixture"
@@ -52,6 +53,7 @@ type Answer = {
   modelID: string
   cost: number
   tokens: { input: number; output: number }
+  approval?: { spent: number; limit: number; estimate?: number }
   error?: string
 }
 
@@ -162,6 +164,10 @@ describe("session /btw", () => {
         expect(all).not.toContain("It is fixing the login form.")
         expect(all).toContain("main done")
         expect(history.filter((message) => message.info.role === "user")).toHaveLength(1)
+
+        // The side cost is on the session (metadata), so the limit and sidebar count it.
+        const after = yield* Session.use.get(session.id).pipe(provideInstanceEffect(directory))
+        expect(SessionBtw.spentOn(after.metadata)).toBeCloseTo(side.cost, 10)
       }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
     20_000,
   )
@@ -208,5 +214,84 @@ describe("session /btw", () => {
       expect(response.status).toBe(400)
       expect(yield* llm.calls).toBe(0)
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live("an unknown session is a 404", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const response = yield* post(SessionPaths.btw.replace(":sessionID", "ses_doesnotexist"), directory, { question: "hi" })
+      expect(response.status).toBe(404)
+      expect(yield* llm.calls).toBe(0)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live("an explicit model that does not exist is an error, with no model call", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const session = yield* Session.use.create({}).pipe(provideInstanceEffect(directory))
+      const side = yield* post(SessionPaths.btw.replace(":sessionID", session.id), directory, {
+        question: "hi",
+        model: { providerID: "test", modelID: "nope" },
+      }).pipe(Effect.flatMap(answer))
+      expect(side.error).toContain("test/nope")
+      expect(yield* llm.calls).toBe(0)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live("over the session cost limit it asks for approval first, and runs once approved", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      // $0.001 limit, with earlier /btw spend already at it.
+      const session = yield* Session.use
+        .create({ metadata: SessionBtw.withSpend({ cost_limit_usd: 0.001 }, 0.001, Date.now()) })
+        .pipe(provideInstanceEffect(directory))
+      const path = SessionPaths.btw.replace(":sessionID", session.id)
+
+      const blocked = yield* post(path, directory, { question: "hi" }).pipe(Effect.flatMap(answer))
+      expect(blocked.approval).toBeDefined()
+      expect(blocked.approval!.limit).toBeCloseTo(0.001)
+      expect(blocked.approval!.spent).toBeCloseTo(0.001)
+      expect(blocked.text).toBe("")
+      expect(yield* llm.calls).toBe(0)
+
+      yield* llm.textMatch(isSide, "approved answer", { usage: { input: 10, output: 10 } })
+      const approved = yield* post(path, directory, { question: "hi", approve: true }).pipe(Effect.flatMap(answer))
+      expect(approved.approval).toBeUndefined()
+      expect(approved.text).toBe("approved answer")
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live(
+    "aborting the HTTP request stops the side call and records what was spent",
+    () =>
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+        const session = yield* Session.use.create({ title: "Goal" }).pipe(provideInstanceEffect(directory))
+        yield* llm.pushMatch(isSide, reply().wait(new Promise(() => {})).text("never").stop())
+
+        const fiber = yield* post(SessionPaths.btw.replace(":sessionID", session.id), directory, { question: "slow?" }).pipe(
+          Effect.forkChild,
+        )
+        yield* pollWithTimeout(
+          llm.hits.pipe(Effect.map((hits) => (hits.some(isSide) ? true : undefined))),
+          "side request never started",
+        )
+        yield* Fiber.interrupt(fiber)
+
+        // The server handler was interrupted: it recorded an estimate of the spend.
+        const spent = yield* pollWithTimeout(
+          Session.use.get(session.id).pipe(
+            provideInstanceEffect(directory),
+            Effect.map((info) => (SessionBtw.spentOn(info.metadata) > 0 ? SessionBtw.spentOn(info.metadata) : undefined)),
+          ),
+          "abort did not reach the server handler",
+        )
+        expect(spent).toBeGreaterThan(0)
+      }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+    20_000,
   )
 })

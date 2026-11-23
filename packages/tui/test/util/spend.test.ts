@@ -186,3 +186,46 @@ describe("util.spend", () => {
     expect(sessionCostWithSubagents({ sessionID: "missing", sessions })).toBe(0)
   })
 })
+
+describe("util.spend /btw side cost (session metadata btw_spend)", () => {
+  const side = (entries: { usd: number; time: number }[]) => ({
+    btw_spend: { total: entries.reduce((sum, item) => sum + item.usd, 0), recent: entries },
+  })
+
+  test("session total includes /btw cost of the session and its subagents", () => {
+    const sessions = [
+      { id: "root", cost: 1, time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.5, time: NOW }]) },
+      { id: "child", parentID: "root", cost: 2, time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.25, time: NOW }]) },
+    ]
+    expect(sessionCostWithSubagents({ sessionID: "root", sessions })).toBeCloseTo(3.75)
+  })
+
+  test("today counts only /btw entries since midnight, also for sessions started earlier", () => {
+    const sessions = [
+      {
+        id: "old",
+        cost: 5,
+        time: { created: YESTERDAY, updated: NOW },
+        metadata: side([
+          { usd: 0.3, time: YESTERDAY },
+          { usd: 0.2, time: NOW - 1000 },
+        ]),
+      },
+    ]
+    const result = todayCost({ sessions, messages: { old: [assistant(YESTERDAY, 5)] }, now: NOW })
+    expect(result.usd).toBeCloseTo(0.2)
+    expect(result.partial).toBe(false)
+  })
+
+  test("this turn counts /btw entries since the latest user message", () => {
+    const sessions = [
+      { id: "s", time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.4, time: NOW - 5000 }, { usd: 0.1, time: NOW }]) },
+    ]
+    const turn = turnCostWithSubagents({
+      sessionID: "s",
+      sessions,
+      messages: { s: [user(NOW - 2000), assistant(NOW - 1000, 0.01)] },
+    })
+    expect(turn).toBeCloseTo(0.11)
+  })
+})

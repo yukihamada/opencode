@@ -72,8 +72,8 @@ import {
   type VoiceSettings,
 } from "../../util/dictation"
 import { stopSpeaking } from "../../util/voice"
-import { spendLabel, startOfDay, todayCost, turnCostWithSubagents } from "../../util/spend"
-import { btwText, parseBtwCommand, recordSpend, spendSince, SPEND_KEY } from "../../util/btw"
+import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
+import { btwText, parseBtwCommand } from "../../util/btw"
 import { DialogBtw } from "../dialog-btw"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
@@ -303,32 +303,18 @@ export function Prompt(props: PromptProps) {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
       // This turn / today, in the locale's currency. The session total stays in the sidebar.
       // The turn includes subagent sessions, which record their own cost.
-      cost: spendLabel(withSideSpend(msg)),
+      cost: spendLabel({
+        turn: props.sessionID
+          ? turnCostWithSubagents({
+              sessionID: props.sessionID,
+              sessions: sync.data.session,
+              messages: sync.data.message,
+            })
+          : undefined,
+        today: todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() }),
+      }),
     }
   })
-
-  // `/btw` answers are not session messages; their recorded cost is added here
-  // so "this turn / today" covers them too.
-  function withSideSpend(msg: readonly { role: string; time: { created: number } }[]) {
-    const now = Date.now()
-    const side = kv.get(SPEND_KEY, [])
-    const turn = props.sessionID
-      ? turnCostWithSubagents({
-          sessionID: props.sessionID,
-          sessions: sync.data.session,
-          messages: sync.data.message,
-        })
-      : undefined
-    const since = msg.findLast((item) => item.role === "user")?.time.created
-    const today = todayCost({ sessions: sync.data.session, messages: sync.data.message, now })
-    return {
-      turn:
-        turn === undefined || since === undefined || !props.sessionID
-          ? turn
-          : turn + spendSince(side, { since, session: props.sessionID }),
-      today: { ...today, usd: today.usd + spendSince(side, { since: startOfDay(now) }) },
-    }
-  }
 
   const [store, setStore] = createStore<{
     prompt: PromptInfo
@@ -1709,12 +1695,7 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
       dialog.replace(() => (
-        <DialogBtw
-          client={sdk.client}
-          sessionID={sessionID}
-          question={btwCommand.question}
-          onSpend={(usd) => kv.set(SPEND_KEY, recordSpend(kv.get(SPEND_KEY, []), { session: sessionID, usd, time: Date.now() }))}
-        />
+        <DialogBtw client={sdk.client} sessionID={sessionID} question={btwCommand.question} main={local.model.current()} />
       ))
       return true
     }

@@ -1936,6 +1936,15 @@ export type Config = {
   small_model?: string
   default_agent?: string
   subagent_depth?: number
+  resources?: {
+    max_concurrent_subagents?: number
+    disable_auto_throttle?: boolean
+    low_memory_mb?: number
+    /**
+     * Load average (1 min) per CPU core above which subagent admission shrinks. At 1.5x this value only one subagent runs. Default: 1.0.
+     */
+    load_factor?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
   username?: string
   mode?: {
     build?: AgentConfig
@@ -2560,6 +2569,12 @@ export type SessionBtwAnswer = {
   tokens: {
     input: number
     output: number
+  }
+  fallback?: boolean
+  approval?: {
+    spent: number
+    estimate?: number
+    limit: number
   }
   error?: string
 }
@@ -10158,8 +10173,15 @@ export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSu
 export type SessionBtwData = {
   body?: {
     question: string
-    providerID?: string
-    modelID?: string
+    model?: {
+      providerID: string
+      modelID: string
+    }
+    main?: {
+      providerID: string
+      modelID: string
+    }
+    approve?: boolean
   }
   path: {
     sessionID: string

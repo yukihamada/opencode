@@ -1,6 +1,7 @@
 import { Server } from "@/server/server"
 import { InstanceRuntime } from "@/project/instance-runtime"
 import { Rpc } from "@/util/rpc"
+import { createFetchServer, type FetchInput } from "./worker-fetch"
 import { upgrade } from "@/cli/upgrade"
 import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
@@ -25,27 +26,23 @@ GlobalBus.on("event", (event) => {
   Rpc.emit("global.event", event)
 })
 
+const fetchServer = createFetchServer(
+  async (request) => Server.Default().app.fetch(request),
+  (headers) => {
+    const auth = ServerAuth.header()
+    if (auth && !headers["authorization"] && !headers["Authorization"]) headers["Authorization"] = auth
+    return headers
+  },
+)
+
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
 export const rpc = {
-  async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
-    const headers = { ...input.headers }
-    const auth = ServerAuth.header()
-    if (auth && !headers["authorization"] && !headers["Authorization"]) {
-      headers["Authorization"] = auth
-    }
-    const request = new Request(input.url, {
-      method: input.method,
-      headers,
-      body: input.body,
-    })
-    const response = await Server.Default().app.fetch(request)
-    const body = await response.text()
-    return {
-      status: response.status,
-      headers: Object.fromEntries(response.headers.entries()),
-      body,
-    }
+  fetch(input: FetchInput) {
+    return fetchServer.fetch(input)
+  },
+  abort(input: { id: string }) {
+    return fetchServer.abort(input)
   },
   snapshot() {
     const result = writeHeapSnapshot("server.heapsnapshot")

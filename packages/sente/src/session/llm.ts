@@ -30,6 +30,7 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { SessionEscalation } from "./escalation"
+import { SessionBtw } from "./btw"
 import { Session } from "./session"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -44,6 +45,8 @@ export type StreamInput = {
   system: string[]
   messages: ModelMessage[]
   small?: boolean
+  /** Caps the model's output for this call (e.g. short /btw answers). */
+  maxOutputTokens?: number
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
@@ -141,7 +144,10 @@ const live: Layer.Layer<
           // Count only the user's own calls against the request budget; the
           // title/summary/compaction helpers are overhead, not the request.
           const history = yield* session.messages({ sessionID: base.id }).pipe(Effect.option)
-          const spent = Option.isSome(history) ? SessionEscalation.userFacingCost(history.value) : (base.cost ?? 0)
+          // /btw side answers are not messages; their cost lives in the session metadata.
+          const spent =
+            (Option.isSome(history) ? SessionEscalation.userFacingCost(history.value) : (base.cost ?? 0)) +
+            SessionBtw.spentOn(base.metadata)
           // Estimate this one call from the request we are about to send, so a
           // small prompt to a cheap model is not blocked by the context window.
           const estimate = SessionEscalation.requestEstimate(
