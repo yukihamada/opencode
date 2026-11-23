@@ -2336,7 +2336,7 @@ test("parseManagedPlist handles empty config", async () => {
   expect(config.$schema).toBe("https://teai.io/sente/config.json")
 })
 
-it.effect("tracks where hooks come from: user config trusted, project files not", () =>
+it.effect("tracks where hooks come from: user config, project files", () =>
   withConfigTree(
     {
       global: { hooks: { PreToolUse: [{ matcher: "bash", hooks: [{ type: "command", command: "echo global" }] }] } },
@@ -2344,7 +2344,12 @@ it.effect("tracks where hooks come from: user config trusted, project files not"
       local: {
         hooks: {
           PostToolUse: [
-            { hooks: [{ type: "command", command: "echo local" }, { type: "prompt", command: "ignored" }] },
+            {
+              hooks: [
+                { type: "command", command: "echo local" },
+                { type: "prompt", command: "ignored" },
+              ],
+            },
           ],
         },
       },
@@ -2353,13 +2358,28 @@ it.effect("tracks where hooks come from: user config trusted, project files not"
       const origins = (yield* Config.use.get()).hook_origins ?? []
       const find = (command: string) => origins.filter((item) => item.command === command)
       expect(find("echo global").length).toBeGreaterThan(0)
-      expect(find("echo global").every((item) => item.trusted && item.event === "PreToolUse" && item.matcher === "bash")).toBe(true)
-      expect(find("echo project")).toEqual([
-        expect.objectContaining({ event: "Stop", trusted: false, timeout: 5 }),
-      ])
+      expect(
+        find("echo global").every(
+          (item) => item.kind === "user" && item.event === "PreToolUse" && item.matcher === "bash",
+        ),
+      ).toBe(true)
+      expect(find("echo project")).toEqual([expect.objectContaining({ event: "Stop", kind: "project", timeout: 5 })])
       expect(find("echo project")[0].source.endsWith("sente.json")).toBe(true)
-      expect(find("echo local")).toEqual([expect.objectContaining({ event: "PostToolUse", trusted: false })])
+      expect(find("echo local")).toEqual([expect.objectContaining({ event: "PostToolUse", kind: "project" })])
       expect(find("ignored")).toEqual([])
     }),
   ),
+)
+
+const remoteHooks = wellKnown({
+  config: { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo from-org-server" }] }] } },
+})
+
+remoteHooks.it.instance("hooks from a remote well-known config are marked remote, not user config", () =>
+  Effect.gen(function* () {
+    const origins = (yield* Config.use.get()).hook_origins ?? []
+    expect(origins.filter((item) => item.command === "echo from-org-server")).toEqual([
+      expect.objectContaining({ kind: "remote", source: "https://example.com/.well-known/sente" }),
+    ])
+  }),
 )

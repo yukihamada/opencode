@@ -151,7 +151,7 @@ type Info = ConfigV1.Info & {
   // with the file and scope it came from so later runtime code can make location-sensitive decisions.
   plugin_origins?: ConfigPlugin.Origin[]
   // hook_origins is derived like plugin_origins: every configured hook command with the file it came from and
-  // whether that file is the user's own config (trusted) or the opened project's (needs `sente hooks trust`).
+  // whether that is the user's own config, the opened project's or a remote organization config (see ConfigHooks.Kind).
   hook_origins?: ConfigHooks.Origin[]
 }
 
@@ -413,11 +413,17 @@ const layer = Layer.effect(
           result.plugin_origins = plugins
         })
 
-        // `trusted` decides whether hooks from this source run without `sente hooks trust`. Only files the user
-        // controls outside the opened project count; a cloned repository must not run commands just by being opened.
-        const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope, trusted = kind === "global") => {
+        // `hooks` decides whether hooks from this source run without `sente hooks trust`: only "user" sources do.
+        // A cloned repository ("project") or an organization server ("remote") must not run commands on its own.
+        const merge = (
+          source: string,
+          next: Info,
+          kind?: ConfigPlugin.Scope,
+          hooks: ConfigHooks.Kind = kind === "global" ? "user" : "project",
+        ) => {
           result = mergeConfigConcatArrays(result, next)
-          if (next.hooks) result.hook_origins = [...(result.hook_origins ?? []), ...ConfigHooks.flatten(next.hooks, source, trusted)]
+          if (next.hooks)
+            result.hook_origins = [...(result.hook_origins ?? []), ...ConfigHooks.flatten(next.hooks, source, hooks)]
           return mergePluginOrigins(source, next.plugin, kind)
         }
 
@@ -458,7 +464,7 @@ const layer = Layer.effect(
               },
               authEnv,
             )
-            yield* merge(source, next, "global")
+            yield* merge(source, next, "global", "remote")
             yield* Effect.logDebug("loaded remote config from well-known", { url })
           }
         }
@@ -467,7 +473,7 @@ const layer = Layer.effect(
         yield* merge(Global.Path.config, global, "global")
 
         if (Flag.SENTE_CONFIG) {
-          yield* merge(Flag.SENTE_CONFIG, yield* loadFile(Flag.SENTE_CONFIG, authEnv), undefined, true)
+          yield* merge(Flag.SENTE_CONFIG, yield* loadFile(Flag.SENTE_CONFIG, authEnv), undefined, "user")
           yield* Effect.logDebug("loaded custom config", { path: Flag.SENTE_CONFIG })
         }
 
@@ -498,7 +504,9 @@ const layer = Layer.effect(
                 source,
                 yield* loadFile(source, authEnv),
                 undefined,
-                [Global.Path.config, Flag.SENTE_CONFIG_DIR, path.join(Global.Path.home, ".sente")].includes(dir),
+                [Global.Path.config, Flag.SENTE_CONFIG_DIR, path.join(Global.Path.home, ".sente")].includes(dir)
+                  ? "user"
+                  : "project",
               )
               result.agent ??= {}
               result.mode ??= {}
@@ -546,7 +554,7 @@ const layer = Layer.effect(
             dir: ctx.directory,
             source,
           })
-          yield* merge(source, next, "local", true)
+          yield* merge(source, next, "local", "user")
           yield* Effect.logDebug("loaded custom config from SENTE_CONFIG_CONTENT")
         }
 
@@ -576,7 +584,7 @@ const layer = Layer.effect(
               for (const providerID of Object.keys(next.provider ?? {})) {
                 consoleManagedProviders.add(providerID)
               }
-              yield* merge(source, next, "global")
+              yield* merge(source, next, "global", "remote")
             }
           }).pipe(
             Effect.withSpan("Config.loadActiveOrgConfig"),
@@ -605,7 +613,7 @@ const layer = Layer.effect(
           })
           result = mergeConfigConcatArrays(result, next)
           if (next.hooks)
-            result.hook_origins = [...(result.hook_origins ?? []), ...ConfigHooks.flatten(next.hooks, managed.source, true)]
+            result.hook_origins = [...(result.hook_origins ?? []), ...ConfigHooks.flatten(next.hooks, managed.source, "user")]
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {

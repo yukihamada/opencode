@@ -2,22 +2,30 @@ export * as ConfigHooks from "./hooks"
 
 import path from "path"
 import { createHash } from "crypto"
+import { readFileSync, statSync } from "fs"
 import { Global } from "@sente-ai/core/global"
 import type { ConfigHooksV1 } from "@sente-ai/core/v1/config/hooks"
 
+// Where a hook was declared:
+// - "user": files the user controls outside the opened project (~/.config/sente, ~/.sente, SENTE_CONFIG,
+//   SENTE_CONFIG_DIR, SENTE_CONFIG_CONTENT, managed config / MDM). Runs right away.
+// - "project": the opened project's own sente.json / .sente/. A cloned repository must not run commands just by
+//   being opened, so it runs only once the user trusts that exact content (`sente hooks trust`).
+// - "remote": organization config fetched from a server (well-known, /api/config). A compromised server must not be
+//   able to push commands to every user, so it needs the same trust, or SENTE_ALLOW_REMOTE_HOOKS=1.
+export type Kind = "user" | "project" | "remote"
+
 // One configured command, flattened out of `hooks.<Event>[].hooks[]` together with the file that declared it.
-// `trusted` is false for hooks that came from the opened project's own files (sente.json / .sente/ inside the
-// project): those run only once the user trusts that exact content with `sente hooks trust`.
 export type Origin = {
   event: string
   matcher?: string
   command: string
   timeout?: number
   source: string
-  trusted: boolean
+  kind: Kind
 }
 
-export function flatten(hooks: ConfigHooksV1.Info | undefined, source: string, trusted: boolean): Origin[] {
+export function flatten(hooks: ConfigHooksV1.Info | undefined, source: string, kind: Kind): Origin[] {
   return Object.entries(hooks ?? {}).flatMap(([event, groups]) =>
     groups.flatMap((group) =>
       group.hooks
@@ -30,7 +38,7 @@ export function flatten(hooks: ConfigHooksV1.Info | undefined, source: string, t
           command: hook.command,
           timeout: hook.timeout,
           source,
-          trusted,
+          kind,
         })),
     ),
   )
@@ -39,25 +47,58 @@ export function flatten(hooks: ConfigHooksV1.Info | undefined, source: string, t
 const identity = (item: Origin) => JSON.stringify([item.event, item.matcher ?? "", item.command, item.timeout ?? null])
 
 // The global config is read twice (once as the global layer, once as a config directory), and the same command may
-// sit in several files. Keep one entry per identical hook; it is trusted when any file that declares it is trusted.
+// sit in several files. Keep one entry per identical hook, preferring the user's own copy.
 export function deduplicate(items: Origin[]) {
   const seen = new Map<string, Origin>()
   for (const item of items) {
     const key = identity(item)
     const prev = seen.get(key)
-    if (!prev) {
-      seen.set(key, item)
-      continue
-    }
-    if (!prev.trusted && item.trusted) seen.set(key, item)
+    if (!prev || (prev.kind !== "user" && item.kind === "user")) seen.set(key, item)
   }
   return [...seen.values()]
 }
 
-// Trust is bound to the exact hooks a file declares: editing them (or a `git pull` that changes them) asks again.
-export function fingerprint(items: Origin[]) {
+export type Scope = { projectDir: string; cwd: string }
+
+const PROJECT_VARS = /\$\{?(?:CLAUDE_PROJECT_DIR|SENTE_PROJECT_DIR)\}?/g
+
+// Files a command names directly: `./check.sh`, `node scripts/lint.js`, `"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py`.
+// Only regular files inside the project count. What those files load in turn (a script that sources another one,
+// `npm run x`, a glob) is not followed: `sente hooks list` says so.
+export function referencedFiles(command: string, scope: Scope) {
+  const tokens = command
+    .replace(PROJECT_VARS, scope.projectDir)
+    .split(/[\s;&|()<>`]+/)
+    .map((token) => token.replace(/^['"]+|['"]+$/g, "").replace(/['"]/g, ""))
+    .filter((token) => token && !token.startsWith("-") && !token.includes("$"))
+  const files = tokens
+    .map((token) => (path.isAbsolute(token) ? token : path.resolve(scope.cwd, token)))
+    .filter((file) => {
+      const relative = path.relative(scope.projectDir, file)
+      if (relative.startsWith("..") || path.isAbsolute(relative)) return false
+      try {
+        return statSync(file).isFile()
+      } catch {
+        return false
+      }
+    })
+  return [...new Set(files)].toSorted()
+}
+
+function hashFile(file: string) {
+  try {
+    return createHash("sha256").update(readFileSync(file)).digest("hex")
+  } catch {
+    return "unreadable"
+  }
+}
+
+// Trust is bound to the exact hooks a file declares and to the content of the scripts they name directly: editing
+// either (or a `git pull` that changes them) asks again.
+export function fingerprint(items: Origin[], scope?: Scope) {
+  const files = scope ? [...new Set(items.flatMap((item) => referencedFiles(item.command, scope)))].toSorted() : []
   return createHash("sha256")
-    .update(JSON.stringify(items.map(identity).toSorted()))
+    .update(JSON.stringify([items.map(identity).toSorted(), files.map((file) => [file, hashFile(file)])]))
     .digest("hex")
 }
 
@@ -83,27 +124,60 @@ export async function writeTrust(next: Record<string, string>) {
   await Bun.write(trustFile(), JSON.stringify(next, null, 2) + "\n")
 }
 
-export type Status = { source: string; hooks: Origin[]; fingerprint: string; trusted: boolean; reason: string }
+export type Status = {
+  source: string
+  kind: Kind
+  // "user config", "project" or "remote: <url>"
+  label: string
+  hooks: Origin[]
+  files: string[]
+  fingerprint: string
+  trusted: boolean
+  reason: string
+}
 
-// Per source file: is it allowed to run, and why.
+// Per source: is it allowed to run, and why.
 export function status(
   items: Origin[],
   trust: Record<string, string>,
+  scope: Scope,
   env: Record<string, string | undefined> = process.env,
 ): Status[] {
   return [...bySource(items)].map(([source, hooks]) => {
-    const print = fingerprint(hooks)
-    if (hooks.every((hook) => hook.trusted))
-      return { source, hooks, fingerprint: print, trusted: true, reason: "user config" }
-    if (env.SENTE_TRUST_PROJECT_HOOKS === "1")
-      return { source, hooks, fingerprint: print, trusted: true, reason: "SENTE_TRUST_PROJECT_HOOKS=1" }
-    if (trust[source] === print) return { source, hooks, fingerprint: print, trusted: true, reason: "trusted project" }
-    return {
+    const kind = hooks.find((hook) => hook.kind !== "user")?.kind ?? "user"
+    const base = {
       source,
+      kind,
+      label: kind === "user" ? "user config" : kind === "remote" ? `remote: ${source}` : "project",
       hooks,
-      fingerprint: print,
+      files: [...new Set(hooks.flatMap((hook) => referencedFiles(hook.command, scope)))].toSorted(),
+      fingerprint: fingerprint(hooks, scope),
+    }
+    if (kind === "user") return { ...base, trusted: true, reason: "user config" }
+    if (kind === "project" && env.SENTE_TRUST_PROJECT_HOOKS === "1")
+      return { ...base, trusted: true, reason: "SENTE_TRUST_PROJECT_HOOKS=1" }
+    if (kind === "remote" && env.SENTE_ALLOW_REMOTE_HOOKS === "1")
+      return { ...base, trusted: true, reason: "SENTE_ALLOW_REMOTE_HOOKS=1" }
+    if (trust[source] === base.fingerprint) return { ...base, trusted: true, reason: `trusted ${kind}` }
+    return {
+      ...base,
       trusted: false,
-      reason: trust[source] ? "project hooks changed since they were trusted" : "project hooks not trusted yet",
+      reason: trust[source]
+        ? `${kind} hooks or their scripts changed since they were trusted`
+        : `${kind} hooks not trusted yet`,
     }
   })
+}
+
+export function scopeOf(ctx: { directory: string; worktree: string }): Scope {
+  return { projectDir: ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory, cwd: ctx.directory }
+}
+
+// `sente hooks trust` only offers files that belong to the opened project: inside the git worktree, or inside the
+// current directory when there is no git repository (config lookup walks up to `/` then, and a parent directory's
+// sente.json must not be trusted in bulk from here).
+export function inProject(source: string, ctx: { directory: string; worktree: string }) {
+  const root = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
+  const relative = path.relative(root, source)
+  return !relative.startsWith("..") && !path.isAbsolute(relative)
 }

@@ -29,6 +29,9 @@ import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
 import { ConfigHooksPlugin } from "./config-hooks"
 import { ConfigHooks } from "@/config/hooks"
+import { TuiEvent } from "@/server/tui-event"
+import { isMainThread } from "worker_threads"
+import { EOL } from "os"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
 import { registerAdapter } from "@/control-plane/adapters"
 import type { WorkspaceAdapter } from "@/control-plane/types"
@@ -180,26 +183,6 @@ const layer = Layer.effect(
           if (init._tag === "Some") hooks.push(init.value)
         }
 
-        // Shell commands from the `hooks` config. Project-declared hooks only run once their exact content is trusted.
-        if (!flags.pure && cfg.hook_origins?.length) {
-          const statuses = ConfigHooks.status(cfg.hook_origins, yield* Effect.promise(() => ConfigHooks.readTrust()))
-          for (const item of statuses.filter((item) => !item.trusted)) {
-            const message = `Hooks in ${item.source} were not run (${item.reason}). Review them, then run \`sente hooks trust\` in this project to allow them.`
-            yield* Effect.logWarning(message)
-            publishPluginError(message)
-          }
-          const allowed = new Set(statuses.filter((item) => item.trusted).map((item) => item.source))
-          const plugin = ConfigHooksPlugin(
-            ConfigHooks.deduplicate(cfg.hook_origins.filter((hook) => allowed.has(hook.source))),
-            { warn: (message) => bridge.fork(Effect.logWarning(message)) },
-          )
-          const init = yield* Effect.tryPromise({ try: () => plugin(input), catch: errorMessage }).pipe(
-            Effect.tapError((error) => Effect.logError("failed to load config hooks", { error })),
-            Effect.option,
-          )
-          if (init._tag === "Some") hooks.push(init.value)
-        }
-
         const plugins = flags.pure ? [] : (cfg.plugin_origins ?? [])
         if (flags.pure && cfg.plugin_origins?.length) {
         }
@@ -261,6 +244,61 @@ const layer = Layer.effect(
               return Effect.void
             }),
           )
+        }
+
+        // Shell commands from the `hooks` config, registered after every other plugin so a PreToolUse hook sees the
+        // arguments exactly as the tool will get them (no later plugin can rewrite them after the check). Project and
+        // remote hooks only run once their exact content (and the scripts they name) is trusted.
+        if (!flags.pure && cfg.hook_origins?.length) {
+          const statuses = ConfigHooks.status(
+            cfg.hook_origins,
+            yield* Effect.promise(() => ConfigHooks.readTrust()),
+            ConfigHooks.scopeOf(ctx),
+          )
+          const skipped = statuses
+            .filter((item) => !item.trusted)
+            .map(
+              (item) =>
+                `Hooks from ${item.label === "project" ? item.source : item.label} were not run (${item.reason}). Check them with \`sente hooks list\`, then allow them with \`sente hooks trust\`${item.kind === "remote" ? " or SENTE_ALLOW_REMOTE_HOOKS=1" : ""}.`,
+            )
+          const notify = () =>
+            skipped.forEach((message) =>
+              bridge.fork(
+                events
+                  .publish(TuiEvent.ToastShow, { title: "Hooks not run", message, variant: "warning", duration: 15000 })
+                  .pipe(Effect.ignore),
+              ),
+            )
+          for (const message of skipped) {
+            yield* Effect.logWarning(message)
+            // `sente run` / `sente serve` run the server on the main thread: say it on stderr, where it cannot be
+            // missed. The TUI runs it in a worker, where stderr would draw over the screen; it gets toasts instead.
+            if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
+          }
+          if (skipped.length) {
+            // The TUI may not be subscribed yet while the instance boots: show it now, again shortly after, and on the
+            // first prompt (see `notice`).
+            notify()
+            const timer = setTimeout(notify, 3000)
+            yield* Effect.addFinalizer(() => Effect.sync(() => clearTimeout(timer)))
+          }
+          const allowed = new Set(statuses.filter((item) => item.trusted).map((item) => item.source))
+          const plugin = ConfigHooksPlugin(
+            ConfigHooks.deduplicate(cfg.hook_origins.filter((hook) => allowed.has(hook.source))),
+            {
+              warn: (message) => {
+                bridge.fork(Effect.logWarning(message))
+                if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
+              },
+              mcpServers: Object.keys(cfg.mcp ?? {}),
+              notice: skipped.length ? notify : undefined,
+            },
+          )
+          const init = yield* Effect.tryPromise({ try: () => plugin(input), catch: errorMessage }).pipe(
+            Effect.tapError((error) => Effect.logError("failed to load config hooks", { error })),
+            Effect.option,
+          )
+          if (init._tag === "Some") hooks.push(init.value)
         }
 
         // Notify plugins of current config

@@ -26,39 +26,73 @@ description: ツールの実行前後・入力時・ターン終了時に、自�
 | --- | --- | --- |
 | `PreToolUse` | ツール実行前(許可確認より前) | はい。ツールは実行されず、理由がモデルに返ります |
 | `PostToolUse` | ツール成功後 | いいえ。理由や `additionalContext` をツール出力に追記します |
-| `UserPromptSubmit` | 入力を送った時(保存前) | はい。入力は破棄され、理由がエラーとして表示されます |
+| `UserPromptSubmit` | 入力を送った時(保存前) | はい。入力は破棄され、「フックにより送信を止めました: 理由」と表示されます |
 | `SessionStart` | そのプロセスでのセッション最初の入力の前 | いいえ。出力を文脈として追加します |
 | `Stop` | メインのセッションが待機に戻った時(ターン終了) | いいえ(通知のみ) |
 | `Notification` | 許可待ち(`permission_prompt`)・質問(`elicitation_dialog`) | いいえ |
 
-`matcher` は `PreToolUse`/`PostToolUse` ではツール名、`SessionStart` では `startup`/`resume`、`Notification` では種類で絞り込みます。`bash|edit` のような名前の並びは完全一致、それ以外は正規表現です。空・`*`・省略はすべてに一致します。Claude Code のツール名(`Bash`・`Edit`・`Write` など)でも一致します。
+`matcher` は `PreToolUse`/`PostToolUse` ではツール名、`SessionStart` では `startup`/`resume`、`Notification` では種類で絞り込みます。`bash|edit` のような名前の並びは完全一致、それ以外は正規表現です。空・`*`・省略はすべてに一致します。Claude Code のツール名(`Bash`・`Edit`・`Write` など)と、MCP ツールの `mcp__<サーバー>__<ツール>` でも一致します。
 
-## 入力と出力
+## 入力
 
-標準入力に JSON(`session_id`・`cwd`・`hook_event_name`・`tool_name`・`tool_input`・`tool_use_id` など)が渡ります。`tool_input` には Sente の引数に加え、`filePath` → `file_path` のような snake_case の写しも入ります。環境変数 `SENTE_PROJECT_DIR`・`CLAUDE_PROJECT_DIR`・`SENTE_SESSION_ID` も使えます。
+コマンドはセッションのディレクトリで、シェル(macOS/Linux は `/bin/sh`、Windows は `cmd.exe`)経由で動きます。標準入力に JSON(`session_id`・`cwd`・`hook_event_name`・`tool_name`・`tool_input`・`tool_use_id` など)が渡ります。
 
-- **終了コード 0**: 成功。標準出力の JSON(`decision: "block"`・`reason`・`continue: false`・`hookSpecificOutput.permissionDecision: "deny"`・`updatedInput`・`additionalContext`)を読みます。`UserPromptSubmit`/`SessionStart` では普通の標準出力が文脈になります。
+- `tool_input` には Sente の引数に加え、`filePath` → `file_path` のような snake_case の写しが入ります。`apply_patch` では変更するファイルを `file_path`(先頭)と `file_paths`(全部・絶対パス)で渡します。
+- 環境変数: あなたの環境変数と、`SENTE_PROJECT_DIR`・`CLAUDE_PROJECT_DIR`・`SENTE_SESSION_ID`。Sente 自身の資格情報(`SENTE_CONSOLE_TOKEN`・`SENTE_SERVER_PASSWORD` などの `SENTE_*`/`TEAI_*` のトークン・鍵・パスワード)は除きます。**それ以外はシェルにある AI の API 鍵も含めて渡ります。** 普通に実行するコマンドと同じく、フックはそれを読めます。
+
+設定のフックはすべての[プラグイン](/docs/plugins)の後に動くので、`PreToolUse` はツールが実際に受け取る引数を見ます。
+
+## 出力
+
+- **終了コード 0**: 成功。標準出力の JSON を読みます(下表)。`UserPromptSubmit`/`SessionStart` では普通の標準出力が文脈になります。
 - **終了コード 2**: ブロック。標準エラーが理由です。
-- **それ以外・タイムアウト(既定60秒)・起動失敗**: ログに残して無視し、Sente は止まりません。
+- **それ以外・タイムアウト(既定60秒)・起動失敗**: 秘密をマスクしてログに残し、無視します。Sente は止まりません。
 
-モデルに渡る理由・文脈は、ツール出力と同じ秘密マスクを通ります。
+| JSON | 効果 |
+| --- | --- |
+| `decision: "block"`・`reason` | ブロック(`PreToolUse`・`UserPromptSubmit`)/理由をモデルへ(`PostToolUse`) |
+| `continue: false`・`stopReason` | その操作だけをブロック(下の「違い」参照) |
+| `hookSpecificOutput.permissionDecision: "deny"` | `PreToolUse` をブロック |
+| `hookSpecificOutput.updatedInput` | `PreToolUse` の引数を変更(マージ。snake_case は元の名前に戻します) |
+| `hookSpecificOutput.additionalContext` | 文脈を追加 |
 
-## プロジェクトのフックと信頼
+該当するフックは並列に動きます。タイムアウトしたフックは、起動したプロセスごと止めます。Esc(ターンの中断)で実行中のフックもすぐ止まり、ツールは実行されません。Sente の終了時に動いているフックも止めます(Sente 自体が `SIGKILL` された場合はタイムアウトだけが上限です)。モデルに渡る理由・文脈は、ツール出力と同じ秘密マスクを通ります。
 
-自分の設定(`~/.config/sente/`・`~/.sente/`・`SENTE_CONFIG` など)のフックはすぐ有効です。開いたプロジェクト自身の `sente.json` や `.sente/sente.json` にあるフックは、他人のリポジトリを開いただけで任意のコマンドが走らないよう、**信頼するまで実行されません**(代わりに警告を表示します)。
+## フックの出どころと信頼
+
+| 出どころ | 実行 |
+| --- | --- |
+| 自分の設定(`~/.config/sente/`・`~/.sente/`・`SENTE_CONFIG`・`SENTE_CONFIG_DIR`・`SENTE_CONFIG_CONTENT`・管理設定・MDM) | すぐ |
+| 開いたプロジェクト(プロジェクト内の `sente.json(c)`・`.sente/sente.json(c)`) | `sente hooks trust` の後だけ |
+| 組織のサーバー(`.well-known/sente`・アカウントの `/api/config` のリモート設定) | `sente hooks trust` の後か、`SENTE_ALLOW_REMOTE_HOOKS=1` の時だけ |
+
+他人のリポジトリを開いただけ、組織にログインしただけで、手元でコマンドが走らないようにしています。信頼していないフックは実行せず、`sente run`・`sente serve` では標準エラーに、TUI では警告で知らせます。
 
 ```bash
-sente hooks list      # 設定されているフックと実行されるかどうか
-sente hooks trust     # このプロジェクトのフックを許可
-sente hooks untrust   # 許可を取り消す
+sente hooks list               # 設定・実行されるか・信頼が何を覆うか
+sente hooks trust              # 未信頼の出どころごとに内容を見て y/N で答える
+sente hooks trust sente.json   # このファイル(またはリモート URL)だけ
+sente hooks trust --yes        # 確認なしで信頼(何を信頼したかは表示)
+sente hooks untrust            # このプロジェクト(とリモート)の許可を取り消す
 ```
 
-信頼はファイルごとに、フック内容の指紋とあわせて `~/.local/state/sente/hooks-trust.json` に保存されます。`git pull` などで内容が変わると、もう一度 `sente hooks trust` するまで止まります。CI では `SENTE_TRUST_PROJECT_HOOKS=1` を使えます。`--pure` では設定のフックは動きません。
+信頼は出どころごとに、フックの内容と**コマンドが直接名指しするスクリプトの中身**(`./hooks/check.sh`・`node scripts/lint.js`・`"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py` など)の指紋とあわせて `~/.local/state/sente/hooks-trust.json` に保存します。どちらかが変わると(`git pull` の後など)、もう一度信頼するまで止まります。そのスクリプトがさらに読み込むファイル(source するスクリプト・npm スクリプト・import)は対象外で、`sente hooks list` に対象が表示されます。`sente hooks trust` が対象にするのは今のプロジェクト内(git の作業ツリー、git でなければ今のディレクトリ)のファイルだけで、親ディレクトリの設定は信頼しません。
+
+信頼したフックは、あなたの権限と環境変数(上記)で動きます。
+
+CI 用の `SENTE_TRUST_PROJECT_HOOKS=1` はすべてのプロジェクトのフックを信頼します。**fork からの pull request で動くワークフローでは使わないでください**(fork の作者がフックを書けます)。`--pure` では設定のフックは動きません。
+
+:::caution
+プロジェクトがコードを動かせる経路はフックだけではありません。プロジェクトの `.sente/plugin(s)/` や `plugin` に書かれたプラグイン、プロジェクト設定のローカル(`type: "local"`)MCP サーバーは、今のところこの信頼確認なしで起動します。信頼できるプロジェクトだけを開くか、`SENTE_DISABLE_PROJECT_CONFIG=1` を使ってください。
+:::
 
 ## Claude Code との違い
 
 - `Stop` はターンを続けさせられません(終了コード2・`decision: "block"` はログのみ)。`SubagentStop` はありません。
+- `continue: false` はセッション全体ではなく、その操作(ツール呼び出し・入力)だけを止めます。
 - `permissionDecision` は `"deny"` だけが効きます(`"allow"`/`"ask"` は許可確認を変えません)。
+- `systemMessage`・`suppressOutput` は無視します。`async` フックには対応していません(Stop と Notification は裏で待ちます)。
 - `SessionStart` の source は `startup`/`resume` だけです。`transcript_path` は空です。`PreCompact`・`SessionEnd`・`type: "prompt"` は無視します。
 - ツールが失敗した時は `PostToolUse` は動きません。
-- プロジェクトのフックは `sente hooks trust` が必要です。
+- Windows では POSIX シェルではなく `cmd.exe` で動きます。
+- プロジェクトとリモートのフックは `sente hooks trust` が必要です。

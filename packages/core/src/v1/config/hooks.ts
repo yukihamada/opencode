@@ -27,6 +27,6 @@ export type Matcher = Schema.Schema.Type<typeof Matcher>
 
 export const Info = Schema.Record(Schema.String, Schema.mutable(Schema.Array(Matcher))).annotate({
   description:
-    "Shell commands run on events, in the Claude Code hooks format. Supported events: PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart, Notification. Hooks from a project's own config run only after `sente hooks trust`.",
+    "Shell commands run on events, in the Claude Code hooks format. Supported events: PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart, Notification. Hooks from a project's own config or a remote organization config run only after `sente hooks trust`.",
 })
 export type Info = Schema.Schema.Type<typeof Info>

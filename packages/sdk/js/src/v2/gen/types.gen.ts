@@ -1925,7 +1925,7 @@ export type Config = {
       ]
   >
   /**
-   * Shell commands run on events, in the Claude Code hooks format. Supported events: PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart, Notification. Hooks from a project's own config run only after `sente hooks trust`.
+   * Shell commands run on events, in the Claude Code hooks format. Supported events: PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart, Notification. Hooks from a project's own config or a remote organization config run only after `sente hooks trust`.
    */
   hooks?: {
     [key: string]: Array<{

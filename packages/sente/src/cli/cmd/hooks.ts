@@ -1,15 +1,43 @@
 import { EOL } from "os"
+import path from "path"
 import { Effect } from "effect"
-import { effectCmd } from "../effect-cmd"
+import { effectCmd, fail } from "../effect-cmd"
 import { cmd } from "./cmd"
 
 const load = Effect.fn("Cli.hooks.load")(function* () {
   const { Config } = yield* Effect.promise(() => import("@/config/config"))
   const { ConfigHooks } = yield* Effect.promise(() => import("@/config/hooks"))
+  const { InstanceState } = yield* Effect.promise(() => import("@/effect/instance-state"))
+  const ctx = yield* InstanceState.context
   const config = yield* Config.Service.use((cfg) => cfg.get())
   const trust = yield* Effect.promise(() => ConfigHooks.readTrust())
-  return { ConfigHooks, trust, statuses: ConfigHooks.status(config.hook_origins ?? [], trust) }
+  return {
+    ConfigHooks,
+    ctx,
+    trust,
+    statuses: ConfigHooks.status(config.hook_origins ?? [], trust, ConfigHooks.scopeOf(ctx)),
+  }
 })
+
+type Loaded = Effect.Success<ReturnType<typeof load>>
+
+function describe(item: Loaded["statuses"][number]) {
+  const lines = [
+    `${item.trusted ? "on " : "OFF"} ${item.label === "project" ? item.source : item.label} (${item.reason})`,
+  ]
+  for (const hook of item.hooks)
+    lines.push(`    ${hook.event}${hook.matcher ? ` [${hook.matcher}]` : ""}: ${hook.command}`)
+  if (item.kind === "user") return lines.join(EOL)
+  lines.push(
+    item.files.length
+      ? `    fingerprint covers: ${item.files.join(", ")}`
+      : "    fingerprint covers: the commands only (no script file named in them)",
+  )
+  lines.push(
+    "    note: files those scripts load in turn (sourced scripts, npm scripts, imports) are not covered; review them too.",
+  )
+  return lines.join(EOL)
+}
 
 const ListCommand = effectCmd({
   command: "list",
@@ -20,48 +48,92 @@ const ListCommand = effectCmd({
       process.stdout.write("no hooks configured" + EOL)
       return
     }
-    for (const item of statuses) {
-      process.stdout.write(`${item.trusted ? "on " : "OFF"} ${item.source} (${item.reason})${EOL}`)
-      for (const hook of item.hooks)
-        process.stdout.write(`    ${hook.event}${hook.matcher ? ` [${hook.matcher}]` : ""}: ${hook.command}${EOL}`)
-    }
+    process.stdout.write(statuses.map(describe).join(EOL) + EOL)
   }),
 })
 
 const TrustCommand = effectCmd({
-  command: "trust",
-  describe: "allow this project's own hooks to run (until they change)",
-  handler: Effect.fn("Cli.hooks.trust")(function* () {
-    const { ConfigHooks, trust, statuses } = yield* load()
-    const pending = statuses.filter((item) => !item.trusted)
-    if (!pending.length) {
-      process.stdout.write("nothing to trust: no untrusted project hooks" + EOL)
+  command: "trust [file]",
+  describe: "allow hooks from this project's config (or a remote config) to run, until they change",
+  builder: (yargs) =>
+    yargs
+      .positional("file", { type: "string", describe: "only this config file (or remote URL)" })
+      .option("yes", { alias: "y", type: "boolean", default: false, describe: "trust without asking" }),
+  handler: Effect.fn("Cli.hooks.trust")(function* (args) {
+    const { ConfigHooks, ctx, trust, statuses } = yield* load()
+    const wanted = args.file
+      ? /^https?:\/\//.test(args.file)
+        ? args.file
+        : path.resolve(ctx.directory, args.file)
+      : undefined
+    const untrusted = statuses.filter((item) => !item.trusted && (!wanted || item.source === wanted))
+    // A parent directory's config (picked up when there is no git repository) is not trusted from here.
+    const outside = untrusted.filter((item) => item.kind === "project" && !ConfigHooks.inProject(item.source, ctx))
+    for (const item of outside)
+      process.stdout.write(
+        `skipped ${item.source}: outside this project; run \`sente hooks trust\` in its directory${EOL}`,
+      )
+    const candidates = untrusted.filter((item) => !outside.includes(item))
+    if (!candidates.length) {
+      process.stdout.write(
+        (wanted ? `no untrusted hooks in ${wanted}` : "nothing to trust: no untrusted project or remote hooks") + EOL,
+      )
       return
     }
-    for (const item of pending) {
-      process.stdout.write(`trusting ${item.source}:${EOL}`)
-      for (const hook of item.hooks)
-        process.stdout.write(`    ${hook.event}${hook.matcher ? ` [${hook.matcher}]` : ""}: ${hook.command}${EOL}`)
+    if (!args.yes && !process.stdin.isTTY)
+      return yield* fail(
+        "refusing to trust hooks without a terminal to ask on; review `sente hooks list` and pass --yes",
+      )
+    const { confirm, isCancel } = yield* Effect.promise(() => import("@clack/prompts"))
+    const chosen: typeof candidates = []
+    for (const item of candidates) {
+      process.stdout.write(describe(item) + EOL)
+      if (args.yes) {
+        chosen.push(item)
+        continue
+      }
+      const answer = yield* Effect.promise(() =>
+        confirm({
+          message: `Trust and run these hooks${item.kind === "remote" ? " from a remote server" : ""}? They run with your permissions and environment.`,
+          initialValue: false,
+        }),
+      )
+      if (isCancel(answer)) return yield* fail("cancelled")
+      if (answer === true) chosen.push(item)
+    }
+    if (!chosen.length) {
+      process.stdout.write("nothing trusted" + EOL)
+      return
     }
     yield* Effect.promise(() =>
       ConfigHooks.writeTrust({
         ...trust,
-        ...Object.fromEntries(pending.map((item) => [item.source, item.fingerprint])),
+        ...Object.fromEntries(chosen.map((item) => [item.source, item.fingerprint])),
       }),
     )
-    process.stdout.write(`saved to ${ConfigHooks.trustFile()}${EOL}`)
+    process.stdout.write(
+      `trusted ${chosen.map((item) => item.source).join(", ")}${EOL}saved to ${ConfigHooks.trustFile()}${EOL}`,
+    )
   }),
 })
 
 const UntrustCommand = effectCmd({
-  command: "untrust",
-  describe: "stop running this project's own hooks",
-  handler: Effect.fn("Cli.hooks.untrust")(function* () {
-    const { ConfigHooks, trust, statuses } = yield* load()
-    const sources = new Set(statuses.map((item) => item.source))
+  command: "untrust [file]",
+  describe: "stop running hooks from this project's config (or one file / remote URL)",
+  builder: (yargs) => yargs.positional("file", { type: "string", describe: "only this config file (or remote URL)" }),
+  handler: Effect.fn("Cli.hooks.untrust")(function* (args) {
+    const { ConfigHooks, ctx, trust, statuses } = yield* load()
+    const wanted = args.file
+      ? /^https?:\/\//.test(args.file)
+        ? args.file
+        : path.resolve(ctx.directory, args.file)
+      : undefined
+    const sources = new Set(
+      wanted ? [wanted] : statuses.filter((item) => item.kind !== "user").map((item) => item.source),
+    )
     const next = Object.fromEntries(Object.entries(trust).filter((entry) => !sources.has(entry[0])))
     yield* Effect.promise(() => ConfigHooks.writeTrust(next))
-    process.stdout.write(`removed ${Object.keys(trust).length - Object.keys(next).length} trusted file(s)${EOL}`)
+    process.stdout.write(`removed ${Object.keys(trust).length - Object.keys(next).length} trusted source(s)${EOL}`)
   }),
 })
 
