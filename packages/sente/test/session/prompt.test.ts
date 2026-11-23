@@ -36,6 +36,7 @@ import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionOutputLimit } from "../../src/session/output-limit"
+import { SessionGoal } from "../../src/session/goal"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -2626,4 +2627,228 @@ noLLMServer.instance(
       }
     }),
   30_000,
+)
+
+// /goal: the run loop asks a reviewer after each finished turn and either stops or sends
+// one more turn. Replies are consumed in order: work turn, review, work turn, review, …
+const goalOf = Effect.fn("test.goalOf")(function* (sessionID: SessionID) {
+  const sessions = yield* Session.Service
+  return SessionGoal.read((yield* sessions.get(sessionID)).metadata)
+})
+
+const goalContinuations = (messages: SessionV1.WithParts[]) =>
+  messages.filter((message) =>
+    message.parts.some((part) => part.type === "text" && part.synthetic && SessionGoal.isGoalPart(part) && message.parts.length === 1),
+  )
+
+it.instance("goal stops when the reviewer says it is done", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.text("all tests pass")
+    yield* llm.text("VERDICT: done\nREASON: the test output shows every test passing")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "make the tests pass", agent: "build" })
+
+    expect(yield* llm.calls).toBe(2)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("complete")
+    expect(goal?.objective).toBe("make the tests pass")
+    expect(goal?.reason).toContain("every test passing")
+    const review = (yield* llm.hits)[1]
+    expect(JSON.stringify(review?.body)).toContain("make the tests pass")
+    expect(JSON.stringify(review?.body)).toContain("all tests pass")
+  }),
+)
+
+it.instance("goal continues with a short reminder while the reviewer says it is not met", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.text("wrote the code")
+    yield* llm.text("VERDICT: continue\nREASON: no tests were run\nNEXT: run the tests")
+    yield* llm.text("ran the tests: 3 passed")
+    yield* llm.text("VERDICT: done\nREASON: 3 tests passed")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "add tests", agent: "build" })
+
+    expect(yield* llm.calls).toBe(4)
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
+    expect((yield* goalOf(chat.id))?.rounds).toBe(1)
+    const reminders = goalContinuations(yield* sessions.messages({ sessionID: chat.id }))
+    expect(reminders).toHaveLength(1)
+    const text = reminders[0]?.parts[0]?.type === "text" ? reminders[0].parts[0].text : ""
+    expect(text).toContain("add tests")
+    expect(text).toContain("no tests were run")
+    expect(text).toContain("run the tests")
+    // The reminder is the newest user message the next work turn sees.
+    expect(JSON.stringify((yield* llm.hits)[2]?.body)).toContain("no tests were run")
+  }),
+)
+
+it.instance("goal pauses at the round limit without paying for another review", () =>
+  Effect.gen(function* () {
+    const previous = process.env.SENTE_GOAL_MAX_ROUNDS
+    process.env.SENTE_GOAL_MAX_ROUNDS = "1"
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.SENTE_GOAL_MAX_ROUNDS
+        else process.env.SENTE_GOAL_MAX_ROUNDS = previous
+      }),
+    )
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.text("step one")
+    yield* llm.text("VERDICT: continue\nREASON: step two is missing")
+    yield* llm.text("step two")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "do both steps", agent: "build" })
+
+    expect(yield* llm.calls).toBe(3)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.rounds).toBe(1)
+    expect(goal?.maxRounds).toBe(1)
+  }),
+)
+
+it.instance("goal stops when the same missing point comes back three times", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    for (const _ of [1, 2, 3]) {
+      yield* llm.text("tried again")
+      yield* llm.text("VERDICT: continue\nREASON: the build still fails")
+    }
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "fix the build", agent: "build" })
+
+    expect(yield* llm.calls).toBe(6)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.reason).toContain("the build still fails")
+    expect(goalContinuations(yield* sessions.messages({ sessionID: chat.id }))).toHaveLength(2)
+  }),
+)
+
+it.instance("goal pauses when the user interrupts", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.hang
+
+    const fiber = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "long task", agent: "build" })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+    expect((yield* goalOf(chat.id))?.status).toBe("active")
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(fiber)
+
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+    expect(yield* llm.calls).toBe(1)
+  }),
+)
+
+it.instance("goal pauses instead of reviewing when the user's own message ended the turn", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const goal = SessionGoal.create("ship it")
+    yield* sessions.setMetadata({ sessionID: chat.id, metadata: SessionGoal.withGoal(undefined, goal) })
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text: "wait, what is the status?" }] })
+    yield* llm.text("here is the status")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    expect(yield* llm.calls).toBe(1)
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+  }),
+)
+
+it.instance("goal replaces the todo follow-up instead of adding a second turn", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* todo.update({ sessionID: chat.id, todos: [{ content: "write docs", status: "pending", priority: "medium" }] })
+
+    yield* llm.text("done with the code")
+    yield* llm.text("VERDICT: done\nREASON: the code is in place")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "write the code", agent: "build" })
+
+    // Without the goal, an open todo would add a follow-up turn here.
+    expect(yield* llm.calls).toBe(2)
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(
+      messages.some((message) =>
+        message.parts.some((part) => part.type === "text" && part.synthetic && part.text.includes("todowrite")),
+      ),
+    ).toBe(false)
+    expect(JSON.stringify((yield* llm.hits)[1]?.body)).toContain("write docs")
+  }),
+)
+
+it.instance("goal clear removes the goal and an empty /goal reports it", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("partial")
+    yield* llm.text("VERDICT: blocked\nREASON: needs an API key from the user")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: '"deploy it"', agent: "build" })
+    const blocked = yield* goalOf(chat.id)
+    expect(blocked?.status).toBe("paused")
+    expect(blocked?.objective).toBe("deploy it")
+    expect(blocked?.reason).toContain("API key")
+
+    const shown = yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "", agent: "build" }).pipe(Effect.exit)
+    expect(Exit.isFailure(shown)).toBe(true)
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "clear", agent: "build" })
+    expect(yield* goalOf(chat.id)).toBeUndefined()
+    expect(yield* llm.calls).toBe(2)
+  }),
+)
+
+it.instance("a user's own goal command adds its instructions to the goal loop", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      command: { goal: { template: "House rule: verify $ARGUMENTS with a test." } },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.text("verified")
+    yield* llm.text("VERDICT: done\nREASON: verified by a test")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "the parser", agent: "build" })
+
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
+    expect(JSON.stringify((yield* llm.hits)[0]?.body)).toContain("House rule: verify the parser with a test.")
+  }),
 )

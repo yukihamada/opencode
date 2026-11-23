@@ -50,6 +50,7 @@ export const Default = {
   INIT: "init",
   REVIEW: "review",
   GUIDE: "guide",
+  GOAL: "goal",
 } as const
 
 // A guide the user keeps at <config>/guide.<lang>.md replaces the bundled one for that language.
@@ -123,6 +124,16 @@ const layer = Layer.effect(
         get template() {
           return guideTemplate()
         },
+        hints: ["$ARGUMENTS"],
+      }
+
+      // Runs the goal loop in SessionPrompt.command (session/goal.ts). A user's own `goal`
+      // command below takes over the description and adds its text to the kickoff.
+      commands[Default.GOAL] = {
+        name: Default.GOAL,
+        description: "完了条件を満たすまで自律で続ける / keep working until a condition is met [clear|resume]",
+        source: "command",
+        template: "$ARGUMENTS",
         hints: ["$ARGUMENTS"],
       }
 

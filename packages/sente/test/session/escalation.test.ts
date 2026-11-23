@@ -685,7 +685,7 @@ describe("execution safety", () => {
   })
 
   test("internal helper agents are never the user's request", () => {
-    for (const name of ["title", "summary", "compaction"]) {
+    for (const name of ["title", "summary", "compaction", "goal"]) {
       expect(SessionEscalation.isAuxiliaryAgent(name)).toBe(true)
       expect(SessionEscalation.isUserFacingAgent(name)).toBe(false)
     }

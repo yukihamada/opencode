@@ -57,6 +57,7 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@sente-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTodoFollowup } from "./todo-followup"
+import { SessionGoal } from "./goal"
 import { Todo } from "./todo"
 import { SessionTools } from "./tools"
 import { SessionTitle } from "./title"
@@ -159,7 +160,76 @@ const layer = Layer.effect(
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
+      // Interrupting is the user taking over: an active goal must not start again on its own.
+      yield* pauseGoal(sessionID, ProviderQuota.language() === "ja" ? "利用者が中断しました。" : "Interrupted by the user.")
       yield* state.cancel(sessionID)
+    })
+
+    // Write the goal only if it is still the one the caller decided on. A `/goal clear`
+    // or a new goal that landed meanwhile wins instead of being overwritten.
+    const replaceGoal = Effect.fn("SessionPrompt.replaceGoal")(function* (
+      sessionID: SessionID,
+      expected: SessionGoal.State,
+      next: SessionGoal.State,
+    ) {
+      const info = yield* sessions.get(sessionID).pipe(Effect.orDie)
+      const current = SessionGoal.read(info.metadata)
+      if (current?.id !== expected.id || current.status !== "active") return false
+      yield* sessions.setMetadata({ sessionID, metadata: SessionGoal.withGoal(info.metadata, next) })
+      return true
+    })
+
+    const pauseGoal = Effect.fn("SessionPrompt.pauseGoal")(function* (sessionID: SessionID, reason: string) {
+      const info = yield* sessions.get(sessionID).pipe(Effect.option)
+      if (Option.isNone(info)) return
+      const goal = SessionGoal.read(info.value.metadata)
+      if (goal?.status !== "active") return
+      yield* replaceGoal(sessionID, goal, { ...goal, status: "paused", reason, updatedAt: Date.now() })
+      yield* Effect.logInfo("goal paused", { "session.id": sessionID, reason })
+    })
+
+    // Ask the reviewer model whether the goal is met. A small model reads a clipped log of
+    // the work, so judging stays cheap however long the goal runs. One retry on an
+    // unusable answer; undefined means no verdict.
+    const judgeGoal = Effect.fn("SessionPrompt.judgeGoal")(function* (input: {
+      goal: SessionGoal.State
+      sessionID: SessionID
+      user: SessionV1.User
+      messages: SessionV1.WithParts[]
+    }) {
+      const ag = yield* agents.get("goal")
+      if (!ag) return undefined
+      const mdl = ag.model
+        ? yield* provider.getModel(ag.model.providerID, ag.model.modelID)
+        : ((yield* provider.getSmallModel(input.user.model.providerID)) ??
+          (yield* provider.getModel(input.user.model.providerID, input.user.model.modelID)))
+      const work = SessionGoal.transcript(input.messages, input.goal, yield* todo.get(input.sessionID))
+      const ask = llm
+        .stream({
+          agent: ag,
+          user: input.user,
+          system: [],
+          small: true,
+          tools: {},
+          model: mdl,
+          sessionID: input.sessionID,
+          retries: 2,
+          messages: [{ role: "user", content: SessionGoal.judgePrompt(input.goal, work) }],
+        })
+        .pipe(
+          Stream.filter(LLMEvent.is.textDelta),
+          Stream.map((e) => e.text),
+          Stream.mkString,
+          Effect.map(SessionGoal.parseVerdict),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("goal review failed", { "session.id": input.sessionID, cause: Cause.pretty(cause) }).pipe(
+                  Effect.as(undefined),
+                ),
+          ),
+        )
+      return (yield* ask) ?? (yield* ask)
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -1147,6 +1217,68 @@ const layer = Layer.effect(
                 callID: orphan.callID,
               })
             }
+            // An active goal decides what happens after a finished turn: the reviewer either
+            // ends it or sends one more turn. It replaces the todo follow-up while it runs
+            // (the reviewer sees open todos), so the two never both add a turn.
+            const goal = session.parentID
+              ? undefined
+              : SessionGoal.read((yield* sessions.get(sessionID).pipe(Effect.orDie)).metadata)
+            if (goal?.status === "active" && !orphan) {
+              const lang = ProviderQuota.language()
+              const userParts = msgs.find((message) => message.info.id === lastUser.id)?.parts ?? []
+              // The user typed while the goal ran and this turn answered them: they took over.
+              if (SessionGoal.interjected(userParts)) {
+                yield* pauseGoal(
+                  sessionID,
+                  lang === "ja" ? "利用者の入力があったため一時停止しました。" : "Paused because the user sent a message.",
+                )
+                break
+              }
+              const limit = SessionGoal.exhausted(goal, lang)
+              const verdict = limit
+                ? undefined
+                : yield* judgeGoal({ goal, sessionID, user: lastUser, messages: msgs }).pipe(
+                    // A missing reviewer model counts as no verdict: the goal pauses, the session does not fail.
+                    Effect.catch(() => Effect.succeed(undefined)),
+                  )
+              const decision = SessionGoal.decide(goal, verdict, Date.now(), lang)
+              yield* Effect.logInfo("goal review", {
+                "session.id": sessionID,
+                decision: decision.type,
+                round: goal.rounds,
+                reason: decision.reason,
+              })
+              if (decision.type !== "continue") {
+                yield* replaceGoal(sessionID, goal, {
+                  ...goal,
+                  status: decision.type === "complete" ? "complete" : "paused",
+                  reason: decision.reason,
+                  updatedAt: Date.now(),
+                })
+                break
+              }
+              if (!(yield* replaceGoal(sessionID, goal, decision.goal))) break
+              const goalMsg: SessionV1.User = {
+                id: MessageID.ascending(),
+                role: "user",
+                sessionID,
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+              }
+              yield* sessions.updateMessage(goalMsg)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: goalMsg.id,
+                sessionID,
+                type: "text",
+                synthetic: true,
+                text: SessionGoal.continuation(decision.goal, decision.reason, decision.next, lang),
+                metadata: { source: SessionGoal.METADATA_KEY, goalID: goal.id },
+                time: { start: Date.now(), end: Date.now() },
+              })
+              continue
+            }
             // A finished turn with unfinished todos usually means the list was left
             // stale. Ask the model to finish or close them, bounded so it cannot loop.
             const openTodos = session.parentID ? [] : SessionTodoFollowup.unfinished(yield* todo.get(sessionID))
@@ -1327,7 +1459,21 @@ const layer = Layer.effect(
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(msgs, model).pipe(
+                Effect.flatMap((modelMsgs) =>
+                  session.parentID
+                    ? Effect.succeed(modelMsgs)
+                    : sessions.get(sessionID).pipe(
+                        Effect.orDie,
+                        Effect.map((info) =>
+                          SessionGoal.withReminder(modelMsgs, SessionGoal.read(info.metadata), msgs, (text) => ({
+                            role: "user" as const,
+                            content: text,
+                          })),
+                        ),
+                      ),
+                ),
+              ),
             ])
             const system = [
               ...env,
@@ -1522,6 +1668,16 @@ const layer = Layer.effect(
           continue
         }
 
+        // The loop ended while the goal was still active: an error, a refused cost
+        // approval or an interrupted tool stopped the turn. Nothing will drive the goal
+        // now, so show it as stopped instead of running.
+        if (!session.parentID)
+          yield* pauseGoal(
+            sessionID,
+            ProviderQuota.language() === "ja"
+              ? "ターンがエラー・承認拒否などで終了したため停止しました。"
+              : "Stopped because the turn ended early (an error or a refused approval).",
+          )
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
       },
@@ -1540,6 +1696,72 @@ const layer = Layer.effect(
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
+    const goalCommand = Effect.fn("SessionPrompt.goalCommand")(function* (input: CommandInput, extra?: string) {
+      const lang = ProviderQuota.language()
+      const parsed = SessionGoal.parse(input.arguments, lang)
+      const info = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const current = SessionGoal.read(info.metadata)
+      const fail = (message: string) =>
+        Effect.gen(function* () {
+          const error = new NamedError.Unknown({ message })
+          yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+          return yield* Effect.die(error)
+        })
+      if (parsed.type === "invalid") return yield* fail(parsed.reason)
+      if (parsed.type === "show") return yield* fail(SessionGoal.describe(current, lang))
+      if (parsed.type === "clear") {
+        if (!current) return yield* fail(SessionGoal.describe(undefined, lang))
+        yield* sessions.setMetadata({ sessionID: input.sessionID, metadata: SessionGoal.withGoal(info.metadata, undefined) })
+        return yield* lastAssistant(input.sessionID)
+      }
+      if (parsed.type === "resume" && current?.status !== "paused")
+        return yield* fail(lang === "ja" ? "再開できる停止中のゴールはありません。" : "No paused goal to resume.")
+
+      const goal =
+        parsed.type === "resume" && current
+          ? { ...current, status: "active" as const, rounds: 0, repeats: 0, reason: undefined, updatedAt: Date.now() }
+          : SessionGoal.create(parsed.type === "set" ? parsed.objective : "", Date.now())
+      yield* sessions.setMetadata({ sessionID: input.sessionID, metadata: SessionGoal.withGoal(info.metadata, goal) })
+      const instructions = extra?.replaceAll("$ARGUMENTS", goal.objective).trim()
+      const custom = instructions
+        ? [
+            {
+              type: "text" as const,
+              synthetic: true,
+              metadata: { source: SessionGoal.METADATA_KEY, goalID: goal.id },
+              text: `Additional instructions for this goal, from the user's own goal command:\n\n${instructions}`,
+            },
+          ]
+        : []
+      const parts =
+        parsed.type === "resume"
+          ? [
+              {
+                type: "text" as const,
+                text: lang === "ja" ? `ゴールを再開: ${goal.objective}` : `Goal resumed: ${goal.objective}`,
+                metadata: { source: SessionGoal.METADATA_KEY, goalID: goal.id },
+              },
+              ...SessionGoal.kickoff(goal, lang).slice(1),
+            ]
+          : SessionGoal.kickoff(goal, lang)
+      const result = yield* prompt({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        model: input.model ? Provider.parseModel(input.model) : yield* currentModel(input.sessionID),
+        agent: input.agent,
+        variant: input.variant,
+        noReply: input.noReply,
+        parts: [...parts, ...custom, ...(input.parts ?? [])],
+      })
+      yield* events.publish(Command.Event.Executed, {
+        name: input.command,
+        sessionID: input.sessionID,
+        arguments: input.arguments,
+        messageID: result.info.id,
+      })
+      return result
+    })
+
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
       yield* Effect.logInfo("command", {
         "session.id": input.sessionID,
@@ -1554,6 +1776,14 @@ const layer = Layer.effect(
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }
+      // /goal sets session state and runs the goal loop instead of only expanding a template.
+      // A user's own `goal` command keeps working: its text joins the kickoff as extra
+      // instructions. SENTE_GOAL_LOOP=0 turns the loop off and leaves a plain command.
+      if (input.command === Command.Default.GOAL && SessionGoal.enabled())
+        return yield* goalCommand(
+          input,
+          (yield* config.get()).command?.[Command.Default.GOAL] ? yield* Effect.promise(async () => cmd.template) : undefined,
+        )
       const agentName = cmd.agent ?? input.agent
 
       const raw = input.arguments.match(argsRegex) ?? []

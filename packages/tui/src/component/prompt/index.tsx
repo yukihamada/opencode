@@ -54,6 +54,7 @@ import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
 import { useUsageMode } from "../dialog-mode"
 import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
+import { describeGoal, goalLabel, goalSettledNotice, parseGoalCommand, readGoal, withoutGoal } from "../../util/goal"
 import {
   backend as dictationBackend,
   buildLexicon,
@@ -284,6 +285,15 @@ export function Prompt(props: PromptProps) {
     if (!messages) return undefined
     return messages.findLast((m): m is UserMessage => m.role === "user")
   })
+
+  const goal = createMemo(() => (props.sessionID ? readGoal(sync.session.get(props.sessionID)?.metadata) : undefined))
+  // Tell the user when the goal loop ends, met or stopped, with the reviewer's reason.
+  createEffect(
+    on(goal, (next, previous) => {
+      const notice = goalSettledNotice(previous, next, language.current())
+      if (notice) toast.show({ ...notice, duration: 10000 })
+    }),
+  )
 
   const usage = createMemo(() => {
     if (!props.sessionID) return
@@ -1640,6 +1650,27 @@ export function Prompt(props: PromptProps) {
       setStore("extmarkToPartIndex", new Map())
       return true
     }
+    // `/goal`(表示)と `/goal clear` は手元で処理する。条件付きの `/goal …` はサーバーの goal コマンドへ。
+    const goalCommand = parseGoalCommand(trimmed)
+    if (goalCommand) {
+      const current = props.sessionID ? sync.session.get(props.sessionID) : undefined
+      const info = readGoal(current?.metadata)
+      if (goalCommand.type === "show" || !info || !props.sessionID)
+        toast.show({ variant: "info", message: describeGoal(info, language.current()), duration: 8000 })
+      else
+        void sdk.client.session
+          .update({ sessionID: props.sessionID, metadata: withoutGoal(current?.metadata) })
+          .then(() =>
+            toast.show({ variant: "info", message: language.current() === "ja" ? "ゴールを解除しました" : "Goal cleared" }),
+          )
+          .catch((error) => toast.show({ variant: "error", message: errorMessage(error) }))
+      history.append(structuredClone(unwrap({ ...store.prompt, mode: store.mode })))
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      return true
+    }
     // `/v` 系(音声入力)もサーバーへ送らず手元で処理する。
     const voiceCommand = parseVoiceCommand(trimmed)
     if (voiceCommand) {
@@ -2350,6 +2381,9 @@ export function Prompt(props: PromptProps) {
           </Switch>
           <Show when={status().type !== "retry"}>
             <box gap={2} flexDirection="row">
+              <Show when={goalLabel(goal(), language.current())}>
+                {(label) => <text fg={theme.accent}>{label()}</text>}
+              </Show>
               <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>

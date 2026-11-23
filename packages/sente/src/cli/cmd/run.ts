@@ -187,6 +187,15 @@ export const RunCommand = effectCmd({
         describe: "the command to run, use message for args",
         type: "string",
       })
+      .option("goal", {
+        describe:
+          "keep working until this condition is met (same as /goal); bounded by --goal-max-rounds and the cost limit",
+        type: "string",
+      })
+      .option("goal-max-rounds", {
+        describe: "most automatic continuations for --goal (default 20, or SENTE_GOAL_MAX_ROUNDS)",
+        type: "number",
+      })
       .option("continue", {
         alias: ["c"],
         describe: "continue the last session",
@@ -370,6 +379,20 @@ export const RunCommand = effectCmd({
       let message = [...args.message, ...(args["--"] || [])]
         .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
         .join(" ")
+
+      // `--goal <condition>` is `--command goal <condition>`: the in-process server keeps
+      // working until a reviewer agrees the condition is met.
+      if (args.goal !== undefined) {
+        if (args.command) die("--goal cannot be used with --command")
+        if (!args.goal.trim()) die("--goal needs a condition")
+        args.command = "goal"
+        message = [args.goal, message].filter((item) => item.trim()).join("\n\n")
+      }
+      if (args["goal-max-rounds"] !== undefined) {
+        const rounds = args["goal-max-rounds"]
+        if (!Number.isInteger(rounds) || rounds < 1) die("--goal-max-rounds must be a positive integer")
+        process.env.SENTE_GOAL_MAX_ROUNDS = String(rounds)
+      }
 
       if (interactive && args.command) {
         die("--mini cannot be used with --command")
@@ -1013,6 +1036,14 @@ export const RunCommand = effectCmd({
               return
             }
             await finish()
+            if (args.goal !== undefined) {
+              // Say how the goal ended: met, or stopped and why (rounds, cost approval, repeats).
+              const { SessionGoal } = await import("../../session/goal")
+              const info = await client.session.get({ sessionID }).catch(() => undefined)
+              const goal = SessionGoal.read(info?.data?.metadata)
+              if (goal && !emit("goal", { goal }))
+                process.stderr.write(SessionGoal.settledNote(goal) + EOL)
+            }
             return
           }
 
@@ -1199,6 +1230,9 @@ export async function runMini(input: MiniCommandInput) {
     _: ["mini"],
     message: input.prompt ? [input.prompt] : [],
     command: undefined,
+    goal: undefined,
+    "goal-max-rounds": undefined,
+    goalMaxRounds: undefined,
     continue: input.continue,
     session: input.session,
     fork: input.fork,
