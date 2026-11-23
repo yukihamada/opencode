@@ -45,7 +45,8 @@ const runShell = Effect.gen(function* () {
     )
 })
 
-describe("project hooks trust", () => {
+// The hook command is POSIX shell; Windows runs hooks through cmd.exe.
+describe.skipIf(process.platform === "win32")("project hooks trust", () => {
   it.instance(
     "project hooks do not run until trusted",
     () => runShell.pipe(Effect.map((result) => expect(result).toBe("ran"))),

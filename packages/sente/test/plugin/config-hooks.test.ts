@@ -56,7 +56,10 @@ describe("matcher", () => {
   })
 })
 
-describe("exec", () => {
+// The hook commands below are POSIX shell; Windows runs hooks through cmd.exe.
+const posix = describe.skipIf(process.platform === "win32")
+
+posix("exec", () => {
   test("passes the event on stdin and reads exit code and output", async () => {
     await using tmp = await tmpdir()
     const result = await ConfigHooksRunner.exec("cat; echo oops >&2; exit 2", { a: 1 }, { cwd: tmp.path })
@@ -134,7 +137,7 @@ describe("interpret", () => {
   })
 })
 
-describe("config hooks plugin", () => {
+posix("config hooks plugin", () => {
   test("PreToolUse blocks a matching tool by exit code 2 and leaves others alone", async () => {
     await using tmp = await tmpdir()
     const loaded = await load(
