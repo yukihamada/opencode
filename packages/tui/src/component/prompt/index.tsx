@@ -54,6 +54,9 @@ import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
 import { useUsageMode } from "../dialog-mode"
 import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
+import { Loop } from "../../util/loop"
+import { useOptionalLoop } from "../../context/loop"
+import { DialogLoop } from "../dialog-loop"
 import {
   backend as dictationBackend,
   buildLexicon,
@@ -194,6 +197,7 @@ export function Prompt(props: PromptProps) {
   const { theme, syntax } = useTheme()
   const kv = useKV()
   const language = useLanguage()
+  const loop = useOptionalLoop()
   const usageMode = useUsageMode()
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
   const list = createMemo(() => props.placeholders?.normal ?? [])
@@ -1579,6 +1583,69 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  function handleLoopCommand(loop: NonNullable<ReturnType<typeof useOptionalLoop>>, command: Loop.Command, agent: string) {
+    const t = loop.text()
+    if (command.type === "list") {
+      dialog.replace(() => <DialogLoop />)
+      return true
+    }
+    if (command.type === "stop") {
+      toast.show({ variant: "info", message: t.stopped(loop.stop(command.target).length) })
+      return true
+    }
+    if (command.type === "resume") {
+      toast.show({ variant: "info", message: t.resumed(loop.resume(command.target).length) })
+      return true
+    }
+    if (command.type === "invalid") {
+      toast.show({ variant: "error", message: `${t.invalid[command.reason]}\n${t.usage}` })
+      return false
+    }
+    if (!props.sessionID) {
+      toast.show({ variant: "error", message: t.needSession })
+      return false
+    }
+    const model = local.model.current()
+    if (!model) {
+      toast.show({ variant: "error", message: t.needModel })
+      return false
+    }
+    // 手元の画面操作のスラッシュコマンド(/mode 等)は送っても意味がないので断る。
+    const slash = /^\/(\S+)/.exec(command.prompt)
+    if (slash && !sync.data.command.some((item) => item.name === slash[1])) {
+      toast.show({ variant: "error", message: t.localCommand })
+      return false
+    }
+    const result = loop.start({
+      target: { sessionID: props.sessionID, agent, model, variant: local.model.variant.current() },
+      prompt: command.prompt,
+      interval: command.interval,
+      maxRuns: command.maxRuns,
+      expiresIn: command.expiresIn,
+    })
+    if (!result.item) {
+      toast.show({ variant: "error", message: t.limit })
+      return false
+    }
+    const until = new Date(result.item.expiresAt).toLocaleString(language.current() === "ja" ? "ja-JP" : "en-US", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    toast.show({
+      variant: "info",
+      message: [
+        command.rounded ? t.rounded : "",
+        t.started(result.item.id, Loop.formatInterval(result.item.interval), result.item.maxRuns, until),
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      duration: 8000,
+    })
+    return true
+  }
+
   let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
@@ -1648,6 +1715,18 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
       handleVoiceCommand(voiceCommand)
+      return true
+    }
+    // `/loop 5m 依頼` もサーバーへ送らず手元で登録する(このセッション内だけの繰り返し)。
+    const loopCommand = loop ? Loop.parseCommand(trimmed) : undefined
+    if (loop && loopCommand) {
+      const done = handleLoopCommand(loop, loopCommand, agent.name)
+      if (!done) return false
+      history.append(structuredClone(unwrap({ ...store.prompt, mode: store.mode })))
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
       return true
     }
     const selectedModel = local.model.current()
@@ -2022,6 +2101,7 @@ export function Prompt(props: PromptProps) {
               maxHeight={maxHeight()}
               onContentChange={() => {
                 const value = input.plainText
+                loop?.typed()
                 setStore("prompt", "input", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()
@@ -2337,6 +2417,15 @@ export function Prompt(props: PromptProps) {
               <box paddingLeft={3}>
                 <text fg={theme.accent}>(new working copy)</text>
               </box>
+            </Match>
+            <Match when={!props.hint && loop?.status()}>
+              {(label) => (
+                <box marginLeft={1}>
+                  <text fg={theme.accent} wrapMode="none">
+                    {label()}
+                  </text>
+                </box>
+              )}
             </Match>
             <Match when={true}>
               {props.hint ?? (
