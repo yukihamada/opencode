@@ -62,9 +62,12 @@ describe("SessionBtw excerpt", () => {
   })
 
   test("main model is the latest user message's model", () => {
-    expect(
-      SessionBtw.mainModel([user([], { providerID: "a", modelID: "1" }), assistant([]), user([], { providerID: "b", modelID: "2" })]),
-    ).toEqual({ providerID: "b", modelID: "2" })
+    const found = SessionBtw.mainModel([
+      user([], { providerID: "a", modelID: "1" }),
+      assistant([]),
+      user([], { providerID: "b", modelID: "2" }),
+    ])
+    expect(`${found?.providerID}/${found?.modelID}`).toBe("b/2")
     expect(SessionBtw.mainModel([])).toBeUndefined()
   })
 
