@@ -1,0 +1,64 @@
+---
+title: フック
+description: ツールの実行前後・入力時・ターン終了時に、自分のシェルコマンドを動かします。
+---
+
+フックは `sente.json` / `sente.jsonc` に書くシェルコマンドで、決まったタイミングで実行されます。形式は Claude Code の hooks と同じなので、既存のフック用スクリプトの多くはそのまま使えます。TypeScript で書く場合は [プラグイン](/docs/plugins) を使います。
+
+```jsonc title="~/.config/sente/sente.jsonc"
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "bash",
+        "hooks": [{ "type": "command", "command": "~/.config/sente/hooks/no-force-push.sh", "timeout": 10 }]
+      }
+    ],
+    "PostToolUse": [{ "matcher": "edit|write", "hooks": [{ "type": "command", "command": "bun run lint --quiet" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "say 終わりました" }] }]
+  }
+}
+```
+
+## イベント
+
+| イベント | タイミング | 止められるか |
+| --- | --- | --- |
+| `PreToolUse` | ツール実行前(許可確認より前) | はい。ツールは実行されず、理由がモデルに返ります |
+| `PostToolUse` | ツール成功後 | いいえ。理由や `additionalContext` をツール出力に追記します |
+| `UserPromptSubmit` | 入力を送った時(保存前) | はい。入力は破棄され、理由がエラーとして表示されます |
+| `SessionStart` | そのプロセスでのセッション最初の入力の前 | いいえ。出力を文脈として追加します |
+| `Stop` | メインのセッションが待機に戻った時(ターン終了) | いいえ(通知のみ) |
+| `Notification` | 許可待ち(`permission_prompt`)・質問(`elicitation_dialog`) | いいえ |
+
+`matcher` は `PreToolUse`/`PostToolUse` ではツール名、`SessionStart` では `startup`/`resume`、`Notification` では種類で絞り込みます。`bash|edit` のような名前の並びは完全一致、それ以外は正規表現です。空・`*`・省略はすべてに一致します。Claude Code のツール名(`Bash`・`Edit`・`Write` など)でも一致します。
+
+## 入力と出力
+
+標準入力に JSON(`session_id`・`cwd`・`hook_event_name`・`tool_name`・`tool_input`・`tool_use_id` など)が渡ります。`tool_input` には Sente の引数に加え、`filePath` → `file_path` のような snake_case の写しも入ります。環境変数 `SENTE_PROJECT_DIR`・`CLAUDE_PROJECT_DIR`・`SENTE_SESSION_ID` も使えます。
+
+- **終了コード 0**: 成功。標準出力の JSON(`decision: "block"`・`reason`・`continue: false`・`hookSpecificOutput.permissionDecision: "deny"`・`updatedInput`・`additionalContext`)を読みます。`UserPromptSubmit`/`SessionStart` では普通の標準出力が文脈になります。
+- **終了コード 2**: ブロック。標準エラーが理由です。
+- **それ以外・タイムアウト(既定60秒)・起動失敗**: ログに残して無視し、Sente は止まりません。
+
+モデルに渡る理由・文脈は、ツール出力と同じ秘密マスクを通ります。
+
+## プロジェクトのフックと信頼
+
+自分の設定(`~/.config/sente/`・`~/.sente/`・`SENTE_CONFIG` など)のフックはすぐ有効です。開いたプロジェクト自身の `sente.json` や `.sente/sente.json` にあるフックは、他人のリポジトリを開いただけで任意のコマンドが走らないよう、**信頼するまで実行されません**(代わりに警告を表示します)。
+
+```bash
+sente hooks list      # 設定されているフックと実行されるかどうか
+sente hooks trust     # このプロジェクトのフックを許可
+sente hooks untrust   # 許可を取り消す
+```
+
+信頼はファイルごとに、フック内容の指紋とあわせて `~/.local/state/sente/hooks-trust.json` に保存されます。`git pull` などで内容が変わると、もう一度 `sente hooks trust` するまで止まります。CI では `SENTE_TRUST_PROJECT_HOOKS=1` を使えます。`--pure` では設定のフックは動きません。
+
+## Claude Code との違い
+
+- `Stop` はターンを続けさせられません(終了コード2・`decision: "block"` はログのみ)。`SubagentStop` はありません。
+- `permissionDecision` は `"deny"` だけが効きます(`"allow"`/`"ask"` は許可確認を変えません)。
+- `SessionStart` の source は `startup`/`resume` だけです。`transcript_path` は空です。`PreCompact`・`SessionEnd`・`type: "prompt"` は無視します。
+- ツールが失敗した時は `PostToolUse` は動きません。
+- プロジェクトのフックは `sente hooks trust` が必要です。

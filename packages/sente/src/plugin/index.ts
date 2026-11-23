@@ -27,6 +27,8 @@ import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
+import { ConfigHooksPlugin } from "./config-hooks"
+import { ConfigHooks } from "@/config/hooks"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
 import { registerAdapter } from "@/control-plane/adapters"
 import type { WorkspaceAdapter } from "@/control-plane/types"
@@ -173,6 +175,26 @@ const layer = Layer.effect(
             catch: errorMessage,
           }).pipe(
             Effect.tapError((error) => Effect.logError("failed to load internal plugin", { name: plugin.name, error })),
+            Effect.option,
+          )
+          if (init._tag === "Some") hooks.push(init.value)
+        }
+
+        // Shell commands from the `hooks` config. Project-declared hooks only run once their exact content is trusted.
+        if (!flags.pure && cfg.hook_origins?.length) {
+          const statuses = ConfigHooks.status(cfg.hook_origins, yield* Effect.promise(() => ConfigHooks.readTrust()))
+          for (const item of statuses.filter((item) => !item.trusted)) {
+            const message = `Hooks in ${item.source} were not run (${item.reason}). Review them, then run \`sente hooks trust\` in this project to allow them.`
+            yield* Effect.logWarning(message)
+            publishPluginError(message)
+          }
+          const allowed = new Set(statuses.filter((item) => item.trusted).map((item) => item.source))
+          const plugin = ConfigHooksPlugin(
+            ConfigHooks.deduplicate(cfg.hook_origins.filter((hook) => allowed.has(hook.source))),
+            { warn: (message) => bridge.fork(Effect.logWarning(message)) },
+          )
+          const init = yield* Effect.tryPromise({ try: () => plugin(input), catch: errorMessage }).pipe(
+            Effect.tapError((error) => Effect.logError("failed to load config hooks", { error })),
             Effect.option,
           )
           if (init._tag === "Some") hooks.push(init.value)

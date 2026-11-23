@@ -112,6 +112,10 @@ This is used internally and can be invoked using `@general` in messages.
 
 Learn more about [agents](https://opencode.ai/docs/agents).
 
+### Hooks
+
+Run your own shell commands on `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart`, `Stop` and `Notification` from the `hooks` key in `sente.json`, in the Claude Code hooks format (exit code 2 or a JSON decision blocks). Hooks from your own config run right away; hooks shipped inside a project only run after `sente hooks trust`. Compatibility notes and differences from Claude Code: [`packages/web/src/content/docs/hooks.mdx`](packages/web/src/content/docs/hooks.mdx).
+
 ### Documentation
 
 For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).

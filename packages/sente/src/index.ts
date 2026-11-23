@@ -66,6 +66,7 @@ const commands = [
   lazyCommand("session", "manage sessions", async () => (await import("./cli/cmd/session")).SessionCommand as CommandModule),
   lazyCommand("plugin <module>", "install plugin and update config", async () => (await import("./cli/cmd/plug")).PluginCommand as CommandModule, ["plug"]),
   lazyCommand("db", "database tools", async () => (await import("./cli/cmd/db")).DbCommand as CommandModule),
+  lazyCommand("hooks", "manage shell-command hooks from the config", async () => (await import("./cli/cmd/hooks")).HooksCommand as CommandModule),
 ]
 
 function show(out: string) {

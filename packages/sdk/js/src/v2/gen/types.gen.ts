@@ -1924,6 +1924,22 @@ export type Config = {
         },
       ]
   >
+  /**
+   * Shell commands run on events, in the Claude Code hooks format. Supported events: PreToolUse, PostToolUse, UserPromptSubmit, Stop, SessionStart, Notification. Hooks from a project's own config run only after `sente hooks trust`.
+   */
+  hooks?: {
+    [key: string]: Array<{
+      matcher?: string
+      hooks: Array<{
+        /**
+         * Hook type. Only "command" is supported; entries of any other type are skipped.
+         */
+        type: string
+        command?: string
+        timeout?: number
+      }>
+    }>
+  }
   share?: "manual" | "auto" | "disabled"
   autoshare?: boolean
   /**
@@ -1936,6 +1952,15 @@ export type Config = {
   small_model?: string
   default_agent?: string
   subagent_depth?: number
+  resources?: {
+    max_concurrent_subagents?: number
+    disable_auto_throttle?: boolean
+    low_memory_mb?: number
+    /**
+     * Load average (1 min) per CPU core above which subagent admission shrinks. At 1.5x this value only one subagent runs. Default: 1.0.
+     */
+    load_factor?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
   username?: string
   mode?: {
     build?: AgentConfig

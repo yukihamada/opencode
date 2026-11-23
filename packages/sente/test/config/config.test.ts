@@ -2335,3 +2335,31 @@ test("parseManagedPlist handles empty config", async () => {
   )
   expect(config.$schema).toBe("https://teai.io/sente/config.json")
 })
+
+it.effect("tracks where hooks come from: user config trusted, project files not", () =>
+  withConfigTree(
+    {
+      global: { hooks: { PreToolUse: [{ matcher: "bash", hooks: [{ type: "command", command: "echo global" }] }] } },
+      project: { hooks: { Stop: [{ hooks: [{ type: "command", command: "echo project", timeout: 5 }] }] } },
+      local: {
+        hooks: {
+          PostToolUse: [
+            { hooks: [{ type: "command", command: "echo local" }, { type: "prompt", command: "ignored" }] },
+          ],
+        },
+      },
+    },
+    Effect.gen(function* () {
+      const origins = (yield* Config.use.get()).hook_origins ?? []
+      const find = (command: string) => origins.filter((item) => item.command === command)
+      expect(find("echo global").length).toBeGreaterThan(0)
+      expect(find("echo global").every((item) => item.trusted && item.event === "PreToolUse" && item.matcher === "bash")).toBe(true)
+      expect(find("echo project")).toEqual([
+        expect.objectContaining({ event: "Stop", trusted: false, timeout: 5 }),
+      ])
+      expect(find("echo project")[0].source.endsWith("sente.json")).toBe(true)
+      expect(find("echo local")).toEqual([expect.objectContaining({ event: "PostToolUse", trusted: false })])
+      expect(find("ignored")).toEqual([])
+    }),
+  ),
+)

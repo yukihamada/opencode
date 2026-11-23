@@ -1,0 +1,116 @@
+---
+title: Hooks
+description: Run your own shell commands when Sente uses a tool, gets a prompt or finishes a turn.
+---
+
+Hooks run shell commands on events, configured in `sente.json` / `sente.jsonc`. They use the same format as Claude Code hooks, so most existing hook scripts work unchanged. For hooks written in TypeScript, see [plugins](/docs/plugins).
+
+```jsonc title="~/.config/sente/sente.jsonc"
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "bash",
+        "hooks": [{ "type": "command", "command": "~/.config/sente/hooks/no-force-push.sh", "timeout": 10 }]
+      }
+    ],
+    "PostToolUse": [{ "matcher": "edit|write", "hooks": [{ "type": "command", "command": "bun run lint --quiet" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }]
+  }
+}
+```
+
+---
+
+## Events
+
+| Event | When | Can block |
+| --- | --- | --- |
+| `PreToolUse` | Before a tool runs (before its permission prompt) | Yes: the tool does not run and the reason goes back to the model |
+| `PostToolUse` | After a tool succeeds | No; a reason or `additionalContext` is appended to the tool output the model sees |
+| `UserPromptSubmit` | When you send a prompt, before it is saved | Yes: the prompt is dropped and the reason is shown as an error |
+| `SessionStart` | Before the first prompt of a session in this process | No; output is added as context |
+| `Stop` | When the main session goes idle (turn finished) | No (notification only, see below) |
+| `Notification` | When Sente waits for a permission (`permission_prompt`) or asks a question (`elicitation_dialog`) | No |
+
+`matcher` filters `PreToolUse`/`PostToolUse` by tool name, `SessionStart` by source (`startup` or `resume`) and `Notification` by type. A plain list such as `bash|edit` matches names exactly; anything else is a regular expression. An empty matcher, `*`, or no matcher matches everything. Claude Code tool names also match: `Bash`, `Read`, `Write`, `Edit` (also matches `apply_patch`), `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task`, `TodoWrite`.
+
+---
+
+## Input
+
+Each command runs through the shell in the session directory and gets one JSON object on stdin:
+
+```json
+{
+  "session_id": "ses_…",
+  "transcript_path": "",
+  "cwd": "/path/to/project",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "bash",
+  "tool_input": { "command": "git push --force" },
+  "tool_use_id": "call_…"
+}
+```
+
+- `PostToolUse` adds `tool_response: { title, output }` (output already secret-masked).
+- `UserPromptSubmit` adds `prompt`. `SessionStart` adds `source`. `Stop` adds `stop_hook_active: false`. `Notification` adds `message` and `notification_type`.
+- `tool_input` holds Sente's arguments plus snake_case copies of camelCase keys (`filePath` is also `file_path`), so Claude Code scripts can read them.
+- Environment: `SENTE_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` (project root), `SENTE_SESSION_ID`.
+
+---
+
+## Output
+
+- **Exit 0**: success. stdout may be a JSON object (below). For `UserPromptSubmit` and `SessionStart`, plain stdout is added as context.
+- **Exit 2**: block. stderr is the reason.
+- **Any other exit code, a timeout, or a command that cannot start**: logged and ignored. Sente continues.
+
+JSON fields read on exit 0:
+
+| Field | Effect |
+| --- | --- |
+| `decision: "block"`, `reason` | Block (`PreToolUse`, `UserPromptSubmit`) or feed `reason` to the model (`PostToolUse`) |
+| `continue: false`, `stopReason` | Treated like a block |
+| `hookSpecificOutput.permissionDecision: "deny"`, `permissionDecisionReason` | Block a `PreToolUse` call |
+| `hookSpecificOutput.updatedInput` | Replace `PreToolUse` tool arguments (snake_case keys are mapped back) |
+| `hookSpecificOutput.additionalContext` | Add context (prompt, session start, after a tool) |
+
+All matching hooks of an event run in parallel. Each has a `timeout` in seconds (default 60). Reasons and context that reach the model go through the same secret masking as tool output.
+
+```bash title="~/.config/sente/hooks/no-force-push.sh"
+#!/bin/sh
+if jq -r '.tool_input.command' | grep -qE 'git push.*(--force|-f)'; then
+  echo "force-push is not allowed" >&2
+  exit 2
+fi
+```
+
+---
+
+## Project hooks and trust
+
+Hooks from your own config run immediately: `~/.config/sente/`, `~/.sente/`, `SENTE_CONFIG`, `SENTE_CONFIG_DIR`, `SENTE_CONFIG_CONTENT`, managed and organization config.
+
+Hooks declared by the opened project itself (`sente.json` in the project, or `.sente/sente.json`) do **not** run until you trust them, because otherwise opening a cloned repository could run any command. Sente shows a warning instead. Then:
+
+```bash
+sente hooks list      # what is configured, and what runs
+sente hooks trust     # allow this project's hooks
+sente hooks untrust   # stop allowing them
+```
+
+Trust is stored per file in `~/.local/state/sente/hooks-trust.json` together with a fingerprint of the hooks. If the hooks change (for example after `git pull`), they stop running until you trust them again. In CI you can set `SENTE_TRUST_PROJECT_HOOKS=1`. With `--pure`, config hooks are not run at all.
+
+---
+
+## Differences from Claude Code
+
+- Tool names are Sente's (`bash`, `edit`, `read`, …); Claude Code names work in matchers.
+- `Stop` cannot continue the turn: exit 2 / `decision: "block"` is logged and ignored. There is no `SubagentStop`; `UserPromptSubmit`, `SessionStart` and `Stop` skip subagent sessions, `PreToolUse`/`PostToolUse` run for them too.
+- `permissionDecision: "allow"` / `"ask"` do not change permission prompts; only `"deny"` has an effect.
+- `SessionStart` fires before the first prompt of a session in the current process; its source is only `startup` or `resume` (no `clear`/`compact`).
+- `transcript_path` is empty. `PreCompact`, `SessionEnd` and `type: "prompt"` hooks are ignored.
+- `PostToolUse` does not run when a tool fails.
+- Project hooks need `sente hooks trust`.
