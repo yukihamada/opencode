@@ -17,6 +17,7 @@ import { FSUtil } from "@sente-ai/core/fs-util"
 import { Plugin } from "../../src/plugin"
 import { testEffect } from "../lib/effect"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { BackgroundJob } from "@/background/job"
 
 const it = testEffect(
   Layer.mergeAll(
@@ -29,6 +30,7 @@ const it = testEffect(
         Config.node,
         Agent.node,
         RuntimeFlags.node,
+        BackgroundJob.node,
       ]),
     ),
     testInstanceStoreLayer,

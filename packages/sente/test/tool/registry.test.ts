@@ -109,6 +109,13 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("exposes wait so timed-out background shell commands can be collected", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      expect(yield* registry.ids()).toContain("wait")
+    }),
+  )
+
   it.instance("does not expose execute unless code mode is enabled", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service

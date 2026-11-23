@@ -8,9 +8,12 @@ export const Parameters = Schema.Struct({
   repo: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/))),
   run: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9]+$/))),
   attempt: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
-  job: Schema.optional(Schema.String),
+  job: Schema.optional(Schema.String).annotate({
+    description: 'Required for kind "job": the job ID to wait for, e.g. the one a timed-out bash command returned.',
+  }),
   timeout: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3600 }))).annotate({
-    description: "Wait budget in seconds (default 570, maximum 3600). Returns pending on timeout; do not automatically retry.",
+    description:
+      "Wait budget in seconds (default 570, maximum 3600). Returns pending on timeout; do not automatically retry.",
   }),
 })
 
@@ -26,7 +29,7 @@ export const WaitTool = Tool.define(
     const shell = yield* ShellTool
     return {
       description:
-        "Wait once for a known GitHub Actions run or an existing job owned by this session, without model polling. GitHub uses the installed te wait CLI and existing shell permissions; do not auto-retry on timeout/error. Exit 0 confirms the workflow attempt, not its deliverable. Jobs return completed/error/cancelled or pending. Does not start, retry, cancel or deploy work. For a new local command use bash with an adequate timeout instead. Background tasks already notify automatically; use this only when the result is now required.",
+        "Wait once for a known GitHub Actions run or an existing job owned by this session (a background task, or a bash command that outlived its timeout), without model polling. GitHub uses the installed te wait CLI and existing shell permissions; do not auto-retry on timeout/error. Exit 0 confirms the workflow attempt, not its deliverable. Jobs return completed/error/cancelled or pending. Does not start, retry, cancel or deploy work. For a new local command use bash with an adequate timeout instead. Background tasks already notify automatically; use this only when the result is now required.",
       parameters: Parameters,
       execute: (
         params: Schema.Schema.Type<typeof Parameters>,
@@ -51,7 +54,9 @@ export const WaitTool = Tool.define(
             }
           }
           if (!params.job || params.repo || params.run || params.attempt)
-            throw new Error("kind=job requires only job and optional timeout")
+            throw new Error(
+              'kind=job requires the "job" parameter (the job ID, e.g. "job_…") and accepts only an optional timeout besides it',
+            )
           const job = yield* jobs.get(params.job)
           if (!job || (job.metadata?.parentSessionId !== ctx.sessionID && job.metadata?.sessionId !== ctx.sessionID)) {
             throw new Error("Job not found in this session")
@@ -72,7 +77,9 @@ export const WaitTool = Tool.define(
               status,
               output: result.info?.output,
               error: result.info?.error,
-              ...(result.timedOut ? { note: "Wait budget exhausted; job still running. Do not automatically retry." } : {}),
+              ...(result.timedOut
+                ? { note: "Wait budget exhausted; job still running. Do not automatically retry." }
+                : {}),
             }),
           }
         }),

@@ -51,6 +51,8 @@ export class Service extends ConfigService.Service<Service>()("@sente/RuntimeFla
   experimentalIconDiscovery: enabledByExperimental("SENTE_EXPERIMENTAL_ICON_DISCOVERY"),
   outputTokenMax: positiveInteger("SENTE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"),
   bashDefaultTimeoutMs: positiveInteger("SENTE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
+  // A shell command still running at its timeout moves to the background instead of being killed.
+  shellTimeoutBackground: Config.boolean("SENTE_SHELL_TIMEOUT_BACKGROUND").pipe(Config.withDefault(true)),
   experimentalNativeLlm: bool("SENTE_EXPERIMENTAL_NATIVE_LLM"),
   experimentalWebSockets: bool("SENTE_EXPERIMENTAL_WEBSOCKETS"),
   client: Config.string("SENTE_CLIENT").pipe(Config.withDefault("cli")),

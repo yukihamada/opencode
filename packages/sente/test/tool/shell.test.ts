@@ -20,6 +20,7 @@ import { Plugin } from "../../src/plugin"
 import { testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { BackgroundJob } from "@/background/job"
 import { InstanceStore } from "@/project/instance-store"
 
 const shellLayer = Layer.mergeAll(
@@ -32,6 +33,7 @@ const shellLayer = Layer.mergeAll(
       Config.node,
       Agent.node,
       RuntimeFlags.node,
+      BackgroundJob.node,
     ]),
   ),
   testInstanceStoreLayer,
@@ -1053,7 +1055,7 @@ describe("tool.shell abort", () => {
           expect(result.output).toContain("shell tool terminated command after exceeding timeout")
           expect(result.output).toContain("retry with a larger timeout value in milliseconds")
         }),
-      ),
+      ).pipe(Effect.provide(RuntimeFlags.layer({ shellTimeoutBackground: false }))),
     15_000,
   )
 
@@ -1073,7 +1075,7 @@ describe("tool.shell abort", () => {
           )
           expect(result.output).toContain("exceeding timeout 500 ms")
         }),
-      ).pipe(Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 500 }))),
+      ).pipe(Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 500, shellTimeoutBackground: false }))),
     15_000,
   )
 

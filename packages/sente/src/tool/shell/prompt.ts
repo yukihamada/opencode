@@ -270,8 +270,20 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
   }
 }
 
-export function render(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number) {
+export function render(
+  name: string,
+  platform: NodeJS.Platform,
+  limits: Limits,
+  defaultTimeoutMs: number,
+  background = false,
+) {
   const selected = profile(name, platform, limits, defaultTimeoutMs)
+  const commandSection = background
+    ? selected.commandSection.replace(
+        `commands will time out after ${defaultTimeoutMs}ms.`,
+        `commands time out after ${defaultTimeoutMs}ms. A command still running at its timeout is not killed: it moves to the background and you get a job ID. Get its result with the wait tool (kind "job"); do not start another copy while it runs.`,
+      )
+    : selected.commandSection
   return {
     description: renderPrompt(DESCRIPTION, {
       intro: selected.intro,
@@ -279,7 +291,7 @@ export function render(name: string, platform: NodeJS.Platform, limits: Limits, 
       shell: name,
       tmp: Global.Path.tmp,
       workdirSection: selected.workdirSection,
-      commandSection: selected.commandSection,
+      commandSection,
       gitCommands: selected.gitCommands,
       toolName: ShellID.ToolID,
       gitCommandRestriction: selected.gitCommandRestriction,
