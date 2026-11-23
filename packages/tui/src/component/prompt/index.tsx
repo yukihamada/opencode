@@ -78,7 +78,7 @@ import { stopSpeaking } from "../../util/voice"
 import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
-import { formatKeySequence, SENTE_BASE_MODE, useBindings, useKeymapSelector, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
+import { formatKeySequence, SENTE_BASE_MODE, useBindings, useKeymapSelector, useCommandShortcut, useCommandSlashes, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
@@ -198,6 +198,7 @@ export function Prompt(props: PromptProps) {
   const kv = useKV()
   const language = useLanguage()
   const loop = useOptionalLoop()
+  const commandSlashes = useCommandSlashes()
   const usageMode = useUsageMode()
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
   const list = createMemo(() => props.placeholders?.normal ?? [])
@@ -1589,40 +1590,43 @@ export function Prompt(props: PromptProps) {
       dialog.replace(() => <DialogLoop />)
       return true
     }
+    // 対象を省いた stop / resume は、開いている会話のループ全件が対象。
     if (command.type === "stop") {
-      toast.show({ variant: "info", message: t.stopped(loop.stop(command.target).length) })
+      toast.show({ variant: "info", message: t.stopped(loop.stop(command.target, props.sessionID).length) })
       return true
     }
     if (command.type === "resume") {
-      toast.show({ variant: "info", message: t.resumed(loop.resume(command.target).length) })
+      const result = loop.resume(command.target, props.sessionID)
+      toast.show({
+        variant: result.waiting.length ? "warning" : "info",
+        message: [result.resumed.length || !result.waiting.length ? t.resumed(result.resumed.length) : "", result.waiting.length ? t.waiting(result.waiting.length) : ""]
+          .filter(Boolean)
+          .join("\n"),
+      })
       return true
     }
     if (command.type === "invalid") {
       toast.show({ variant: "error", message: `${t.invalid[command.reason]}\n${t.usage}` })
       return false
     }
-    if (!props.sessionID) {
-      toast.show({ variant: "error", message: t.needSession })
-      return false
-    }
-    const model = local.model.current()
-    if (!model) {
-      toast.show({ variant: "error", message: t.needModel })
-      return false
-    }
-    // 手元の画面操作のスラッシュコマンド(/mode 等)は送っても意味がないので断る。
-    const slash = /^\/(\S+)/.exec(command.prompt)
-    if (slash && !sync.data.command.some((item) => item.name === slash[1])) {
-      toast.show({ variant: "error", message: t.localCommand })
-      return false
-    }
-    const result = loop.start({
-      target: { sessionID: props.sessionID, agent, model, variant: local.model.variant.current() },
-      prompt: command.prompt,
-      interval: command.interval,
-      maxRuns: command.maxRuns,
-      expiresIn: command.expiresIn,
+    const prepared = Loop.prepareStart(command, {
+      sessionID: props.sessionID,
+      agent,
+      model: local.model.current(),
+      variant: local.model.variant.current(),
+      serverCommands: sync.data.command.map((item) => item.name),
+      localCommands: [
+        "mode",
+        "v",
+        "loop",
+        ...commandSlashes().flatMap((entry) => [entry.display, ...(entry.aliases ?? [])].map((name) => name.slice(1))),
+      ],
     })
+    if ("error" in prepared) {
+      toast.show({ variant: "error", message: t[prepared.error] })
+      return false
+    }
+    const result = loop.start(prepared.input)
     if (!result.item) {
       toast.show({ variant: "error", message: t.limit })
       return false
@@ -1637,11 +1641,19 @@ export function Prompt(props: PromptProps) {
       variant: "info",
       message: [
         command.rounded ? t.rounded : "",
-        t.started(result.item.id, Loop.formatInterval(result.item.interval), result.item.maxRuns, until),
+        command.capped.length ? t.capped(command.capped) : "",
+        t.started({
+          id: result.item.id,
+          every: Loop.formatInterval(result.item.interval),
+          runs: result.item.maxRuns,
+          until,
+          budget: result.item.budget,
+          model: `${prepared.input.target.model.providerID}/${prepared.input.target.model.modelID}`,
+        }),
       ]
         .filter(Boolean)
         .join("\n"),
-      duration: 8000,
+      duration: 10_000,
     })
     return true
   }
@@ -2101,7 +2113,7 @@ export function Prompt(props: PromptProps) {
               maxHeight={maxHeight()}
               onContentChange={() => {
                 const value = input.plainText
-                loop?.typed()
+                loop?.typed(value)
                 setStore("prompt", "input", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()
@@ -2418,7 +2430,7 @@ export function Prompt(props: PromptProps) {
                 <text fg={theme.accent}>(new working copy)</text>
               </box>
             </Match>
-            <Match when={!props.hint && loop?.status()}>
+            <Match when={!props.hint && props.sessionID && loop?.status(props.sessionID)}>
               {(label) => (
                 <box marginLeft={1}>
                   <text fg={theme.accent} wrapMode="none">

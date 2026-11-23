@@ -2,6 +2,7 @@ import { createSignal, onCleanup, useContext } from "solid-js"
 import { createSimpleContext } from "./helper"
 import { useSync } from "./sync"
 import { useSDK } from "./sdk"
+import { useEvent } from "./event"
 import { useToast } from "../ui/toast"
 import { useLanguage } from "./language"
 import { Loop } from "../util/loop"
@@ -14,24 +15,22 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
   init: () => {
     const sync = useSync()
     const sdk = useSDK()
+    const event = useEvent()
     const toast = useToast()
     const language = useLanguage()
     const text = () => loopText(language.current())
     const [version, setVersion] = createSignal(0)
     const [now, setNow] = createSignal(Date.now())
-    const typed = { at: undefined as number | undefined }
-    const timer = { id: undefined as ReturnType<typeof setInterval> | undefined }
+    let typedAt: number | undefined
+    let timer: ReturnType<typeof setInterval> | undefined
+    // 費用確認(request_cost)の依頼ID → 会話。回答が来たら承認/拒否をループへ伝える。
+    const costRequests = new Map<string, string>()
 
     const manager = Loop.create({
       now: () => Date.now(),
-      session: (sessionID) => {
-        const status = sync.data.session_status[sessionID]
-        return {
-          busy: status !== undefined && status.type !== "idle",
-          costGate: (sync.data.permission[sessionID] ?? []).some((request) => request.permission === "request_cost"),
-        }
-      },
-      lastTyped: () => typed.at,
+      session: (sessionID) => Loop.sessionState(sync.data, sessionID),
+      cost: (sessionID) => Loop.sessionSpend({ sessions: sync.data.session, messages: sync.data.message }, sessionID),
+      lastTyped: () => typedAt,
       send: (item) =>
         sendPrompt(sdk.client, {
           sessionID: item.target.sessionID,
@@ -45,14 +44,16 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
         }),
       notify: (event) => {
         const t = text()
-        if (event.type === "paused")
+        if (event.type === "paused" && !event.repeat)
           toast.show({
             variant: "warning",
-            message: event.reason === "cost" ? t.pausedCost(event.item.id) : t.pausedError(event.item.id),
-            duration: 10_000,
+            message: event.reason === "cost" ? t.pausedCost(event.items.map((item) => item.id)) : t.pausedError(event.items[0].id),
+            duration: 12_000,
           })
+        if (event.type === "resumed" && event.auto)
+          toast.show({ variant: "info", message: t.autoResumed(event.items.map((item) => item.id)) })
         if (event.type === "finished" && event.reason !== "stopped")
-          toast.show({ variant: "info", message: t.finished(event.item.id, event.reason) })
+          toast.show({ variant: "info", message: t.finished(event.item.id, event.reason, event.item.spent), duration: 8000 })
       },
       change: () => {
         setVersion((value) => value + 1)
@@ -62,48 +63,65 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
 
     function schedule() {
       const active = manager.list().length > 0
-      if (active && timer.id === undefined)
-        timer.id = setInterval(() => {
+      if (active && timer === undefined)
+        timer = setInterval(() => {
           setNow(Date.now())
           manager.tick()
         }, 1000)
-      if (!active && timer.id !== undefined) {
-        clearInterval(timer.id)
-        timer.id = undefined
+      if (!active && timer !== undefined) {
+        clearInterval(timer)
+        timer = undefined
       }
     }
 
+    const unsubscribe = [
+      event.on("permission.asked", (event) => {
+        if (event.properties.permission === Loop.COST_PERMISSION)
+          costRequests.set(event.properties.id, event.properties.sessionID)
+      }),
+      event.on("permission.replied", (event) => {
+        const sessionID = costRequests.get(event.properties.requestID)
+        if (!sessionID) return
+        costRequests.delete(event.properties.requestID)
+        manager.costReply(sessionID, event.properties.reply !== "reject")
+      }),
+    ]
+
     onCleanup(() => {
-      if (timer.id !== undefined) clearInterval(timer.id)
+      unsubscribe.forEach((off) => off())
+      if (timer !== undefined) clearInterval(timer)
       manager.clear()
     })
 
     return {
       text,
-      /** 入力欄が変わったら呼ぶ。直後の数秒はループの送信を控える。 */
-      typed() {
-        typed.at = Date.now()
+      /** 毎秒更新される現在時刻(ループがある間だけ進む)。一覧の残り時間表示に使う。 */
+      now,
+      /** 入力欄が変わったら呼ぶ。書きかけがある間は送信を控え、空になったら(送信・消去)すぐ解除する。 */
+      typed(value: string) {
+        typedAt = value.trim() ? Date.now() : undefined
       },
-      list() {
+      list(sessionID?: string) {
         version()
-        return manager.list()
+        return manager.list(sessionID)
       },
-      /** フッター用: 件数と次回までの残り。 */
-      status() {
+      /** フッター用: 開いている会話のループ件数・次回までの残り・累計費用・停止理由。 */
+      status(sessionID: string) {
         version()
-        const items = manager.list()
+        const items = manager.list(sessionID)
         if (items.length === 0) return undefined
-        const next = manager.next()
-        return text().footer(items.length, next === undefined ? undefined : Loop.countdown(next - now()))
+        const next = manager.next(sessionID)
+        const spent = items.reduce((sum, item) => sum + item.spent, 0)
+        const paused = items.find((item) => item.pauseReason)?.pauseReason
+        return text().footer(items.length, next === undefined ? undefined : Loop.countdown(next - now()), spent, paused)
       },
       start(input: Parameters<typeof manager.start>[0]) {
         const result = manager.start(input)
-        // 初回は登録直後に送る。
-        if (result.item) setTimeout(() => manager.tick(), 0)
+        if (result.item) setNow(Date.now())
         return result
       },
-      stop: (target: string) => manager.stop(target),
-      resume: (target: string) => manager.resume(target),
+      stop: (target: string | undefined, sessionID?: string) => manager.stop(target, sessionID),
+      resume: (target: string | undefined, sessionID?: string) => manager.resume(target, sessionID),
     }
   },
 })
