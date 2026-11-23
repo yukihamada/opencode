@@ -13,8 +13,13 @@ import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionBtw } from "@/session/btw"
+import { LLM } from "@/session/llm"
+import { Provider } from "@/provider/provider"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
+import { ProviderV2 } from "@sente-ai/core/provider"
+import { ModelV2 } from "@sente-ai/core/model"
 import { NamedError } from "@sente-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
@@ -23,6 +28,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import {
+  BtwPayload,
   CommandPayload,
   DiffQuery,
   ForkPayload,
@@ -60,6 +66,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
+    const llm = yield* LLM.Service
+    const provider = yield* Provider.Service
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
       const directory = ctx.query.directory ? yield* InstanceState.directory : undefined
@@ -292,6 +300,46 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    // Read-only side question. It only reads the latest messages and never
+    // touches run state, so it works while the main prompt is still running.
+    const btw = Effect.fn("SessionHttpApi.btw")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof BtwPayload.Type
+    }) {
+      const info = yield* requireSession(ctx.params.sessionID)
+      const question = ctx.payload.question.trim()
+      if (!question) return yield* new HttpApiError.BadRequest({})
+      const messages = yield* SessionError.mapStorageNotFound(
+        session.messages({ sessionID: ctx.params.sessionID, limit: SessionBtw.MESSAGE_LIMIT }),
+      )
+      const main =
+        SessionBtw.mainModel(messages) ??
+        (info.model ? { providerID: info.model.providerID, modelID: info.model.id } : undefined) ??
+        (yield* provider.defaultModel().pipe(Effect.catch(() => Effect.succeed(undefined))))
+      // An explicit model wins; otherwise the cheap small model (config
+      // `small_model`) of the session's provider, then the main model itself.
+      const lookup = (providerID: ProviderV2.ID, modelID: ModelV2.ID) =>
+        provider.getModel(providerID, modelID).pipe(Effect.map(Option.some), Effect.catch(() => Effect.succeed(Option.none())))
+      const chosen =
+        ctx.payload.providerID && ctx.payload.modelID
+          ? yield* lookup(ctx.payload.providerID, ctx.payload.modelID)
+          : Option.none<Provider.Model>()
+      const small = Option.isNone(chosen) && main ? yield* provider.getSmallModel(main.providerID) : undefined
+      const model = Option.isSome(chosen)
+        ? chosen.value
+        : (small ?? (main ? Option.getOrUndefined(yield* lookup(main.providerID, main.modelID)) : undefined))
+      if (!model)
+        return {
+          text: "",
+          providerID: "",
+          modelID: "",
+          cost: 0,
+          tokens: { input: 0, output: 0 },
+          error: "No model is available for side questions. Connect a provider first.",
+        }
+      return yield* SessionBtw.ask({ session: info, messages, question, model, stream: llm.stream })
+    })
+
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
@@ -428,6 +476,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("share", share)
       .handle("unshare", unshare)
       .handle("summarize", summarize)
+      .handle("btw", btw)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
       .handle("command", command)

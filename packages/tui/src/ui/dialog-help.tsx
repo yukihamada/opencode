@@ -70,6 +70,16 @@ export function DialogHelp() {
       <box flexDirection="column" gap={0}>
         <For each={rows}>{(row) => <Row command={row.command} label={row.label} state={row.state} />}</For>
       </box>
+      <box flexDirection="row" gap={2}>
+        <box width={14} flexShrink={0}>
+          <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+            /btw 質問
+          </text>
+        </box>
+        <box flexGrow={1}>
+          <text fg={theme.text}>作業を止めずに横から質問(履歴に残らない・/side も可)</text>
+        </box>
+      </box>
       <box paddingTop={1}>
         <text fg={theme.textMuted} wrapMode="word">
           {commandShortcut()} で全ての操作を検索できます。{useCommandShortcut("which-key.toggle")()} でキー一覧パネルを

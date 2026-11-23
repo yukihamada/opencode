@@ -2552,6 +2552,18 @@ export type NotFoundError = {
   }
 }
 
+export type SessionBtwAnswer = {
+  text: string
+  providerID: string
+  modelID: string
+  cost: number
+  tokens: {
+    input: number
+    output: number
+  }
+  error?: string
+}
+
 export type TextPartInput = {
   id?: string
   type: "text"
@@ -10142,6 +10154,44 @@ export type SessionSummarizeResponses = {
 }
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
+
+export type SessionBtwData = {
+  body?: {
+    question: string
+    providerID?: string
+    modelID?: string
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/btw"
+}
+
+export type SessionBtwErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionBtwError = SessionBtwErrors[keyof SessionBtwErrors]
+
+export type SessionBtwResponses = {
+  /**
+   * Side answer
+   */
+  200: SessionBtwAnswer
+}
+
+export type SessionBtwResponse = SessionBtwResponses[keyof SessionBtwResponses]
 
 export type SessionPromptAsyncData = {
   body?: {
