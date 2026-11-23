@@ -28,6 +28,7 @@ import { INTERACTIVE_INPUT_ERROR, readRunStdin, resolveInteractiveStdin } from "
 import { ExitCode, diagnostic, exitCodeForError } from "../exit-code"
 import { Unattended } from "@/permission/unattended"
 import { ShellSandbox } from "@/tool/shell/sandbox"
+import { ShellBackground } from "@/tool/shell/background"
 import { ShellID } from "@/tool/shell/id"
 
 type ModelInput = Parameters<SenteClient["session"]["prompt"]>[0]["model"]
@@ -963,6 +964,24 @@ export const RunCommand = effectCmd({
         await share(client, sessionID)
 
         if (!interactive) {
+          // Mark the session as driven by a one-shot run (on the server too, under --attach): a shell
+          // command that outlives its timeout then tells the model to wait for it before finishing.
+          const runSession = sessionID
+          const marked = async (on: boolean) => {
+            if (!runSession) return
+            const current = await client.session.get({ sessionID: runSession }).catch(() => undefined)
+            const metadata: Record<string, unknown> = { ...current?.data?.metadata }
+            if (on) metadata[ShellBackground.ONE_SHOT] = true
+            else delete metadata[ShellBackground.ONE_SHOT]
+            await client.session.update({ sessionID: runSession, metadata }).catch(() => undefined)
+          }
+          await marked(true)
+          // The run is over: drop the marker and, on a remote server (which outlives this process),
+          // stop any background command left behind. Locally, disposing the instance stops them.
+          async function release() {
+            await marked(false)
+            if (args.attach && runSession) await client.session.abort({ sessionID: runSession }).catch(() => undefined)
+          }
           const events = await client.event.subscribe()
           const completed = loop(client, events).catch((e) => {
             console.error(e)
@@ -988,6 +1007,7 @@ export const RunCommand = effectCmd({
           }
           async function finish() {
             const result = await completed
+            await release()
             if (result?.error) process.exitCode = result.code ?? ExitCode.Other
             await record(
               result?.error ? "error" : "completed",
@@ -1009,6 +1029,7 @@ export const RunCommand = effectCmd({
               const code = exitCodeForError(result.error)
               if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
               process.exitCode = code
+              await release()
               await record("error", formatRunError(result.error), typeof code === "number" ? code : 1)
               return
             }
@@ -1028,6 +1049,7 @@ export const RunCommand = effectCmd({
             const code = exitCodeForError(result.error)
             if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
             process.exitCode = code
+            await release()
             await record("error", formatRunError(result.error), typeof code === "number" ? code : 1)
             return
           }

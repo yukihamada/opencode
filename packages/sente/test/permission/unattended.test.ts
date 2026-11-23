@@ -98,6 +98,13 @@ describe("unattended.decide — builtin read-only policy", () => {
     }
   })
 
+  test("allows waiting on this session's background shell jobs, not GitHub waits", () => {
+    expect(
+      Unattended.decide(policy, { permission: "wait", patterns: ["job_20aad2e90001aopM7zsRxkIgnG"] }, ctx).allow,
+    ).toBe(true)
+    expect(Unattended.decide(policy, { permission: "wait", patterns: ["owner/repo/123"] }, ctx).allow).toBe(false)
+  })
+
   test("refuses writes, network, tasks and MCP tools", () => {
     for (const permission of ["edit", "webfetch", "websearch", "task", "doom_loop", "external_directory", "atsm_log"]) {
       const verdict = Unattended.decide(policy, { permission, patterns: ["*"] }, ctx)

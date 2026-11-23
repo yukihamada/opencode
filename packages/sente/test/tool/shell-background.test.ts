@@ -15,6 +15,8 @@ import { Plugin } from "../../src/plugin"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { ShellTool } from "../../src/tool/shell"
 import type { TaskPromptOps } from "../../src/tool/task"
+import { JobWaitTool } from "../../src/tool/wait"
+import { ShellBackground } from "../../src/tool/shell/background"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -286,6 +288,8 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
           const result = yield* execute({ command: "sleep 0.5", timeout: 100 }, { ...ctx, extra: { promptOps: ops } })
           expect(result.output).not.toContain("notified automatically")
           expect(result.output).toContain("wait tool")
+          expect(result.output).toContain("call it again until the job has finished")
+          expect(result.output).toContain("SENTE_SHELL_TIMEOUT_BACKGROUND=0")
           yield* jobs.wait({ id: (result.metadata as { jobId?: string }).jobId!, timeout: 10_000 })
         }).pipe(provideInstance(dir))
         yield* Effect.promise(() => Bun.sleep(200))
@@ -294,5 +298,294 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
         expect(prompted).toBe(0)
       }),
     20_000,
+  )
+
+  const recorder = () => {
+    const prompts: string[] = []
+    const ops = {
+      cancel: () => Effect.void,
+      resolvePromptParts: () => Effect.succeed([]),
+      prompt: (input: { parts: { type: string; text?: string }[] }) =>
+        Effect.sync(() => {
+          prompts.push(input.parts.map((part) => part.text ?? "").join(""))
+          return {} as never
+        }),
+    } as unknown as TaskPromptOps
+    return { prompts, ops }
+  }
+  const interactive = <A, E, R>(self: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env.SENTE_NONINTERACTIVE
+        delete process.env.SENTE_NONINTERACTIVE
+        return previous
+      }),
+      () => self,
+      (previous) =>
+        Effect.sync(() => {
+          if (previous !== undefined) process.env.SENTE_NONINTERACTIVE = previous
+        }),
+    )
+  const waitTool = (args: { job: string; timeout?: number; stop?: boolean }, next: Tool.Context = ctx) =>
+    JobWaitTool.pipe(
+      Effect.flatMap((info) => info.init()),
+      Effect.flatMap((tool) => tool.execute(args, next)),
+    )
+
+  it.live(
+    "stops grandchildren too when the job is cancelled",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const marker = `${dir}/grandchild`
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const result = yield* execute({ command: `sleep 41 & echo $! > ${marker}; sleep 40`, timeout: 300 })
+          const grandchild = Number((yield* Effect.promise(() => Bun.file(marker).text())).trim())
+          expect(alive(grandchild)).toBe(true)
+          yield* jobs.cancel((result.metadata as { jobId?: string }).jobId!)
+          expect(yield* gone(grandchild)).toBe(true)
+        }).pipe(provideInstance(dir))
+      }),
+    20_000,
+  )
+
+  it.live(
+    "output past the size limit after the handover is spilled to the file, not lost",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const result = yield* execute({
+            command: "sleep 0.6; head -c 300000 /dev/zero | tr '\\0' a; echo; echo TAIL_MARK",
+            timeout: 200,
+          })
+          const meta = result.metadata as { jobId?: string; outputPath?: string }
+          const done = yield* jobs.wait({ id: meta.jobId!, timeout: 10_000 })
+          expect(done.info?.output).toContain("Full output saved to")
+          expect(done.info?.output).toContain("TAIL_MARK")
+          const saved = yield* Effect.promise(() => Bun.file(meta.outputPath!).text())
+          expect(saved.length).toBeGreaterThanOrEqual(300_000)
+          expect(saved).toContain("TAIL_MARK")
+        }).pipe(provideInstance(dir))
+      }),
+    20_000,
+  )
+
+  it.live(
+    "the real wait tool returns the result, and the session is then not notified a second time",
+    () =>
+      interactive(
+        Effect.gen(function* () {
+          const dir = yield* tmpdirScoped()
+          const rec = recorder()
+          const next = { ...ctx, extra: { promptOps: rec.ops } }
+          yield* Effect.gen(function* () {
+            const result = yield* execute({ command: "sleep 0.8; echo WAITED", timeout: 200 }, next)
+            const job = (result.metadata as { jobId?: string }).jobId!
+            const waited = yield* waitTool({ job, timeout: 10 }, next)
+            const body = JSON.parse(waited.output)
+            expect(body.status).toBe("completed")
+            expect(body.output).toContain("WAITED")
+            expect(body.output).toContain("Exit code: 0")
+          }).pipe(provideInstance(dir))
+          yield* Effect.promise(() => Bun.sleep(300))
+          expect(rec.prompts).toHaveLength(0)
+        }),
+      ),
+    20_000,
+  )
+
+  it.live(
+    "a wait that runs out (pending) still lets the finished job be announced",
+    () =>
+      interactive(
+        Effect.gen(function* () {
+          const dir = yield* tmpdirScoped()
+          const rec = recorder()
+          const next = { ...ctx, extra: { promptOps: rec.ops } }
+          yield* Effect.gen(function* () {
+            const result = yield* execute({ command: "sleep 1.6; echo LATE", timeout: 200 }, next)
+            const job = (result.metadata as { jobId?: string }).jobId!
+            const waited = JSON.parse((yield* waitTool({ job, timeout: 1 }, next)).output)
+            expect(waited.status).toBe("pending")
+            expect(waited.note).toContain("notified")
+            expect(ShellBackground.shouldNotify(job)).toBe(true)
+          }).pipe(provideInstance(dir))
+          const until = Date.now() + 5_000
+          while (rec.prompts.length === 0 && Date.now() < until) yield* Effect.promise(() => Bun.sleep(20))
+          expect(rec.prompts).toHaveLength(1)
+          expect(rec.prompts[0]).toContain("LATE")
+        }),
+      ),
+    20_000,
+  )
+
+  it.live(
+    "a failing background command is announced with its exit code",
+    () =>
+      interactive(
+        Effect.gen(function* () {
+          const dir = yield* tmpdirScoped()
+          const rec = recorder()
+          yield* execute(
+            { command: "sleep 0.5; echo broken >&2; exit 3", timeout: 150 },
+            { ...ctx, extra: { promptOps: rec.ops } },
+          ).pipe(provideInstance(dir))
+          const until = Date.now() + 5_000
+          while (rec.prompts.length === 0 && Date.now() < until) yield* Effect.promise(() => Bun.sleep(20))
+          expect(rec.prompts).toHaveLength(1)
+          expect(rec.prompts[0]).toContain("Exit code: 3")
+          expect(rec.prompts[0]).toContain("broken")
+        }),
+      ),
+    20_000,
+  )
+
+  it.live(
+    "a one-shot session (marker set by sente run, also over --attach) and a subagent must wait in-turn",
+    () =>
+      interactive(
+        Effect.gen(function* () {
+          const dir = yield* tmpdirScoped()
+          const jobs = yield* BackgroundJob.Service
+          for (const session of [{ metadata: { [ShellBackground.ONE_SHOT]: true } }, { parentID: "ses_parent" }]) {
+            const rec = recorder()
+            yield* Effect.gen(function* () {
+              const result = yield* execute(
+                { command: "sleep 0.4", timeout: 100 },
+                { ...ctx, extra: { promptOps: rec.ops, session } },
+              )
+              expect(result.output).toContain("This session ends when you finish your reply")
+              expect(result.output).not.toContain("notified automatically")
+              const job = (result.metadata as { jobId?: string }).jobId!
+              expect((yield* jobs.get(job))?.metadata?.mustWait).toBe(true)
+              yield* jobs.wait({ id: job, timeout: 10_000 })
+            }).pipe(provideInstance(dir))
+            yield* Effect.promise(() => Bun.sleep(150))
+            expect(rec.prompts).toHaveLength(0)
+          }
+        }),
+      ),
+    20_000,
+  )
+
+  it.live(
+    "wait on a one-shot job that is still running says to call it again",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        yield* Effect.gen(function* () {
+          const result = yield* execute(
+            { command: "sleep 1.8", timeout: 100 },
+            { ...ctx, extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: true } } } },
+          )
+          const job = (result.metadata as { jobId?: string }).jobId!
+          const first = JSON.parse((yield* waitTool({ job, timeout: 1 })).output)
+          expect(first.status).toBe("pending")
+          expect(first.note).toContain("Call wait again")
+          expect(first.note).not.toContain("Do not automatically retry")
+          const second = JSON.parse((yield* waitTool({ job, timeout: 10 })).output)
+          expect(second.status).toBe("completed")
+        }).pipe(provideInstance(dir))
+      }),
+    20_000,
+  )
+
+  it.live(
+    "wait with stop: true stops the job by its ID",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        yield* Effect.gen(function* () {
+          const result = yield* execute({ command: "sleep 40", timeout: 100 })
+          const meta = result.metadata as { jobId?: string; pid?: number }
+          expect(result.output).toContain("stop: true")
+          expect(result.output).not.toContain("kill -TERM")
+          const stopped = JSON.parse((yield* waitTool({ job: meta.jobId!, stop: true })).output)
+          expect(stopped.status).toBe("cancelled")
+          expect(yield* gone(meta.pid!)).toBe(true)
+        }).pipe(provideInstance(dir))
+      }),
+    20_000,
+  )
+
+  it.live(
+    "the wait tool refuses another session's job",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        yield* Effect.gen(function* () {
+          const result = yield* execute({ command: "sleep 0.5", timeout: 100 })
+          const job = (result.metadata as { jobId?: string }).jobId!
+          const exit = yield* waitTool({ job }, { ...ctx, sessionID: SessionID.make("ses_someone_else") }).pipe(
+            Effect.exit,
+          )
+          expect(exit._tag).toBe("Failure")
+        }).pipe(provideInstance(dir))
+      }),
+    20_000,
+  )
+
+  it.live(
+    "a background command is stopped at the lifetime limit",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const result = yield* execute({ command: "trap '' TERM; sleep 40", timeout: 100 })
+          const meta = result.metadata as { jobId?: string; pid?: number }
+          const done = yield* jobs.wait({ id: meta.jobId!, timeout: 10_000 })
+          expect(done.info?.status).toBe("completed")
+          expect(done.info?.output).toContain("limit set by SENTE_SHELL_BACKGROUND_MAX_MS")
+          expect(yield* gone(meta.pid!)).toBe(true)
+        }).pipe(provideInstance(dir), flags({ shellBackgroundMaxMs: 500 }))
+      }),
+    20_000,
+  )
+
+  it.live(
+    "past the per-session limit a timed-out command is stopped instead of piling up",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const first = yield* execute({ command: "sleep 40", timeout: 100 })
+          expect((first.metadata as { background?: boolean }).background).toBe(true)
+          const second = yield* execute({ command: "sleep 40", timeout: 100 })
+          expect((second.metadata as { background?: boolean }).background).toBeUndefined()
+          expect(second.output).toContain("already running in the background in this session")
+          expect(second.output).toContain("shell tool terminated command")
+          yield* jobs.cancel((first.metadata as { jobId?: string }).jobId!)
+        }).pipe(provideInstance(dir), flags({ shellBackgroundMaxJobs: 1 }))
+      }),
+    20_000,
+  )
+
+  it.live(
+    "a command finishing right around the deadline never ends up reported as stopped",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          for (const delay of ["0.36", "0.38", "0.40", "0.42"]) {
+            const result = yield* execute({ command: `sleep ${delay}; echo DONE_${delay}`, timeout: 300 })
+            const meta = result.metadata as { background?: boolean; jobId?: string }
+            expect(result.output).not.toContain("terminated command")
+            if (!meta.background) {
+              expect(result.metadata.exit).toBe(0)
+              expect(result.output).toContain(`DONE_${delay}`)
+              continue
+            }
+            const done = yield* jobs.wait({ id: meta.jobId!, timeout: 10_000 })
+            expect(done.info?.output).toContain(`DONE_${delay}`)
+          }
+        }).pipe(provideInstance(dir))
+      }),
+    30_000,
   )
 })

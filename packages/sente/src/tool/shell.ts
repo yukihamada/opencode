@@ -1,4 +1,4 @@
-import { Effect, Exit, Fiber, Scope, Semaphore, Stream } from "effect"
+import { Effect, Exit, Fiber, Option, Scope, Semaphore, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -15,6 +15,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@sente-ai/core/shell"
 import { ShellID } from "./shell/id"
 import { ShellSandbox } from "./shell/sandbox"
+import { ShellBackground } from "./shell/background"
 import { Unattended } from "@/permission/unattended"
 import { BackgroundJob } from "@/background/job"
 import { SecretRedact } from "./secret-redact"
@@ -605,13 +606,35 @@ export const ShellTool = Tool.define(
               timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),
             ])
 
-            if (exit.kind === "timeout" && input.background) {
+            // A command that exited right at the deadline is simply done, not a background job.
+            const lapsed = exit.kind === "timeout" && (yield* handle.isRunning)
+            const settled =
+              exit.kind === "timeout" && !lapsed
+                ? {
+                    kind: "exit" as const,
+                    code: yield* handle.exitCode.pipe(Effect.catch(() => Effect.succeed(null))),
+                  }
+                : exit
+            const maxJobs = flags.shellBackgroundMaxJobs ?? ShellBackground.DEFAULT_MAX_JOBS
+            const crowded =
+              lapsed &&
+              input.background &&
+              (yield* jobs.list()).filter(
+                (job) =>
+                  job.type === ShellID.ToolID && job.status === "running" && job.metadata?.sessionId === ctx.sessionID,
+              ).length >= maxJobs
+
+            if (lapsed && input.background && !crowded) {
               // Uninterruptible from here until the job owns the process, so an interrupt cannot orphan it.
               return yield* Effect.uninterruptible(
                 Effect.gen(function* () {
                   yield* lock.withPermits(1)(spill())
                   detached = true
                   const pid = Number(handle.pid)
+                  const known = Number.isInteger(pid) && pid > 0
+                  const session = ctx.extra?.session as { parentID?: string; metadata?: Record<string, unknown> }
+                  const mustWait = ShellBackground.mustWait(session)
+                  const maxMs = flags.shellBackgroundMaxMs ?? ShellBackground.DEFAULT_MAX_MS
                   const info = yield* jobs.start({
                     type: ShellID.ToolID,
                     title: input.command,
@@ -620,27 +643,43 @@ export const ShellTool = Tool.define(
                       background: true,
                       command: input.command,
                       outputPath: file,
-                      pid,
+                      mustWait,
+                      ...(known ? { pid } : {}),
                     },
                     run: Effect.gen(function* () {
-                      const code = yield* handle.exitCode.pipe(Effect.catch(() => Effect.succeed(null)))
+                      const finished = yield* handle.exitCode.pipe(
+                        Effect.catch(() => Effect.succeed(null)),
+                        Effect.timeoutOption(maxMs),
+                      )
+                      // Past the lifetime cap: stop it like a timeout used to.
+                      if (Option.isNone(finished))
+                        yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.ignore)
+                      const code = Option.getOrNull(finished)
                       // Let the reader drain what the process wrote last (bounded: a grandchild may hold the pipe).
                       yield* Fiber.await(reader).pipe(Effect.timeoutOption("1 second"))
                       yield* closeSink()
-                      const result = yield* format(code, [])
+                      const result = yield* format(
+                        code,
+                        Option.isNone(finished)
+                          ? [
+                              `Stopped after running ${Math.round(maxMs / 60_000)} minutes in the background (limit set by SENTE_SHELL_BACKGROUND_MAX_MS).`,
+                            ]
+                          : [],
+                      )
                       return SecretRedact.redact(
                         `Exit code: ${code ?? "none (terminated by a signal)"}\n\n${result.output}`,
                       )
                     }).pipe(Effect.ensuring(Scope.close(owner, Exit.void).pipe(Effect.andThen(closeSink())))),
                   })
                   const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
-                  // A one-shot `sente run` has nobody to read a follow-up turn; it waits with the wait tool instead.
-                  const notify = ops !== undefined && process.env.SENTE_NONINTERACTIVE !== "1"
-                  if (notify)
+                  // Only an interactive top-level session reads a follow-up turn; the others wait in-turn.
+                  if (ops && !mustWait)
                     yield* jobs.wait({ id: info.id }).pipe(
                       Effect.flatMap((done) => {
                         const state = done.info?.status
                         if (state !== "completed" && state !== "error") return Effect.void
+                        // A wait call already handed the result to the model.
+                        if (!ShellBackground.shouldNotify(info.id)) return Effect.void
                         return ops.prompt({
                           sessionID: ctx.sessionID,
                           agent: ctx.agent,
@@ -661,12 +700,14 @@ export const ShellTool = Tool.define(
                       Effect.ignore,
                       Effect.forkIn(scope, { startImmediately: true }),
                     )
-                  const stop = process.platform === "win32" ? `taskkill /pid ${pid} /T /F` : `kill -TERM -${pid}`
                   const result = yield* format(null, [
-                    `The command did not finish within its timeout of ${input.timeout} ms. It was NOT killed: it keeps running in the background as job ${info.id} (PID ${pid}).`,
+                    `The command did not finish within its timeout of ${input.timeout} ms. It was NOT killed: it keeps running in the background as job ${info.id}${known ? ` (PID ${pid})` : ""}.`,
                     `Output keeps streaming to: ${file}`,
-                    `Get its exit code and output with the wait tool: kind "job", job "${info.id}".${notify ? " You will also be notified automatically when it finishes." : ""}`,
-                    `Do not start another copy while it is running. To stop it: ${stop}`,
+                    mustWait
+                      ? `This session ends when you finish your reply, and the command is stopped then. Before you finish, call the wait tool with job "${info.id}"; if it returns pending, call it again until the job has finished.`
+                      : "You will be notified automatically when it finishes. Wait for that notification instead of checking on it; if you have nothing else to do now, end your reply.",
+                    `Do not start another copy while it is running. To stop it early, call the wait tool with job "${info.id}" and stop: true.`,
+                    "(Setting SENTE_SHELL_TIMEOUT_BACKGROUND=0 turns this off: timed-out commands are then stopped.)",
                   ])
                   return {
                     title: input.command,
@@ -677,7 +718,7 @@ export const ShellTool = Tool.define(
                       outputPath: file,
                       background: true,
                       jobId: info.id,
-                      pid,
+                      ...(known ? { pid } : {}),
                     },
                     output: result.output,
                   }
@@ -685,17 +726,22 @@ export const ShellTool = Tool.define(
               )
             }
 
-            if (exit.kind === "abort") {
+            if (settled.kind === "abort") {
               aborted = true
               yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
             }
-            if (exit.kind === "timeout") {
+            if (lapsed) {
               expired = true
               yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
             }
 
-            const code: number | null = exit.kind === "exit" ? exit.code : null
+            const code: number | null = settled.kind === "exit" ? settled.code : null
             const meta: string[] = []
+            if (crowded) {
+              meta.push(
+                `${maxJobs} timed-out commands are already running in the background in this session, so this one was stopped instead of joining them. Wait for or stop one of them first.`,
+              )
+            }
             if (expired) {
               meta.push(
                 `shell tool terminated command after exceeding timeout ${input.timeout} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,

@@ -684,6 +684,9 @@ OpenCode can be configured using environment variables.
 | ------------------------------------- | ------- | ------------------------------------------------- |
 | `SENTE_AUTO_SHARE`                 | boolean | Automatically share sessions                      |
 | `SENTE_GIT_BASH_PATH`              | string  | Path to Git Bash executable on Windows            |
+| `SENTE_SHELL_TIMEOUT_BACKGROUND` | boolean | A bash command still running at its timeout moves to the background instead of being stopped (default `true`; `0` restores stopping it) |
+| `SENTE_SHELL_BACKGROUND_MAX_MS` | number  | How long such a background command may keep running, in ms (default 3600000) |
+| `SENTE_SHELL_BACKGROUND_MAX_JOBS` | number  | How many such commands may run at once per session (default 4) |
 | `SENTE_CONFIG`                     | string  | Path to config file                               |
 | `SENTE_TUI_CONFIG`                 | string  | Path to TUI config file                           |
 | `SENTE_CONFIG_DIR`                 | string  | Path to config directory                          |

@@ -671,8 +671,13 @@ function scrollBashProgress(p: ToolProps<typeof BashTool>): string {
 }
 
 function scrollBashFinal(p: ToolProps<typeof BashTool>): string {
-  const code = p.metadata.exit ?? num(p.frame.meta.exitCode) ?? num(p.frame.meta.exit_code)
   const time = span(p.frame.state)
+  // Timed out and moved to the background: still running, not completed.
+  if (p.frame.meta.background === true) {
+    const job = typeof p.frame.meta.jobId === "string" ? ` (job ${p.frame.meta.jobId})` : ""
+    return `bash running in background${job}${time ? ` · ${time}` : ""}`
+  }
+  const code = p.metadata.exit ?? num(p.frame.meta.exitCode) ?? num(p.frame.meta.exit_code)
   if (code === undefined) {
     if (!time) {
       return "bash completed"
@@ -1270,9 +1275,11 @@ export function toolFrame(commit: StreamCommit, raw: string): ToolFrame {
 }
 
 function runBash(p: ToolProps<typeof BashTool>): ToolInline {
+  const background = p.frame.status === "completed" && p.frame.meta.background === true
+  const job = typeof p.frame.meta.jobId === "string" ? ` (job ${p.frame.meta.jobId})` : ""
   return {
     icon: "$",
-    title: p.input.command || "",
+    title: background ? `${p.input.command || ""} · running in background${job}` : p.input.command || "",
     mode: "block",
     body: p.frame.status === "completed" ? text(p.frame.state.output).trim() : undefined,
   }

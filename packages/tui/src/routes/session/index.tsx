@@ -2170,6 +2170,12 @@ function Shell(props: ToolProps) {
             <Show when={collapsed().overflow}>
               <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
             </Show>
+            <Show when={props.part.state.status === "completed" && props.metadata.background === true}>
+              <text fg={theme.warning}>
+                Running in background
+                {stringValue(props.metadata.jobId) ? ` (job ${stringValue(props.metadata.jobId)})` : ""}
+              </text>
+            </Show>
           </box>
         </BlockTool>
       </Match>
