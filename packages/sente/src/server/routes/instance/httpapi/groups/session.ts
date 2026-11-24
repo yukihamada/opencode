@@ -8,6 +8,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionBtw } from "@/session/btw"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
@@ -67,6 +68,23 @@ export const SummarizePayload = Schema.Struct({
   modelID: ModelV2.ID,
   auto: Schema.optional(Schema.Boolean),
 })
+const BtwModel = Schema.Struct({ providerID: ProviderV2.ID, modelID: ModelV2.ID })
+export const BtwPayload = Schema.Struct({
+  question: Schema.String.check(Schema.isMinLength(1)),
+  /** Answer with exactly this model; an error if it does not exist. */
+  model: Schema.optional(BtwModel),
+  /** The model currently selected in the client; its provider's small model answers by default. */
+  main: Schema.optional(BtwModel),
+  /** The user approved crossing the session's cost limit for this one call. */
+  approve: Schema.optional(Schema.Boolean),
+})
+export const BtwSpendQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  since: Schema.NumberFromString,
+})
+export const BtwSpend = Schema.Struct({ usd: Schema.Finite, partial: Schema.Boolean }).annotate({
+  identifier: "SessionBtwSpend",
+})
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
@@ -92,6 +110,8 @@ export const SessionPaths = {
   share: `${root}/:sessionID/share`,
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
+  btw: `${root}/:sessionID/btw`,
+  btwSpend: `${root}/btw-spend`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
@@ -127,6 +147,17 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.status",
             summary: "Get session status",
             description: "Retrieve the current status of all sessions, including active, idle, and completed states.",
+          }),
+        ),
+        HttpApiEndpoint.get("btwSpend", SessionPaths.btwSpend, {
+          query: BtwSpendQuery,
+          success: described(BtwSpend, "Side question spend"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.btwSpend",
+            summary: "Side question spend",
+            description:
+              "Total /btw side-question cost recorded since a time, across all sessions of the project (old sessions included).",
           }),
         ),
         HttpApiEndpoint.get("get", SessionPaths.get, {
@@ -311,6 +342,20 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.summarize",
             summary: "Summarize session",
             description: "Generate a concise summary of the session using AI compaction to preserve key information.",
+          }),
+        ),
+        HttpApiEndpoint.post("btw", SessionPaths.btw, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: BtwPayload,
+          success: described(SessionBtw.Answer, "Side answer"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.btw",
+            summary: "Ask a side question",
+            description:
+              "Answer a quick side question (/btw) from the session's recent context with a separate, tool-less model request. The answer is not added to the session and a running prompt is not interrupted.",
           }),
         ),
         HttpApiEndpoint.post("prompt", SessionPaths.prompt, {

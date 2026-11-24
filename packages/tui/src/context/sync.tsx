@@ -580,6 +580,20 @@ export const {
         query() {
           return sessionListQuery()
         },
+        /** Inserts or replaces one session (e.g. re-read after a /btw cost, which emits no session event). */
+        put(info: Session) {
+          const match = search(store.session, info.id, (s) => s.id)
+          if (match.found) {
+            setStore("session", match.index, reconcile(info))
+            return
+          }
+          setStore(
+            "session",
+            produce((draft) => {
+              draft.splice(match.index, 0, info)
+            }),
+          )
+        },
         async refresh() {
           const list = await listSessions()
           setStore("session", reconcile(list))

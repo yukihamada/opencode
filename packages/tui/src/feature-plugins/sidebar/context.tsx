@@ -3,7 +3,7 @@ import type { TuiPlugin, TuiPluginApi } from "@sente-ai/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo, createSignal, onCleanup, Show } from "solid-js"
 import { CREDITS_PER_USD } from "../../util/account-credits"
-import { sessionCostWithSubagents } from "../../util/spend"
+import { sessionCostWithSubagents, sideCost } from "../../util/spend"
 
 const id = "internal:sidebar-context"
 
@@ -42,7 +42,7 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   // Older plugin hosts expose only `get`, in which case the parent total is the best we have.
   const cost = createMemo(() => {
     const sessions = props.api.state.session.list?.()
-    if (!sessions) return session()?.cost ?? 0
+    if (!sessions) return (session()?.cost ?? 0) + sideCost(session())
     return sessionCostWithSubagents({ sessionID: props.session_id, sessions })
   })
   const parts = (id: string) => props.api.state.part?.(id) ?? []

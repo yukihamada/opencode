@@ -18,11 +18,44 @@ export function yen(usd: number) {
 }
 
 type SpendMessage = { role: string; cost?: number; time: { created: number } }
-type SpendSession = { id: string; cost?: number; time: { created: number; updated: number } }
+type SpendSession = {
+  id: string
+  cost?: number
+  time: { created: number; updated: number }
+  metadata?: Record<string, unknown>
+}
 type SpendSessionTree = SpendSession & { parentID?: string }
 
 function cost(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+/**
+ * `/btw` side answers are not messages. The server records their cost in the
+ * session metadata (`btw_spend: { total, recent: [{ usd, time }] }`), and every
+ * total below adds it.
+ */
+export const SIDE_SPEND_KEY = "btw_spend"
+
+function side(session: SpendSession | undefined) {
+  const value = session?.metadata?.[SIDE_SPEND_KEY]
+  if (typeof value !== "object" || value === null) return { total: 0, recent: [] as { usd: number; time: number }[] }
+  const total = "total" in value && typeof value.total === "number" ? cost(value.total) : 0
+  const recent =
+    "recent" in value && Array.isArray(value.recent)
+      ? value.recent.filter(
+          (item): item is { usd: number; time: number } =>
+            typeof item === "object" && item !== null && typeof item.usd === "number" && typeof item.time === "number",
+        )
+      : []
+  return { total, recent }
+}
+
+/** Recorded /btw cost of a session, all of it or only since `since`. */
+export function sideCost(session: SpendSession | undefined, since?: number) {
+  const spend = side(session)
+  if (since === undefined) return spend.total
+  return spend.recent.reduce((sum, item) => sum + (item.time >= since ? cost(item.usd) : 0), 0)
 }
 
 /** Local midnight of the day `now` falls in. */
@@ -80,12 +113,14 @@ export function turnCostWithSubagents(input: {
   const start = own.findLastIndex((message) => message.role === "user")
   if (start < 0) return undefined
   const since = own[start]!.time.created
-  const total = turnCost(own) ?? 0
+  const find = (id: string) => input.sessions.find((session) => session.id === id)
+  const total = (turnCost(own) ?? 0) + sideCost(find(input.sessionID), since)
   return descendantIDs(input.sessions, input.sessionID).reduce((sum, id) => {
     const loaded = input.messages[id]
-    if (!loaded) return sum + cost(input.sessions.find((session) => session.id === id)?.cost)
+    if (!loaded) return sum + cost(find(id)?.cost) + sideCost(find(id), since)
     return (
       sum +
+      sideCost(find(id), since) +
       loaded.reduce(
         (inner, message) =>
           inner + (message.role === "assistant" && message.time.created >= since ? cost(message.cost) : 0),
@@ -100,15 +135,17 @@ export function sessionCostWithSubagents(input: {
   sessionID: string
   sessions: readonly SpendSessionTree[]
 }) {
-  const own = input.sessions.find((session) => session.id === input.sessionID)?.cost
+  const find = (id: string) => input.sessions.find((session) => session.id === id)
+  const own = find(input.sessionID)
   return descendantIDs(input.sessions, input.sessionID).reduce(
-    (sum, id) => sum + cost(input.sessions.find((session) => session.id === id)?.cost),
-    cost(own),
+    (sum, id) => sum + cost(find(id)?.cost) + sideCost(find(id)),
+    cost(own?.cost) + sideCost(own),
   )
 }
 
 /**
- * Today's spend across the sessions this screen knows about.
+ * Today's model spend across the sessions this screen knows about (without
+ * /btw side answers; add `session.btwSpend` from the server for those).
  *
  * - started today: the session total is all today's.
  * - started earlier, messages loaded: only the calls made since midnight.
@@ -124,6 +161,8 @@ export function todayCost(input: {
   let usd = 0
   let partial = false
   for (const session of input.sessions) {
+    // /btw costs are not counted here: the server totals them for the whole
+    // project (`session.btwSpend`), including sessions too old for this list.
     if (session.time.updated < since) continue
     if (session.time.created >= since) {
       usd += cost(session.cost)

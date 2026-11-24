@@ -38,7 +38,8 @@ import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@sente-ai/core/global"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Effect, Layer, Option, Context, Schema, Semaphore, Types } from "effect"
+import { SideSpend } from "./side-spend"
 import { NonNegativeInt, optional } from "@sente-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@sente-ai/core/provider"
@@ -428,6 +429,28 @@ export interface Interface {
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
+  /**
+   * Adds one /btw side answer's cost to the session metadata, atomically with
+   * other metadata writes. Does not touch `time.updated`, so a side question
+   * does not reorder the session list.
+   */
+  readonly addSideSpend: (input: { sessionID: SessionID; usd: number; time: number }) => Effect.Effect<void, NotFound>
+  /**
+   * /btw cost recorded since `since` across every session of the project,
+   * including sessions too old for the client's session list.
+   */
+  readonly sideSpendSince: (input: { projectID: string; since: number }) => Effect.Effect<{ usd: number; partial: boolean }>
+  /**
+   * Text and tool parts created before `before` whose stored data contains any
+   * of `terms`, newest first, at most `limit`. Matching runs in SQL (LIKE on
+   * the session's parts) so a long session is never loaded into memory.
+   */
+  readonly searchParts: (input: {
+    sessionID: SessionID
+    before: number
+    terms: readonly string[]
+    limit: number
+  }) => Effect.Effect<{ time: number; part: SessionV1.Part }[]>
   readonly setAgentModel: (input: {
     sessionID: SessionID
     agent: string
@@ -697,7 +720,7 @@ const layer: Layer.Layer<
         path: sessionPath(ctx.worktree, ctx.directory),
         workspaceID: original.workspaceID,
         title,
-        metadata: structuredClone(original.metadata),
+        metadata: structuredClone(SideSpend.drop(original.metadata)),
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
@@ -731,7 +754,12 @@ const layer: Layer.Layer<
       return session
     })
 
-    const patch = (sessionID: SessionID, info: Patch) =>
+    // Every row write that goes through `patch` (read the row, publish the whole
+    // row) and every /btw cost write share this lock, so neither can drop the
+    // other's change to the metadata.
+    const metadataLock = Semaphore.makeUnsafe(1)
+
+    const patchUnlocked = (sessionID: SessionID, info: Patch) =>
       Effect.gen(function* () {
         const current = yield* get(sessionID)
         const next = {
@@ -746,6 +774,8 @@ const layer: Layer.Layer<
         yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
       })
 
+    const patch = (sessionID: SessionID, info: Patch) => metadataLock.withPermits(1)(patchUnlocked(sessionID, info))
+
     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
       yield* patch(sessionID, { time: { updated: Date.now() } }).pipe(Effect.orDie)
     })
@@ -759,7 +789,98 @@ const layer: Layer.Layer<
     })
 
     const setMetadata = Effect.fn("Session.setMetadata")(function* (input: typeof SetMetadataInput.Type) {
-      yield* patch(input.sessionID, { metadata: input.metadata, time: { updated: Date.now() } }).pipe(Effect.orDie)
+      yield* metadataLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* get(input.sessionID)
+          yield* patchUnlocked(input.sessionID, {
+            metadata: SideSpend.keep(input.metadata, current.metadata),
+            time: { updated: Date.now() },
+          })
+        }),
+      ).pipe(Effect.orDie)
+    })
+
+    // Updates only metadata.btw_spend in SQL (json_set), never the rest of the
+    // row: cost/tokens written concurrently by the running prompt stay intact,
+    // and time.updated is untouched so the session list keeps its order.
+    const addSideSpend = Effect.fn("Session.addSideSpend")(function* (input: {
+      sessionID: SessionID
+      usd: number
+      time: number
+    }) {
+      if (!(Number.isFinite(input.usd) && input.usd > 0)) return
+      yield* metadataLock.withPermits(1)(
+        Effect.gen(function* () {
+          const row = yield* db
+            .select({ metadata: SessionTable.metadata })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, input.sessionID))
+            .get()
+            .pipe(Effect.orDie)
+          if (!row) return yield* new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+          const next = SideSpend.add(row.metadata ?? undefined, input.usd, input.time)[SideSpend.KEY]
+          yield* db
+            .update(SessionTable)
+            .set({
+              metadata: sql`json_set(coalesce(${SessionTable.metadata}, '{}'), ${"$." + SideSpend.KEY}, json(${JSON.stringify(next)}))`,
+              // Keep it: the column's $onUpdate would otherwise bump it.
+              time_updated: sql`${SessionTable.time_updated}`,
+            })
+            .where(eq(SessionTable.id, input.sessionID))
+            .run()
+            .pipe(Effect.orDie)
+        }),
+      )
+    })
+
+    const sideSpendSince = Effect.fn("Session.sideSpendSince")(function* (input: { projectID: string; since: number }) {
+      const rows = yield* db
+        .select({ metadata: SessionTable.metadata })
+        .from(SessionTable)
+        .where(
+          and(
+            eq(SessionTable.project_id, input.projectID as SessionRow["project_id"]),
+            sql`json_extract(${SessionTable.metadata}, ${"$." + SideSpend.KEY + ".total"}) > 0`,
+          ),
+        )
+        .all()
+        .pipe(Effect.orDie)
+      return rows.reduce(
+        (acc, row) => {
+          const part = SideSpend.since(row.metadata ?? undefined, input.since)
+          return { usd: acc.usd + part.usd, partial: acc.partial || part.partial }
+        },
+        { usd: 0, partial: false },
+      )
+    })
+
+    const searchParts = Effect.fn("Session.searchParts")(function* (input: {
+      sessionID: SessionID
+      before: number
+      terms: readonly string[]
+      limit: number
+    }) {
+      if (input.terms.length === 0 || input.limit <= 0) return []
+      const escape = (term: string) => "%" + term.replace(/[\\%_]/g, (char) => "\\" + char) + "%"
+      const rows = yield* db
+        .select({ id: PartTable.id, message_id: PartTable.message_id, session_id: PartTable.session_id, time: PartTable.time_created, data: PartTable.data })
+        .from(PartTable)
+        .where(
+          and(
+            eq(PartTable.session_id, input.sessionID),
+            lt(PartTable.time_created, input.before),
+            sql`json_extract(${PartTable.data}, '$.type') in ('text', 'tool')`,
+            or(...input.terms.map((term) => sql`${PartTable.data} like ${escape(term)} escape '\\'`)),
+          ),
+        )
+        .orderBy(desc(PartTable.time_created))
+        .limit(input.limit)
+        .all()
+        .pipe(Effect.orDie)
+      return rows.map((row) => ({
+        time: row.time,
+        part: { ...row.data, id: row.id, messageID: row.message_id, sessionID: row.session_id } as SessionV1.Part,
+      }))
     })
 
     const setAgentModel = Effect.fn("Session.setAgentModel")(function* (input: {
@@ -913,6 +1034,9 @@ const layer: Layer.Layer<
       setTitle,
       setArchived,
       setMetadata,
+      addSideSpend,
+      sideSpendSince,
+      searchParts,
       setAgentModel,
       setPermission,
       setRevert,

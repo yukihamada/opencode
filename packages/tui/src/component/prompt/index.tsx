@@ -72,7 +72,9 @@ import {
   type VoiceSettings,
 } from "../../util/dictation"
 import { stopSpeaking } from "../../util/voice"
-import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
+import { spendLabel, startOfDay, todayCost, turnCostWithSubagents } from "../../util/spend"
+import { btwText, parseBtwCommand } from "../../util/btw"
+import { DialogBtw } from "../dialog-btw"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import { formatKeySequence, SENTE_BASE_MODE, useBindings, useKeymapSelector, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
@@ -285,6 +287,18 @@ export function Prompt(props: PromptProps) {
     return messages.findLast((m): m is UserMessage => m.role === "user")
   })
 
+  // /btw spend since local midnight across the project, from the server: it
+  // also covers sessions too old for the session list. Re-read after each /btw.
+  const [sideToday, setSideToday] = createSignal({ usd: 0, partial: false })
+  const refreshSideToday = () =>
+    sdk.client.session
+      .btwSpend({ since: String(startOfDay(Date.now())) })
+      .then((result) => {
+        if (result.data) setSideToday(result.data)
+      })
+      .catch(() => {})
+  onMount(() => void refreshSideToday())
+
   const usage = createMemo(() => {
     if (!props.sessionID) return
     const msg = sync.data.message[props.sessionID] ?? []
@@ -309,7 +323,10 @@ export function Prompt(props: PromptProps) {
               messages: sync.data.message,
             })
           : undefined,
-        today: todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() }),
+        today: (() => {
+          const today = todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() })
+          return { usd: today.usd + sideToday().usd, partial: today.partial || sideToday().partial }
+        })(),
       }),
     }
   })
@@ -1354,6 +1371,30 @@ export function Prompt(props: PromptProps) {
     bindings: tuiConfig.keybinds.get("prompt.voice"),
   }))
 
+  // `/btw` を入力候補から選んだら、質問を書けるように「/btw 」を入力欄に入れる。
+  useBindings(() => ({
+    enabled: !props.disabled && props.visible !== false,
+    commands: [
+      {
+        name: "prompt.btw",
+        namespace: "palette",
+        title: btwText(language.current()).command,
+        category: "Prompt",
+        slashName: "btw",
+        slashAliases: ["side"],
+        run: () => {
+          dialog.clear()
+          if (!input || input.isDestroyed) return
+          input.clear()
+          input.insertText("/btw ")
+          setStore("prompt", "input", "/btw ")
+          input.cursorOffset = Bun.stringWidth("/btw ")
+          input.focus()
+        },
+      },
+    ],
+  }))
+
   // `/v` を入力候補から選んだ時も、サーバーへ送らずここで録音を始める。
   useBindings(() => ({
     enabled: !props.disabled && props.visible !== false,
@@ -1648,6 +1689,39 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
       handleVoiceCommand(voiceCommand)
+      return true
+    }
+    // `/btw <質問>` は会話に送らず、横から別リクエストで答える(実行中でも可・履歴に残さない)。
+    const btwCommand = parseBtwCommand(trimmed)
+    if (btwCommand) {
+      const text = btwText(language.current())
+      if (btwCommand.type === "empty") {
+        toast.show({ variant: "info", message: text.usage, duration: 6000 })
+        return true
+      }
+      const sessionID = props.sessionID
+      if (!sessionID) {
+        toast.show({ variant: "warning", message: text.noSession, duration: 6000 })
+        return true
+      }
+      history.append(structuredClone(unwrap({ ...store.prompt, mode: store.mode })))
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      dialog.replace(() => (
+        <DialogBtw
+          client={sdk.client}
+          sessionID={sessionID}
+          question={btwCommand.question}
+          main={local.model.current()}
+          onDone={() => {
+            // The cost is written without a session event; re-read it for the sidebar and turn total.
+            void sdk.client.session.get({ sessionID }).then((result) => result.data && sync.session.put(result.data))
+            void refreshSideToday()
+          }}
+        />
+      ))
       return true
     }
     const selectedModel = local.model.current()

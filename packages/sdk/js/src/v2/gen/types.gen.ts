@@ -2570,11 +2570,34 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type SessionBtwSpend = {
+  usd: number
+  partial: boolean
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
     message: string
   }
+}
+
+export type SessionBtwAnswer = {
+  text: string
+  providerID: string
+  modelID: string
+  cost: number
+  tokens: {
+    input: number
+    output: number
+  }
+  fallback?: boolean
+  approval?: {
+    spent: number
+    estimate?: number
+    limit: number
+  }
+  error?: string
 }
 
 export type TextPartInput = {
@@ -9572,6 +9595,35 @@ export type SessionStatusResponses = {
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
 
+export type SessionBtwSpendData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    since: string
+  }
+  url: "/session/btw-spend"
+}
+
+export type SessionBtwSpendErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionBtwSpendError = SessionBtwSpendErrors[keyof SessionBtwSpendErrors]
+
+export type SessionBtwSpendResponses = {
+  /**
+   * Side question spend
+   */
+  200: SessionBtwSpend
+}
+
+export type SessionBtwSpendResponse = SessionBtwSpendResponses[keyof SessionBtwSpendResponses]
+
 export type SessionDeleteData = {
   body?: never
   path: {
@@ -10167,6 +10219,51 @@ export type SessionSummarizeResponses = {
 }
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
+
+export type SessionBtwData = {
+  body?: {
+    question: string
+    model?: {
+      providerID: string
+      modelID: string
+    }
+    main?: {
+      providerID: string
+      modelID: string
+    }
+    approve?: boolean
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/btw"
+}
+
+export type SessionBtwErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionBtwError = SessionBtwErrors[keyof SessionBtwErrors]
+
+export type SessionBtwResponses = {
+  /**
+   * Side answer
+   */
+  200: SessionBtwAnswer
+}
+
+export type SessionBtwResponse = SessionBtwResponses[keyof SessionBtwResponses]
 
 export type SessionPromptAsyncData = {
   body?: {
