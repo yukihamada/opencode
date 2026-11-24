@@ -54,7 +54,7 @@ import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
 import { useUsageMode } from "../dialog-mode"
 import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
-import { describeGoal, goalLabel, goalSettledNotice, parseGoalCommand, readGoal, withoutGoal } from "../../util/goal"
+import { describeGoal, goalLabel, goalSettledNotice, readGoal, showsGoalLocally } from "../../util/goal"
 import {
   backend as dictationBackend,
   buildLexicon,
@@ -1650,20 +1650,17 @@ export function Prompt(props: PromptProps) {
       setStore("extmarkToPartIndex", new Map())
       return true
     }
-    // `/goal`(表示)と `/goal clear` は手元で処理する。条件付きの `/goal …` はサーバーの goal コマンドへ。
-    const goalCommand = parseGoalCommand(trimmed)
-    if (goalCommand) {
-      const current = props.sessionID ? sync.session.get(props.sessionID) : undefined
-      const info = readGoal(current?.metadata)
-      if (goalCommand.type === "show" || !info || !props.sessionID)
-        toast.show({ variant: "info", message: describeGoal(info, language.current()), duration: 8000 })
-      else
-        void sdk.client.session
-          .update({ sessionID: props.sessionID, metadata: withoutGoal(current?.metadata) })
-          .then(() =>
-            toast.show({ variant: "info", message: language.current() === "ja" ? "ゴールを解除しました" : "Goal cleared" }),
-          )
-          .catch((error) => toast.show({ variant: "error", message: errorMessage(error) }))
+    // `/goal`(表示)は手元で出す。設定・resume・clear はサーバーの goal コマンドへ送る
+    // (clear は実行中のターンも止め、metadata は goal キーだけ更新される)。
+    const goalSession = props.sessionID ? sync.session.get(props.sessionID) : undefined
+    if (
+      showsGoalLocally(
+        trimmed,
+        sync.data.command.find((command) => command.name === "goal"),
+        Boolean(readGoal(goalSession?.metadata)),
+      )
+    ) {
+      toast.show({ variant: "info", message: describeGoal(readGoal(goalSession?.metadata), language.current()), duration: 8000 })
       history.append(structuredClone(unwrap({ ...store.prompt, mode: store.mode })))
       input.extmarks.clear()
       input.clear()

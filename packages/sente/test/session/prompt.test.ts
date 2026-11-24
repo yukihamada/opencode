@@ -54,7 +54,7 @@ import { Ripgrep } from "@sente-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { reply, TestLLMServer } from "../lib/llm-server"
+import { httpError, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { ModelV2 } from "@sente-ai/core/model"
@@ -2630,122 +2630,296 @@ noLLMServer.instance(
 )
 
 // /goal: the run loop asks a reviewer after each finished turn and either stops or sends
-// one more turn. Replies are consumed in order: work turn, review, work turn, review, …
+// one more turn. Replies are matched by request kind: work turns, reviews and titles.
+const bodyOf = (hit: { body: Record<string, unknown> }) => JSON.stringify(hit.body)
+const isReview = (hit: { body: Record<string, unknown> }) => bodyOf(hit).includes("work_log")
+const isTitle = (hit: { body: Record<string, unknown> }) => bodyOf(hit).includes("first_request")
+const isWork = (hit: { body: Record<string, unknown> }) => !isReview(hit) && !isTitle(hit)
+const reviewHits = (hits: { body: Record<string, unknown> }[]) => hits.filter(isReview)
+const workHits = (hits: { body: Record<string, unknown> }[]) => hits.filter(isWork)
+
+// The reviewer needs a small model; the test provider has only one model, so name it.
+function goalCfg(url: string, cost = { input: 0, output: 0 }) {
+  const base = providerCfg(url)
+  return {
+    ...base,
+    small_model: "test/test-model",
+    provider: {
+      ...base.provider,
+      test: {
+        ...base.provider.test,
+        models: { "test-model": { ...base.provider.test.models["test-model"], cost } },
+      },
+    },
+  }
+}
+
 const goalOf = Effect.fn("test.goalOf")(function* (sessionID: SessionID) {
   const sessions = yield* Session.Service
   return SessionGoal.read((yield* sessions.get(sessionID)).metadata)
 })
 
-const goalContinuations = (messages: SessionV1.WithParts[]) =>
-  messages.filter((message) =>
-    message.parts.some((part) => part.type === "text" && part.synthetic && SessionGoal.isGoalPart(part) && message.parts.length === 1),
+const settledNotes = (messages: SessionV1.WithParts[]) =>
+  messages.flatMap((message) =>
+    message.info.role === "assistant"
+      ? message.parts.flatMap((part) =>
+          SessionGoal.isSettledNote(part) && part.type === "text" ? [part.text] : [],
+        )
+      : [],
   )
 
-it.instance("goal stops when the reviewer says it is done", () =>
+const goalContinuations = (messages: SessionV1.WithParts[]) =>
+  messages.filter(
+    (message) =>
+      message.info.role === "user" &&
+      message.parts.length === 1 &&
+      message.parts.some((part) => part.type === "text" && part.synthetic && SessionGoal.isGoalPart(part)),
+  )
+
+type GoalLLM = { textMatch: (match: (hit: { body: Record<string, unknown> }) => boolean, value: string, opts?: { usage?: { input: number; output: number } }) => Effect.Effect<void> }
+const work = (llm: GoalLLM, text: string, usage?: { input: number; output: number }): Effect.Effect<void> =>
+  llm.textMatch(isWork, text, usage ? { usage } : undefined)
+const review = (llm: GoalLLM, text: string, usage?: { input: number; output: number }): Effect.Effect<void> =>
+  llm.textMatch(isReview, text, usage ? { usage } : undefined)
+
+const withEnv = (name: string, value: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const previous = process.env[name]
+      process.env[name] = value
+      return previous
+    }),
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env[name]
+        else process.env[name] = previous
+      }),
+  )
+
+it.instance("goal stops when the reviewer says it is done and leaves a visible note", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
 
-    yield* llm.text("all tests pass")
-    yield* llm.text("VERDICT: done\nREASON: the test output shows every test passing")
+    yield* work(llm, "all tests pass")
+    yield* review(llm, "VERDICT: done\nREASON: the test output shows every test passing\nNEXT: -")
 
     yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "make the tests pass", agent: "build" })
 
-    expect(yield* llm.calls).toBe(2)
+    const hits = yield* llm.hits
+    expect(workHits(hits)).toHaveLength(1)
+    expect(reviewHits(hits)).toHaveLength(1)
     const goal = yield* goalOf(chat.id)
     expect(goal?.status).toBe("complete")
-    expect(goal?.objective).toBe("make the tests pass")
     expect(goal?.reason).toContain("every test passing")
-    const review = (yield* llm.hits)[1]
-    expect(JSON.stringify(review?.body)).toContain("make the tests pass")
-    expect(JSON.stringify(review?.body)).toContain("all tests pass")
+    expect(bodyOf(reviewHits(hits)[0]!)).toContain("make the tests pass")
+    expect(bodyOf(reviewHits(hits)[0]!)).toContain("all tests pass")
+    const notes = settledNotes(yield* sessions.messages({ sessionID: chat.id }))
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain("every test passing")
   }),
 )
 
 it.instance("goal continues with a short reminder while the reviewer says it is not met", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
 
-    yield* llm.text("wrote the code")
-    yield* llm.text("VERDICT: continue\nREASON: no tests were run\nNEXT: run the tests")
-    yield* llm.text("ran the tests: 3 passed")
-    yield* llm.text("VERDICT: done\nREASON: 3 tests passed")
+    yield* work(llm, "wrote the code")
+    yield* review(llm, "VERDICT: continue\nREASON: no tests were run\nNEXT: run the tests")
+    yield* work(llm, "ran the tests: 3 passed")
+    yield* review(llm, "VERDICT: done\nREASON: 3 tests passed\nNEXT: -")
 
     yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "add tests", agent: "build" })
 
-    expect(yield* llm.calls).toBe(4)
-    expect((yield* goalOf(chat.id))?.status).toBe("complete")
-    expect((yield* goalOf(chat.id))?.rounds).toBe(1)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("complete")
+    expect(goal?.rounds).toBe(1)
     const reminders = goalContinuations(yield* sessions.messages({ sessionID: chat.id }))
     expect(reminders).toHaveLength(1)
     const text = reminders[0]?.parts[0]?.type === "text" ? reminders[0].parts[0].text : ""
     expect(text).toContain("add tests")
     expect(text).toContain("no tests were run")
     expect(text).toContain("run the tests")
-    // The reminder is the newest user message the next work turn sees.
-    expect(JSON.stringify((yield* llm.hits)[2]?.body)).toContain("no tests were run")
+    expect(bodyOf(workHits(yield* llm.hits)[1]!)).toContain("no tests were run")
   }),
 )
 
-it.instance("goal pauses at the round limit without paying for another review", () =>
+it.instance("goal reviews the last allowed round before stopping at the round limit", () =>
   Effect.gen(function* () {
-    const previous = process.env.SENTE_GOAL_MAX_ROUNDS
-    process.env.SENTE_GOAL_MAX_ROUNDS = "1"
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        if (previous === undefined) delete process.env.SENTE_GOAL_MAX_ROUNDS
-        else process.env.SENTE_GOAL_MAX_ROUNDS = previous
-      }),
-    )
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
 
-    yield* llm.text("step one")
-    yield* llm.text("VERDICT: continue\nREASON: step two is missing")
-    yield* llm.text("step two")
+    yield* work(llm, "step one")
+    yield* review(llm, "VERDICT: continue\nREASON: step two is missing\nNEXT: do step two")
+    yield* work(llm, "step two")
+    yield* review(llm, "VERDICT: continue\nREASON: step three is missing\nNEXT: -")
 
-    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "do both steps", agent: "build" })
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "--max-rounds 1 do both steps", agent: "build" })
 
-    expect(yield* llm.calls).toBe(3)
+    const hits = yield* llm.hits
+    expect(workHits(hits)).toHaveLength(2)
+    expect(reviewHits(hits)).toHaveLength(2)
     const goal = yield* goalOf(chat.id)
     expect(goal?.status).toBe("paused")
-    expect(goal?.rounds).toBe(1)
     expect(goal?.maxRounds).toBe(1)
+    expect(goal?.reason).toContain("step three is missing")
+  }),
+)
+
+it.instance("goal completes when the last allowed round is done", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* work(llm, "step one")
+    yield* review(llm, "VERDICT: continue\nREASON: step two is missing\nNEXT: -")
+    yield* work(llm, "step two")
+    yield* review(llm, "VERDICT: done\nREASON: both steps shown\nNEXT: -")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "--max-rounds 1 do both steps", agent: "build" })
+
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
   }),
 )
 
 it.instance("goal stops when the same missing point comes back three times", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
 
-    for (const _ of [1, 2, 3]) {
-      yield* llm.text("tried again")
-      yield* llm.text("VERDICT: continue\nREASON: the build still fails")
+    for (const reason of ["the build still fails", "The build still fails.", "the build  still fails!"]) {
+      yield* work(llm, "tried again")
+      yield* review(llm, `VERDICT: continue\nREASON: ${reason}\nNEXT: -`)
     }
 
     yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "fix the build", agent: "build" })
 
-    expect(yield* llm.calls).toBe(6)
     const goal = yield* goalOf(chat.id)
     expect(goal?.status).toBe("paused")
-    expect(goal?.reason).toContain("the build still fails")
+    expect(goal?.reason).toContain("build")
     expect(goalContinuations(yield* sessions.messages({ sessionID: chat.id }))).toHaveLength(2)
+  }),
+)
+
+it.instance("goal keeps going while a failing count falls", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    for (const count of [5, 3, 1]) {
+      yield* work(llm, "fixed some")
+      yield* review(llm, `VERDICT: continue\nREASON: ${count} tests fail\nNEXT: -`)
+    }
+    yield* work(llm, "fixed the last one")
+    yield* review(llm, "VERDICT: done\nREASON: 0 tests fail\nNEXT: -")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "fix all tests", agent: "build" })
+
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
+    expect((yield* goalOf(chat.id))?.rounds).toBe(3)
+  }),
+)
+
+it.instance("goal stops at its budget, review cost included, even when request_cost is allowed", () =>
+  Effect.gen(function* () {
+    // $1 per million tokens: each 100k-token request costs $0.10.
+    const { llm } = yield* useServerConfig((url) => ({
+      ...goalCfg(url, { input: 1, output: 1 }),
+      permission: { request_cost: "allow" },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* work(llm, "did a part", { input: 100_000, output: 0 })
+    yield* review(llm, "VERDICT: continue\nREASON: more to do\nNEXT: -", { input: 100_000, output: 0 })
+    yield* work(llm, "should not run")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "--budget 0.15 big task", agent: "build" })
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.judgeCost).toBeCloseTo(0.1, 5)
+    expect(goal?.spent).toBeCloseTo(0.2, 5)
+    expect(goal?.reason).toContain("$0.15")
+    expect(workHits(yield* llm.hits)).toHaveLength(1)
+    expect(settledNotes(yield* sessions.messages({ sessionID: chat.id }))[0]).toContain("$0.15")
+  }),
+)
+
+it.instance("goal stops between steps of one long turn once the budget is spent", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...goalCfg(url, { input: 1, output: 1 }),
+      permission: { request_cost: "allow", bash: "allow" },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.pushMatch(
+      isWork,
+      reply().tool("bash", { command: "true", description: "noop" }).usage({ input: 200_000, output: 0 }),
+    )
+    yield* work(llm, "should not run")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "--budget 0.1 big task", agent: "build" })
+
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+    expect(workHits(yield* llm.hits)).toHaveLength(1)
+    expect(reviewHits(yield* llm.hits)).toHaveLength(0)
+  }),
+)
+
+it.instance("goal stops when the cost approval is refused", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...goalCfg(url, { input: 1, output: 1 }),
+      permission: { request_cost: "deny" },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned", metadata: { cost_limit_usd: 0.000001 } })
+    yield* work(llm, "should not run")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "expensive task", agent: "build" })
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(workHits(yield* llm.hits)).toHaveLength(0)
+  }),
+)
+
+it.instance("goal stops when a turn fails", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.pushMatch(isWork, httpError(400, { error: { message: "bad request" } }))
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "task", agent: "build" }).pipe(Effect.exit)
+
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
   }),
 )
 
 it.instance("goal pauses when the user interrupts", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
@@ -2761,44 +2935,75 @@ it.instance("goal pauses when the user interrupts", () =>
     yield* Fiber.await(fiber)
 
     expect((yield* goalOf(chat.id))?.status).toBe("paused")
-    expect(yield* llm.calls).toBe(1)
   }),
 )
 
 it.instance("goal pauses instead of reviewing when the user's own message ended the turn", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
-    const goal = SessionGoal.create("ship it")
-    yield* sessions.setMetadata({ sessionID: chat.id, metadata: SessionGoal.withGoal(undefined, goal) })
-    yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text: "wait, what is the status?" }] })
-    yield* llm.text("here is the status")
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: SessionGoal.withGoal(undefined, SessionGoal.create({ objective: "ship it" })),
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "wait, what is the status?" }],
+    })
+    yield* work(llm, "here is the status")
 
     yield* prompt.loop({ sessionID: chat.id })
 
-    expect(yield* llm.calls).toBe(1)
+    expect(reviewHits(yield* llm.hits)).toHaveLength(0)
     expect((yield* goalOf(chat.id))?.status).toBe("paused")
+  }),
+)
+
+it.instance("goal keeps going after a /loop send, which is automation, not the user", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: SessionGoal.withGoal(undefined, SessionGoal.create({ objective: "ship it" })),
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "check the queue", metadata: { source: "loop", loopID: "l1" } }],
+    })
+    yield* work(llm, "queue is empty")
+    yield* review(llm, "VERDICT: done\nREASON: shipped\nNEXT: -")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
   }),
 )
 
 it.instance("goal replaces the todo follow-up instead of adding a second turn", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const todo = yield* Todo.Service
     const chat = yield* sessions.create({ title: "Pinned" })
     yield* todo.update({ sessionID: chat.id, todos: [{ content: "write docs", status: "pending", priority: "medium" }] })
 
-    yield* llm.text("done with the code")
-    yield* llm.text("VERDICT: done\nREASON: the code is in place")
+    yield* work(llm, "done with the code")
+    yield* review(llm, "VERDICT: done\nREASON: the code is in place\nNEXT: -")
 
     yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "write the code", agent: "build" })
 
     // Without the goal, an open todo would add a follow-up turn here.
-    expect(yield* llm.calls).toBe(2)
+    expect(workHits(yield* llm.hits)).toHaveLength(1)
     expect((yield* goalOf(chat.id))?.status).toBe("complete")
     const messages = yield* sessions.messages({ sessionID: chat.id })
     expect(
@@ -2806,18 +3011,18 @@ it.instance("goal replaces the todo follow-up instead of adding a second turn", 
         message.parts.some((part) => part.type === "text" && part.synthetic && part.text.includes("todowrite")),
       ),
     ).toBe(false)
-    expect(JSON.stringify((yield* llm.hits)[1]?.body)).toContain("write docs")
+    expect(bodyOf(reviewHits(yield* llm.hits)[0]!)).toContain("write docs")
   }),
 )
 
-it.instance("goal clear removes the goal and an empty /goal reports it", () =>
+it.instance("goal show and clear answer without an error, and blocked goals resume", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+    const { llm } = yield* useServerConfig(goalCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
-    yield* llm.text("partial")
-    yield* llm.text("VERDICT: blocked\nREASON: needs an API key from the user")
+    yield* work(llm, "partial")
+    yield* review(llm, "VERDICT: blocked\nREASON: needs an API key from the user\nNEXT: -")
 
     yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: '"deploy it"', agent: "build" })
     const blocked = yield* goalOf(chat.id)
@@ -2825,30 +3030,324 @@ it.instance("goal clear removes the goal and an empty /goal reports it", () =>
     expect(blocked?.objective).toBe("deploy it")
     expect(blocked?.reason).toContain("API key")
 
-    const shown = yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "", agent: "build" }).pipe(Effect.exit)
-    expect(Exit.isFailure(shown)).toBe(true)
+    const shown = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "", agent: "build" })
+      .pipe(Effect.exit)
+    expect(Exit.isSuccess(shown)).toBe(true)
 
-    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "clear", agent: "build" })
+    yield* work(llm, "deployed with the key")
+    yield* review(llm, "VERDICT: done\nREASON: deploy log shows success\nNEXT: -")
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "resume", agent: "build" })
+    const resumed = yield* goalOf(chat.id)
+    expect(resumed?.reason).toBe("deploy log shows success")
+    expect(resumed?.status).toBe("complete")
+    expect(resumed?.id).toBe(blocked?.id)
+    expect(resumed?.rounds).toBe(0)
+
+    const cleared = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "clear", agent: "build" })
+      .pipe(Effect.exit)
+    expect(Exit.isSuccess(cleared)).toBe(true)
     expect(yield* goalOf(chat.id)).toBeUndefined()
-    expect(yield* llm.calls).toBe(2)
   }),
 )
 
-it.instance("a user's own goal command adds its instructions to the goal loop", () =>
+it.instance("goal clear keeps other metadata and stops the running turn", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned", metadata: { cost_limit_usd: 2 } })
+    yield* llm.hang
+
+    const fiber = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "long task", agent: "build" })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "clear", agent: "build" })
+    yield* Fiber.await(fiber)
+
+    const info = yield* sessions.get(chat.id)
+    expect(info.metadata?.goal).toBeUndefined()
+    expect(info.metadata?.cost_limit_usd).toBe(2)
+    const status = yield* SessionStatus.Service
+    expect((yield* status.get(chat.id)).type).toBe("idle")
+  }),
+)
+
+it.instance("a user's own goal command wins and runs as a normal template", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
-      ...providerCfg(url),
+      ...goalCfg(url),
       command: { goal: { template: "House rule: verify $ARGUMENTS with a test." } },
     }))
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
-    yield* llm.text("verified")
-    yield* llm.text("VERDICT: done\nREASON: verified by a test")
+    yield* work(llm, "verified")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "the parser", agent: "build" })
+
+    expect(yield* goalOf(chat.id)).toBeUndefined()
+    expect(reviewHits(yield* llm.hits)).toHaveLength(0)
+    expect(bodyOf(workHits(yield* llm.hits)[0]!)).toContain("House rule: verify the parser with a test.")
+  }),
+)
+
+it.instance("SENTE_GOAL_LOOP=1 runs the built-in loop over a user's goal command without its text", () =>
+  Effect.gen(function* () {
+    yield* withEnv("SENTE_GOAL_LOOP", "1")
+    const { llm } = yield* useServerConfig((url) => ({
+      ...goalCfg(url),
+      command: { goal: { template: "House rule: verify $ARGUMENTS with a test." } },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* work(llm, "verified")
+    yield* review(llm, "VERDICT: done\nREASON: verified by a test\nNEXT: -")
 
     yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "the parser", agent: "build" })
 
     expect((yield* goalOf(chat.id))?.status).toBe("complete")
-    expect(JSON.stringify((yield* llm.hits)[0]?.body)).toContain("House rule: verify the parser with a test.")
+    expect(bodyOf(workHits(yield* llm.hits)[0]!)).not.toContain("House rule")
+  }),
+)
+
+it.instance("goal does not start without a small model for the reviewer", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "task", agent: "build" })
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.reason).toMatch(/small_model/)
+    expect(yield* llm.calls).toBe(0)
+  }),
+)
+
+it.instance("goal with noReply and in a subagent session never stays running", () =>
+  Effect.gen(function* () {
+    yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const child = yield* sessions.create({ title: "Child", parentID: chat.id })
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "later", agent: "build", noReply: true })
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+
+    yield* prompt.command({ sessionID: child.id, command: "goal", arguments: "task", agent: "build" })
+    expect(yield* goalOf(child.id)).toBeUndefined()
+  }),
+)
+
+it.instance("a fork does not inherit the goal", () =>
+  Effect.gen(function* () {
+    yield* useServerConfig(goalCfg)
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned", metadata: { cost_limit_usd: 2 } })
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: SessionGoal.withGoal({ cost_limit_usd: 2 }, SessionGoal.create({ objective: "ship it" })),
+    })
+    yield* user(chat.id, "hello")
+
+    const forked = yield* sessions.fork({ sessionID: chat.id })
+
+    expect(SessionGoal.read(forked.metadata)).toBeUndefined()
+    expect(forked.metadata?.cost_limit_usd).toBe(2)
+  }),
+)
+
+it.instance("a goal left active by an earlier boot is stopped, not resumed", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const stale = { ...SessionGoal.create({ objective: "ship it" }), owner: { pid: process.pid, boot: "earlier" } }
+    yield* sessions.setMetadata({ sessionID: chat.id, metadata: SessionGoal.withGoal(undefined, stale) })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "continue", synthetic: true }],
+    })
+    yield* work(llm, "ok")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.reason).toMatch(/再起動|restart/)
+    expect(reviewHits(yield* llm.hits)).toHaveLength(0)
+  }),
+)
+
+it.instance("after compaction the goal is restated after the first message, not at the tail", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    // A history with no kickoff left in it, as after a compaction summary replaced it.
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: SessionGoal.withGoal(undefined, SessionGoal.create({ objective: "ship the parser" })),
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "summary of earlier work", synthetic: true }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "carry on from the summary", synthetic: true }],
+    })
+    yield* work(llm, "shipped")
+    yield* review(llm, "VERDICT: done\nREASON: shipped\nNEXT: -")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const input = (yield* llm.inputs).find((body) => !JSON.stringify(body).includes("work_log"))
+    const messages = input?.messages
+    if (!Array.isArray(messages)) throw new Error("expected LLM messages")
+    const at = messages.findIndex((message) => JSON.stringify(message).includes("A goal is active for this session"))
+    expect(at).toBeGreaterThan(0)
+    expect(at).toBeLessThan(messages.length - 1)
+    expect(JSON.stringify(messages.at(-1))).toContain("carry on from the summary")
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
+  }),
+)
+
+it.instance("a turn that only waits on background work is not a round and the goal waits", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const background = yield* BackgroundJob.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* background.start({ type: "task", metadata: { parentSessionId: chat.id }, run: Effect.never })
+    yield* work(llm, "started a background task")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "task", agent: "build" })
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("active")
+    expect(goal?.rounds).toBe(0)
+    expect(goal?.waitingSince).toBeNumber()
+    expect(reviewHits(yield* llm.hits)).toHaveLength(0)
+  }),
+)
+
+it.instance("a new goal set while the reviewer runs is answered and not stopped", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.textMatch(isTitle, "Title")
+    yield* llm.textMatch(isTitle, "Title")
+    yield* work(llm, "first work")
+    yield* llm.pushMatch(isReview, reply().wait(deferredAsPromise(gate)).text("VERDICT: done\nREASON: first ok\nNEXT: -").stop())
+    yield* work(llm, "second work")
+    yield* review(llm, "VERDICT: done\nREASON: second ok\nNEXT: -")
+
+    const first = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "first goal", agent: "build" })
+      .pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      llm.hits.pipe(Effect.map((hits) => (reviewHits(hits).length > 0 ? true : undefined))),
+      "timed out waiting for the first review",
+    )
+    const second = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "second goal", agent: "build" })
+      .pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      goalOf(chat.id).pipe(Effect.map((goal) => (goal?.objective === "second goal" ? true : undefined))),
+      "timed out waiting for the second goal",
+    )
+    yield* Deferred.succeed(gate, void 0)
+    yield* Fiber.await(first)
+    yield* Fiber.await(second)
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.objective).toBe("second goal")
+    expect(goal?.status).toBe("complete")
+    expect(workHits(yield* llm.hits)).toHaveLength(2)
+  }),
+)
+
+it.instance("the user typing while the reviewer runs stops the goal and gets an answer", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.textMatch(isTitle, "Title")
+    yield* llm.textMatch(isTitle, "Title")
+    yield* work(llm, "first work")
+    yield* llm.pushMatch(
+      isReview,
+      reply().wait(deferredAsPromise(gate)).text("VERDICT: continue\nREASON: more\nNEXT: -").stop(),
+    )
+    yield* work(llm, "here is the status")
+
+    const run = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "long goal", agent: "build" })
+      .pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      llm.hits.pipe(Effect.map((hits) => (reviewHits(hits).length > 0 ? true : undefined))),
+      "timed out waiting for the review",
+    )
+    const id = MessageID.ascending()
+    const asked = yield* prompt
+      .prompt({ sessionID: chat.id, messageID: id, agent: "build", parts: [{ type: "text", text: "status?" }] })
+      .pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      sessions
+        .messages({ sessionID: chat.id })
+        .pipe(Effect.map((msgs) => (msgs.some((msg) => msg.info.id === id) ? true : undefined))),
+      "timed out waiting for the user message",
+    )
+    yield* Deferred.succeed(gate, void 0)
+    yield* Fiber.await(run)
+    yield* Fiber.await(asked)
+
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(goalContinuations(messages)).toHaveLength(0)
+    const answer = messages.findLast((message) => message.info.role === "assistant")
+    expect(answer?.info.role === "assistant" && answer.info.parentID).toBe(id)
+  }),
+)
+
+it.instance("goal asks the reviewer at most twice and stops on no usable verdict", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* work(llm, "did it")
+    yield* llm.pushMatch(isReview, httpError(500, { error: { message: "reviewer down" } }))
+    yield* review(llm, "Looks done to me, continue if you like.")
+    yield* review(llm, "VERDICT: done\nREASON: should never be read\nNEXT: -")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "task", agent: "build" })
+
+    expect(reviewHits(yield* llm.hits)).toHaveLength(2)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
   }),
 )

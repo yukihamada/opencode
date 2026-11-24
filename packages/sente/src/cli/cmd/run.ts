@@ -189,8 +189,12 @@ export const RunCommand = effectCmd({
       })
       .option("goal", {
         describe:
-          "keep working until this condition is met (same as /goal); bounded by --goal-max-rounds and the cost limit",
+          "keep working until a reviewer agrees this condition is met (same as /goal); stops at --goal-budget, --goal-max-rounds, a repeated gap or a blocker; exits 8 if unmet",
         type: "string",
+      })
+      .option("goal-budget", {
+        describe: "USD the goal may spend, turns and reviews together, even with --auto (default 3, or SENTE_GOAL_BUDGET_USD)",
+        type: "number",
       })
       .option("goal-max-rounds", {
         describe: "most automatic continuations for --goal (default 20, or SENTE_GOAL_MAX_ROUNDS)",
@@ -380,18 +384,24 @@ export const RunCommand = effectCmd({
         .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
         .join(" ")
 
-      // `--goal <condition>` is `--command goal <condition>`: the in-process server keeps
-      // working until a reviewer agrees the condition is met.
+      // `--goal <condition>` is `--command goal [--budget N] [--max-rounds N] <condition>`. The
+      // limits travel in the command arguments, so they reach an --attach server too.
       if (args.goal !== undefined) {
         if (args.command) die("--goal cannot be used with --command")
         if (!args.goal.trim()) die("--goal needs a condition")
-        args.command = "goal"
-        message = [args.goal, message].filter((item) => item.trim()).join("\n\n")
-      }
-      if (args["goal-max-rounds"] !== undefined) {
         const rounds = args["goal-max-rounds"]
-        if (!Number.isInteger(rounds) || rounds < 1) die("--goal-max-rounds must be a positive integer")
-        process.env.SENTE_GOAL_MAX_ROUNDS = String(rounds)
+        if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1))
+          die("--goal-max-rounds must be a positive integer")
+        const budget = args["goal-budget"]
+        if (budget !== undefined && !(Number.isFinite(budget) && budget > 0)) die("--goal-budget must be a positive amount")
+        args.command = "goal"
+        message = [
+          ...(budget !== undefined ? [`--budget ${budget}`] : []),
+          ...(rounds !== undefined ? [`--max-rounds ${rounds}`] : []),
+          [args.goal, message].filter((item) => item.trim()).join("\n\n"),
+        ].join(" ")
+      } else if (args["goal-max-rounds"] !== undefined || args["goal-budget"] !== undefined) {
+        die("--goal-max-rounds and --goal-budget need --goal")
       }
 
       if (interactive && args.command) {
@@ -876,6 +886,8 @@ export const RunCommand = effectCmd({
 
               if (part.type === "text" && part.time?.end) {
                 if (emit("text", { part })) continue
+                // The goal's closing line goes to stderr with the outcome; keep stdout the answer.
+                if (typeof part.metadata?.goal === "object") continue
                 const text = part.text.trim()
                 if (!text) continue
                 if (!process.stdout.isTTY) {
@@ -1020,6 +1032,7 @@ export const RunCommand = effectCmd({
           }
 
           if (args.command) {
+            const sent = Date.now()
             const result = await client.session.command({
               sessionID,
               agent,
@@ -1035,15 +1048,28 @@ export const RunCommand = effectCmd({
               await record("error", formatRunError(result.error), typeof code === "number" ? code : 1)
               return
             }
-            await finish()
             if (args.goal !== undefined) {
-              // Say how the goal ended: met, or stopped and why (rounds, cost approval, repeats).
+              // The command returns once the goal loop is done. Say how it ended, and exit
+              // non-zero unless the reviewer agreed the condition is met.
               const { SessionGoal } = await import("../../session/goal")
               const info = await client.session.get({ sessionID }).catch(() => undefined)
               const goal = SessionGoal.read(info?.data?.metadata)
-              if (goal && !emit("goal", { goal }))
-                process.stderr.write(SessionGoal.settledNote(goal) + EOL)
+              if (!goal) {
+                if (!emit("goal", { goal: null, message: SessionGoal.customNotice() }))
+                  process.stderr.write(SessionGoal.customNotice() + EOL)
+              } else if (!emit("goal", { goal })) process.stderr.write(SessionGoal.settledNote(goal) + EOL)
+              if (goal && goal.status !== "complete") process.exitCode = ExitCode.GoalUnmet
             }
+            // A /goal that started no turn (no reviewer model, show, clear) never makes the
+            // session busy, so no idle event would ever arrive to end the wait.
+            const ran =
+              args.command !== "goal" ||
+              (result.data?.info.role === "assistant" && result.data.info.time.created >= sent)
+            if (!ran) {
+              await record("completed", undefined, typeof process.exitCode === "number" ? process.exitCode : 0)
+              return
+            }
+            await finish()
             return
           }
 
@@ -1231,6 +1257,8 @@ export async function runMini(input: MiniCommandInput) {
     message: input.prompt ? [input.prompt] : [],
     command: undefined,
     goal: undefined,
+    "goal-budget": undefined,
+    goalBudget: undefined,
     "goal-max-rounds": undefined,
     goalMaxRounds: undefined,
     continue: input.continue,

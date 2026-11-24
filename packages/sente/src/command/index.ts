@@ -46,6 +46,9 @@ export function hints(template: string) {
   return result
 }
 
+// The TUI compares against this to tell the built-in /goal from a user's own `goal` command.
+export const GOAL_DESCRIPTION = "完了条件を満たすまで自律で続ける / keep working until a condition is met [clear|resume]"
+
 export const Default = {
   INIT: "init",
   REVIEW: "review",
@@ -131,7 +134,7 @@ const layer = Layer.effect(
       // command below takes over the description and adds its text to the kickoff.
       commands[Default.GOAL] = {
         name: Default.GOAL,
-        description: "完了条件を満たすまで自律で続ける / keep working until a condition is met [clear|resume]",
+        description: GOAL_DESCRIPTION,
         source: "command",
         template: "$ARGUMENTS",
         hints: ["$ARGUMENTS"],

@@ -8,30 +8,38 @@ import { ProviderQuota } from "@/provider/quota"
  * condition is met.
  *
  * The goal lives in the session's metadata under `goal`, so every client (TUI,
- * `sente run`, SDK) reads the same state and a `/goal clear` from any of them
- * stops the loop. When a turn ends, the run loop asks a small reviewer model
- * whether the condition is met. If not, it adds a short reminder ("goal: …
- * missing: …") as a synthetic user message and runs another turn.
+ * `sente run`, SDK) reads the same state. When a turn ends, the run loop asks a
+ * small reviewer model whether the condition is met. If not, it adds a short
+ * reminder ("goal: … missing: …") as a synthetic user message and runs another turn.
  *
- * The loop stops when the reviewer says done or blocked, after `maxRounds`
- * continuations, when the same missing point comes back MAX_REPEATS times in a
- * row, when the user types or interrupts, or when a turn ends without finishing
- * (an error, or a refused cost approval). Each continuation is an ordinary turn,
- * so the request cost limit (/cost) asks for approval exactly as it does for any
- * other turn.
+ * Stops when the reviewer says done or blocked, after `maxRounds` continuations
+ * (the last round is still reviewed), when the goal's own budget is spent (turns
+ * and reviews together, whatever the permission rules say), when the same missing
+ * point comes back MAX_REPEATS times in a row, when the user types or interrupts,
+ * and whenever the loop ends for any other reason (error, refused approval, crash).
  */
 
 export const METADATA_KEY = "goal"
 export const DEFAULT_MAX_ROUNDS = 20
 export const MAX_ROUNDS_CEILING = 200
+export const DEFAULT_BUDGET_USD = 3
 /** The same missing point this many judgments in a row means no progress. */
 export const MAX_REPEATS = 3
 export const MAX_OBJECTIVE = 4_000
 /** Reviewer input is clipped to this many characters, keeping the newest. */
 export const TRANSCRIPT_LIMIT = 24_000
+/** How long a goal may wait on background work that never reports before it stops. */
+export const DEFAULT_WAIT_LIMIT_MS = 30 * 60_000
+/** Message sources that are automation, not the user typing: they do not stop a goal. */
+export const AUTOMATED_SOURCES = new Set([METADATA_KEY, "loop", "hook"])
+
+// Identifies this process, so a goal left active by a process that is gone can be told apart.
+let processBoot: string | undefined
+export const boot = () => (processBoot ??= crypto.randomUUID())
 
 export type Status = "active" | "complete" | "paused"
 type Lang = "ja" | "en"
+type Env = Record<string, string | undefined>
 
 export type State = {
   id: string
@@ -45,6 +53,18 @@ export type State = {
   /** How many judgments in a row returned the current `reason`. */
   repeats: number
   updatedAt: number
+  /** USD this goal may spend on turns and reviews together. */
+  budget: number
+  /** The session's recorded turn cost when the goal started; turns after it count. */
+  baseCost: number
+  /** USD spent on reviews (not part of any message's cost). */
+  judgeCost: number
+  /** USD spent so far: turns since the start plus reviews. */
+  spent: number
+  /** Set while the goal waits on background work; the round does not count. */
+  waitingSince?: number
+  /** The process driving the goal. */
+  owner?: { pid: number; boot: string }
 }
 
 export type Verdict = { verdict: "done" | "continue" | "blocked"; reason: string; next?: string }
@@ -54,18 +74,50 @@ export type Decision =
   | { type: "pause"; reason: string }
   | { type: "continue"; goal: State; reason: string; next?: string }
 
-/** `SENTE_GOAL_LOOP=0` (or false/off/no) makes `/goal` a plain command again, with no loop. */
-export function enabled(env: Record<string, string | undefined> = process.env): boolean {
+/** `SENTE_GOAL_LOOP=1` makes the built-in loop win over a user's own `goal` command; `0` turns it off. */
+export function loopSetting(env: Env = process.env): "on" | "off" | "default" {
   const raw = env.SENTE_GOAL_LOOP?.trim().toLowerCase()
-  return !raw || !["0", "false", "off", "no"].includes(raw)
+  if (!raw) return "default"
+  if (["0", "false", "off", "no"].includes(raw)) return "off"
+  return "on"
+}
+
+/** Whether `/goal` runs the loop, given whether the user defined their own `goal` command. */
+export function useLoop(custom: boolean, env: Env = process.env): boolean {
+  const setting = loopSetting(env)
+  if (setting === "off") return false
+  if (setting === "on") return true
+  return !custom
 }
 
 /** `SENTE_GOAL_MAX_ROUNDS` sets how many continuations one goal may use (default 20). */
-export function maxRounds(env: Record<string, string | undefined> = process.env): number {
-  const value = Number(env.SENTE_GOAL_MAX_ROUNDS)
-  if (!Number.isInteger(value) || value < 1) return DEFAULT_MAX_ROUNDS
-  return Math.min(value, MAX_ROUNDS_CEILING)
+export function maxRounds(env: Env = process.env): number {
+  return rounds(env.SENTE_GOAL_MAX_ROUNDS) ?? DEFAULT_MAX_ROUNDS
 }
+
+function rounds(value: string | undefined) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) return undefined
+  return Math.min(parsed, MAX_ROUNDS_CEILING)
+}
+
+/** `SENTE_GOAL_BUDGET_USD` sets the default budget of one goal (default $3). */
+export function budget(env: Env = process.env): number {
+  return dollars(env.SENTE_GOAL_BUDGET_USD) ?? DEFAULT_BUDGET_USD
+}
+
+function dollars(value: string | undefined) {
+  const parsed = Number(value?.trim().replace(/^\$/, ""))
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+export function waitLimit(env: Env = process.env): number {
+  const value = Number(env.SENTE_GOAL_WAIT_LIMIT_MS)
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_WAIT_LIMIT_MS
+}
+
+const num = (value: unknown, fallback: number) =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback
 
 export function read(metadata: Record<string, unknown> | undefined): State | undefined {
   const raw = metadata?.[METADATA_KEY]
@@ -73,15 +125,24 @@ export function read(metadata: Record<string, unknown> | undefined): State | und
   const goal = raw as Partial<State>
   if (typeof goal.id !== "string" || typeof goal.objective !== "string") return undefined
   if (goal.status !== "active" && goal.status !== "complete" && goal.status !== "paused") return undefined
+  const owner = goal.owner
   return {
     id: goal.id,
     objective: goal.objective,
     status: goal.status,
-    rounds: typeof goal.rounds === "number" ? goal.rounds : 0,
-    maxRounds: typeof goal.maxRounds === "number" && goal.maxRounds > 0 ? goal.maxRounds : DEFAULT_MAX_ROUNDS,
+    rounds: num(goal.rounds, 0),
+    maxRounds: num(goal.maxRounds, 0) > 0 ? num(goal.maxRounds, 0) : DEFAULT_MAX_ROUNDS,
     reason: typeof goal.reason === "string" ? goal.reason : undefined,
-    repeats: typeof goal.repeats === "number" ? goal.repeats : 0,
-    updatedAt: typeof goal.updatedAt === "number" ? goal.updatedAt : 0,
+    repeats: num(goal.repeats, 0),
+    updatedAt: num(goal.updatedAt, 0),
+    budget: num(goal.budget, 0) > 0 ? num(goal.budget, 0) : DEFAULT_BUDGET_USD,
+    baseCost: num(goal.baseCost, 0),
+    judgeCost: num(goal.judgeCost, 0),
+    spent: num(goal.spent, 0),
+    ...(typeof goal.waitingSince === "number" ? { waitingSince: goal.waitingSince } : {}),
+    ...(owner && typeof owner.pid === "number" && typeof owner.boot === "string"
+      ? { owner: { pid: owner.pid, boot: owner.boot } }
+      : {}),
   }
 }
 
@@ -94,18 +155,44 @@ export function withGoal(metadata: Record<string, unknown> | undefined, goal: St
 }
 
 export function create(
-  objective: string,
+  input: { objective: string; budget?: number; maxRounds?: number; baseCost?: number },
   now = Date.now(),
-  env: Record<string, string | undefined> = process.env,
+  env: Env = process.env,
 ): State {
   return {
     id: crypto.randomUUID(),
-    objective,
+    objective: input.objective,
     status: "active",
     rounds: 0,
-    maxRounds: maxRounds(env),
+    maxRounds: input.maxRounds ?? maxRounds(env),
     repeats: 0,
     updatedAt: now,
+    budget: input.budget ?? budget(env),
+    baseCost: input.baseCost ?? 0,
+    judgeCost: 0,
+    spent: 0,
+    owner: { pid: process.pid, boot: boot() },
+  }
+}
+
+/**
+ * A goal left active by a process that is no longer driving it: another boot of this
+ * process id, or a process that has exited. A goal owned by another live process
+ * (a TUI next to a `sente run`) is left alone.
+ */
+export function orphaned(goal: State, alive: (pid: number) => boolean = pidAlive): boolean {
+  if (goal.status !== "active") return false
+  if (!goal.owner) return true
+  if (goal.owner.pid === process.pid) return goal.owner.boot !== boot()
+  return !alive(goal.owner.pid)
+}
+
+function pidAlive(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as { code?: string }).code === "EPERM"
   }
 }
 
@@ -113,12 +200,42 @@ export type Command =
   | { type: "show" }
   | { type: "clear" }
   | { type: "resume" }
-  | { type: "set"; objective: string }
+  | { type: "set"; objective: string; budget?: number; maxRounds?: number }
   | { type: "invalid"; reason: string }
 
-/** `/goal`, `/goal clear`, `/goal resume`, or `/goal <condition>` (quotes around the condition are dropped). */
+/**
+ * `/goal`, `/goal clear`, `/goal resume`, or `/goal [--budget $N] [--max-rounds N] <condition>`.
+ * Quotes around the condition are dropped.
+ */
 export function parse(text: string, lang: Lang = ProviderQuota.language()): Command {
-  const trimmed = unquote(text.trim())
+  let rest = text.trim()
+  const options: { budget?: number; maxRounds?: number } = {}
+  while (true) {
+    const flag = /^--(budget|max-rounds)(?:=|\s+)(\S+)\s*/.exec(rest)
+    if (!flag) break
+    if (flag[1] === "budget") {
+      const value = dollars(flag[2])
+      if (value === undefined)
+        return {
+          type: "invalid",
+          reason:
+            lang === "ja"
+              ? "--budget は正の金額です（例 --budget 3）。"
+              : "--budget must be a positive amount (e.g. --budget 3).",
+        }
+      options.budget = value
+    } else {
+      const value = rounds(flag[2])
+      if (value === undefined)
+        return {
+          type: "invalid",
+          reason: lang === "ja" ? "--max-rounds は正の整数です。" : "--max-rounds must be a positive integer.",
+        }
+      options.maxRounds = value
+    }
+    rest = rest.slice(flag[0].length)
+  }
+  const trimmed = unquote(rest.trim())
   const control = trimmed.toLowerCase()
   if (trimmed === "") return { type: "show" }
   if (["clear", "off", "stop", "cancel", "解除", "クリア"].includes(control)) return { type: "clear" }
@@ -131,13 +248,21 @@ export function parse(text: string, lang: Lang = ProviderQuota.language()): Comm
           ? `完了条件は${MAX_OBJECTIVE}文字までです（${trimmed.length}文字）。`
           : `A goal condition is limited to ${MAX_OBJECTIVE} characters (got ${trimmed.length}).`,
     }
-  return { type: "set", objective: trimmed }
+  return { type: "set", objective: trimmed, ...options }
 }
 
 export function usage(lang: Lang = ProviderQuota.language()) {
   return lang === "ja"
-    ? "使い方: /goal <完了条件> | /goal（表示） | /goal clear | /goal resume"
-    : "Usage: /goal <condition> | /goal (show) | /goal clear | /goal resume"
+    ? "使い方: /goal [--budget $N] [--max-rounds N] <完了条件> | /goal（表示） | /goal clear | /goal resume"
+    : "Usage: /goal [--budget $N] [--max-rounds N] <condition> | /goal (show) | /goal clear | /goal resume"
+}
+
+export const money = (value: number) => `$${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`
+
+export function costLine(goal: State, lang: Lang = ProviderQuota.language()) {
+  return lang === "ja"
+    ? `費用 ${money(goal.spent)} / 予算 ${money(goal.budget)}（うち判定 ${money(goal.judgeCost)}）`
+    : `cost ${money(goal.spent)} of ${money(goal.budget)} (reviews ${money(goal.judgeCost)})`
 }
 
 export function describe(goal: State | undefined, lang: Lang = ProviderQuota.language()): string {
@@ -147,44 +272,80 @@ export function describe(goal: State | undefined, lang: Lang = ProviderQuota.lan
       ? { active: "ゴール進行中", complete: "ゴール達成", paused: "ゴール停止中" }[goal.status]
       : { active: "Goal active", complete: "Goal met", paused: "Goal paused" }[goal.status]
   const progress = lang === "ja" ? `継続 ${goal.rounds}/${goal.maxRounds}回` : `${goal.rounds}/${goal.maxRounds} rounds`
-  return [`${head} (${progress}): ${goal.objective}`, goal.reason].filter(Boolean).join("\n")
+  return [`${head} (${progress}, ${costLine(goal, lang)}): ${goal.objective}`, goal.reason].filter(Boolean).join("\n")
+}
+
+/** The line left in the conversation when a goal ends. */
+export function settledNote(goal: State, lang: Lang = ProviderQuota.language()) {
+  const head =
+    goal.status === "complete"
+      ? lang === "ja"
+        ? "ゴール達成"
+        : "Goal met"
+      : goal.status === "paused"
+        ? lang === "ja"
+          ? "ゴール停止"
+          : "Goal paused"
+        : lang === "ja"
+          ? "ゴール進行中"
+          : "Goal active"
+  return `${head}: ${goal.reason ?? goal.objective}\n(${costLine(goal, lang)})`
 }
 
 /**
- * Whether the user's own message ended this turn, rather than the goal's kickoff or a
- * synthetic continuation. Typing while a goal runs takes over, so the goal stops.
+ * Whether the user's own message ended this turn, rather than the goal's kickoff, a
+ * synthetic continuation or automation (`/loop`, hooks) that marks its text part with
+ * `metadata.source`. Typing while a goal runs takes over, so the goal stops.
  */
 export function interjected(parts: ReadonlyArray<SessionV1.Part>): boolean {
-  if (parts.some((part) => isGoalPart(part))) return false
+  if (parts.some((part) => part.type === "text" && AUTOMATED_SOURCES.has(String(part.metadata?.source)))) return false
   return parts.some(
-    (part) => (part.type === "text" && !part.synthetic) || part.type === "file" || part.type === "agent",
+    (part) =>
+      (part.type === "text" && !part.synthetic && !part.ignored) || part.type === "file" || part.type === "agent",
   )
+}
+
+/** Marks the visible line a settled goal leaves on the last assistant message. */
+export function settledMetadata(goal: State) {
+  return { [METADATA_KEY]: { kind: "settled", goalID: goal.id, status: goal.status } }
+}
+
+export function isSettledNote(part: SessionV1.Part) {
+  return part.type === "text" && typeof part.metadata?.[METADATA_KEY] === "object"
 }
 
 export function isGoalPart(part: SessionV1.Part, goalID?: string): boolean {
   if (part.type !== "text") return false
-  const source = part.metadata?.source
-  if (source !== METADATA_KEY) return false
+  if (part.metadata?.source !== METADATA_KEY) return false
   return goalID === undefined || part.metadata?.goalID === goalID
 }
 
-/** Checked before paying for a judgment: a goal that has used its rounds pauses without asking. */
-export function exhausted(goal: State, lang: Lang = ProviderQuota.language()): string | undefined {
-  if (goal.rounds < goal.maxRounds) return
+function limitReason(goal: State, lang: Lang) {
   return lang === "ja"
     ? `継続の上限（${goal.maxRounds}回）に達したため停止しました。`
     : `Stopped after reaching the limit of ${goal.maxRounds} rounds.`
 }
 
-/** What to do with a reviewer verdict. Pure, so the stop conditions are testable on their own. */
+export function budgetReason(goal: State, lang: Lang = ProviderQuota.language()) {
+  return lang === "ja"
+    ? `ゴールの予算 ${money(goal.budget)} に達したため停止しました（使用 ${money(goal.spent)}）。続けるには /goal --budget で予算を増やして再設定してください。`
+    : `Stopped: the goal budget of ${money(goal.budget)} is spent (${money(goal.spent)}). Set the goal again with a larger --budget to go on.`
+}
+
+export function overBudget(goal: State) {
+  return goal.spent >= goal.budget
+}
+
+/**
+ * What to do with a reviewer verdict. Pure, so the stop conditions are testable on their
+ * own. The last allowed round is still reviewed: done wins over the round limit.
+ */
 export function decide(
   goal: State,
   verdict: Verdict | undefined,
   now = Date.now(),
   lang: Lang = ProviderQuota.language(),
 ): Decision {
-  const limit = exhausted(goal, lang)
-  if (limit) return { type: "pause", reason: limit }
   if (!verdict)
     return {
       type: "pause",
@@ -200,6 +361,8 @@ export function decide(
       reason: verdict.reason || (lang === "ja" ? "利用者の対応が必要です。" : "Needs something from the user."),
     }
   const reason = verdict.reason || (lang === "ja" ? "未達の点が不明です。" : "Not met yet.")
+  if (goal.rounds >= goal.maxRounds) return { type: "pause", reason: `${limitReason(goal, lang)} ${reason}` }
+  if (overBudget(goal)) return { type: "pause", reason: budgetReason(goal, lang) }
   const repeats = goal.reason !== undefined && sameReason(goal.reason, reason) ? goal.repeats + 1 : 1
   if (repeats >= MAX_REPEATS)
     return {
@@ -218,11 +381,13 @@ export function decide(
 }
 
 /**
- * Reviewers word the same gap a little differently each time ("tests fail" /
- * "the tests are failing"). Treat near-identical reasons as the same, so a loop that
- * makes no progress still stops.
+ * Reviewers word the same gap a little differently each time ("tests fail" / "the tests
+ * are failing"). Treat near-identical reasons as the same, so a loop that makes no
+ * progress still stops. Numbers count: "5 tests fail" then "3 tests fail" is progress.
  */
 export function sameReason(previous: string, next: string): boolean {
+  const numbers = (text: string) => (text.match(/\d+(?:\.\d+)?/g) ?? []).join(",")
+  if (numbers(previous) !== numbers(next)) return false
   const normalize = (text: string) => text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "")
   const a = normalize(previous)
   const b = normalize(next)
@@ -241,32 +406,48 @@ export function sameReason(previous: string, next: string): boolean {
 }
 
 /**
- * Small reviewer models break JSON often, so the reviewer answers in labelled lines.
- * A JSON answer is still accepted.
+ * The reviewer answers in labelled lines (small models break JSON). Only a line that is
+ * exactly `VERDICT: <one word>` counts, and the last such line wins, so prose such as
+ * "not done yet, continue" or an echoed instruction cannot read as done.
  */
 export function parseVerdict(text: string): Verdict | undefined {
-  const clean = text.replace(/<think>[\s\S]*?<\/think>/g, "")
+  const lines = text
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .split("\n")
+    .map((line) => line.trim().replace(/^[*_#>\s-]+/, ""))
   const field = (name: string) =>
-    clean.match(new RegExp(`(?:^|\\n)[\\s*_#-]*${name}[*_]*\\s*[:：]\\s*(.+)`, "i"))?.[1]?.trim() ??
-    clean.match(new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, "i"))?.[1]?.trim()
-  const verdict = field("verdict")
-    ?.toLowerCase()
-    .match(/done|continue|blocked/)?.[0] as Verdict["verdict"] | undefined
+    lines
+      .flatMap((line) => {
+        const match = new RegExp(`^${name}[*_]*\\s*[:：]\\s*(.*)$`, "i").exec(line)
+        return match ? [match[1].trim()] : []
+      })
+      .at(-1)
+  const verdict = lines
+    .flatMap((line) => {
+      const match = /^verdict[*_]*\s*[:：]\s*[*_`"']*(done|continue|blocked)[*_`"'.]*$/i.exec(line)
+      return match ? [match[1].toLowerCase() as Verdict["verdict"]] : []
+    })
+    .at(-1)
   if (!verdict) return undefined
-  // Drop markdown bold and quotes that wrap the whole value, not a backtick that opens an inline code span.
-  const strip = (value: string | undefined) => {
-    const bare = value?.replace(/^\*+|\*+$/g, "").trim()
-    const quoted = bare && /^(["'`])([\s\S]*)\1$/.exec(bare)
-    return (quoted ? quoted[2] : bare)?.trim() || undefined
-  }
   return {
     verdict,
     reason: strip(field("reason")) ?? "",
-    next: verdict === "continue" ? strip(field("next(?:_step)?")) : undefined,
+    next: verdict === "continue" ? strip(field("next")) : undefined,
   }
 }
 
-const clip = (text: string, limit: number) => (text.length > limit ? text.slice(0, limit) + "…" : text)
+// Drop markdown bold and quotes that wrap the whole value, not a backtick that opens an inline code span.
+function strip(value: string | undefined) {
+  const bare = value?.replace(/^\*+|\*+$/g, "").trim()
+  const quoted = bare && /^(["'`])([\s\S]*)\1$/.exec(bare)
+  return (quoted ? quoted[2] : bare)?.trim() || undefined
+}
+
+/** Long text keeps its start and its end: test summaries and exit codes come last. */
+export function clip(text: string, head: number, tail: number) {
+  if (text.length <= head + tail) return text
+  return `${text.slice(0, head)}\n…[${text.length - head - tail} chars omitted]…\n${text.slice(text.length - tail)}`
+}
 
 /**
  * A compact view of the work since the goal started, for the reviewer: user text,
@@ -283,18 +464,18 @@ export function transcript(
     message.parts.flatMap((part) => {
       if (message.info.role === "user") {
         if (part.type !== "text" || part.ignored) return []
-        if (isGoalPart(part)) return part.synthetic ? [] : [`[user] ${clip(part.text, 600)}`]
+        if (isGoalPart(part)) return part.synthetic ? [] : [`[user] ${clip(part.text, 400, 200)}`]
         if (part.synthetic) return []
-        return [`[user] ${clip(part.text, 1_500)}`]
+        return [`[user] ${clip(part.text, 800, 700)}`]
       }
-      if (part.type === "text" && !part.synthetic && part.text.trim())
-        return [`[assistant] ${clip(part.text.trim(), 2_000)}`]
+      if (part.type === "text" && !part.synthetic && !isGoalPart(part) && !isSettledNote(part) && part.text.trim())
+        return [`[assistant] ${clip(part.text.trim(), 800, 1_200)}`]
       if (part.type !== "tool") return []
-      const input = clip(JSON.stringify(part.state.input ?? {}), 300)
+      const input = clip(JSON.stringify(part.state.input ?? {}), 200, 100)
       if (part.state.status === "completed")
-        return [`[tool ${part.tool}] ${input}\n→ ${clip(part.state.output.trim(), 800)}`]
+        return [`[tool ${part.tool}] ${input}\n→ ${clip(part.state.output.trim(), 300, 500)}`]
       if (part.state.status === "error")
-        return [`[tool ${part.tool} failed] ${input}\n→ ${clip(part.state.error, 400)}`]
+        return [`[tool ${part.tool} failed] ${input}\n→ ${clip(part.state.error, 200, 300)}`]
       return [`[tool ${part.tool} ${part.state.status}] ${input}`]
     }),
   )
@@ -323,15 +504,11 @@ export function judgePrompt(goal: State, work: string, lang: Lang = ProviderQuot
     escape(work || "(no work yet)"),
     "</work_log>",
     "",
-    "Answer with exactly these lines and nothing else:",
-    "VERDICT: done | continue | blocked",
-    "REASON: <one line: the evidence it is met, what is still missing, or what is needed from the user>",
-    "NEXT: <one line: the next concrete step (only for continue)>",
-    "",
-    "Rules:",
-    '- "done" only when the evidence shows the whole goal is met. When in doubt, answer "continue".',
-    '- "blocked" only when the work cannot go on without the user (a decision, credentials, a manual step, an approval) or the goal is impossible. Slow progress is not blocked.',
-    `- Write REASON and NEXT in ${lang === "ja" ? "Japanese" : "English"}, short.`,
+    "Answer in exactly three lines and nothing else.",
+    "Line 1 starts with VERDICT: followed by a single word. Use done only when the evidence shows the whole goal is met; when in doubt use continue; use blocked only when the work cannot go on without the user (a decision, credentials, a manual step, an approval) or the goal is impossible. Slow progress is not blocked.",
+    "Line 2 starts with REASON: followed by one short line: the evidence it is met, what is still missing (with counts when there are any), or what is needed from the user.",
+    "Line 3 starts with NEXT: followed by the next concrete step, or a dash.",
+    `Write REASON and NEXT in ${lang === "ja" ? "Japanese" : "English"}.`,
   ].join("\n")
 }
 
@@ -366,10 +543,11 @@ export function continuation(
   next: string | undefined,
   lang: Lang = ProviderQuota.language(),
 ) {
+  const step = next && next !== "-" ? next : undefined
   const head =
     lang === "ja"
-      ? [`ゴール: ${escape(goal.objective)}`, `未達の点: ${reason}`, ...(next ? [`次の一手: ${next}`] : [])]
-      : [`Goal: ${escape(goal.objective)}`, `Not met yet: ${reason}`, ...(next ? [`Next step: ${next}`] : [])]
+      ? [`ゴール: ${escape(goal.objective)}`, `未達の点: ${reason}`, ...(step ? [`次の一手: ${step}`] : [])]
+      : [`Goal: ${escape(goal.objective)}`, `Not met yet: ${reason}`, ...(step ? [`Next step: ${step}`] : [])]
   const tail =
     lang === "ja"
       ? `（自動継続 ${goal.rounds}/${goal.maxRounds}回目）次の具体的な作業を進め、終える前に完了条件と照らして証拠を示してください。済んだ作業は繰り返さないでください。利用者にしか出来ない判断・承認・操作が必要なら、そう明記して止まってください。`
@@ -402,17 +580,18 @@ export function withReminder<T extends { role: string }>(
   make: (text: string) => T,
 ): T[] {
   if (goal?.status !== "active") return modelMessages
-  if (history.some((message) => message.parts.some((part) => isGoalPart(part, goal.id)))) return modelMessages
+  if (
+    history.some((message) => message.info.role === "user" && message.parts.some((part) => isGoalPart(part, goal.id)))
+  )
+    return modelMessages
   const at = Math.min(1, modelMessages.length)
   return [...modelMessages.slice(0, at), make(reminder(goal)), ...modelMessages.slice(at)]
 }
 
-export function settledNote(goal: State, lang: Lang = ProviderQuota.language()) {
-  if (goal.status === "complete")
-    return lang === "ja" ? `ゴール達成: ${goal.reason ?? ""}` : `Goal met: ${goal.reason ?? ""}`
-  if (goal.status === "paused")
-    return lang === "ja" ? `ゴール停止: ${goal.reason ?? ""}` : `Goal paused: ${goal.reason ?? ""}`
-  return describe(goal, lang)
+export function customNotice(lang: Lang = ProviderQuota.language()) {
+  return lang === "ja"
+    ? "独自の goal コマンドを使っています。自動継続を使うには SENTE_GOAL_LOOP=1"
+    : "Using your own goal command. Set SENTE_GOAL_LOOP=1 to use automatic continuation."
 }
 
 // `/goal "Ship it"` and `/goal Ship it` set the same condition.

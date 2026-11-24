@@ -3,37 +3,49 @@ import type { SessionV1 } from "@sente-ai/core/v1/session"
 import { SessionGoal } from "../../src/session/goal"
 
 const goal = (patch: Partial<SessionGoal.State> = {}): SessionGoal.State => ({
-  ...SessionGoal.create("make the tests pass", 1, {}),
+  ...SessionGoal.create({ objective: "make the tests pass" }, 1, {}),
   ...patch,
 })
 
 const text = (value: string, extra: Record<string, unknown> = {}) =>
   ({ id: "p", sessionID: "s", messageID: "m", type: "text", text: value, ...extra }) as SessionV1.Part
 
+const cont = (reason: string) => ({ verdict: "continue" as const, reason })
+
 describe("session goal", () => {
-  test("parses show, clear, resume and a quoted condition", () => {
+  test("parses show, clear, resume, flags and a quoted condition", () => {
     expect(SessionGoal.parse("", "en")).toEqual({ type: "show" })
     expect(SessionGoal.parse("  clear ", "en")).toEqual({ type: "clear" })
     expect(SessionGoal.parse("解除", "ja")).toEqual({ type: "clear" })
     expect(SessionGoal.parse("resume", "en")).toEqual({ type: "resume" })
     expect(SessionGoal.parse('"ship the release"', "en")).toEqual({ type: "set", objective: "ship the release" })
     expect(SessionGoal.parse("「テストを通す」", "ja")).toEqual({ type: "set", objective: "テストを通す" })
+    expect(SessionGoal.parse("--budget $5 --max-rounds 4 ship it", "en")).toEqual({
+      type: "set",
+      objective: "ship it",
+      budget: 5,
+      maxRounds: 4,
+    })
+    expect(SessionGoal.parse("--budget=0.5 ship", "en")).toEqual({ type: "set", objective: "ship", budget: 0.5 })
+    expect(SessionGoal.parse("--budget nope ship", "en").type).toBe("invalid")
     expect(SessionGoal.parse("x".repeat(SessionGoal.MAX_OBJECTIVE + 1), "en").type).toBe("invalid")
   })
 
-  test("the loop can be turned off", () => {
-    expect(SessionGoal.enabled({})).toBe(true)
-    expect(SessionGoal.enabled({ SENTE_GOAL_LOOP: "0" })).toBe(false)
-    expect(SessionGoal.enabled({ SENTE_GOAL_LOOP: "off" })).toBe(false)
-    expect(SessionGoal.enabled({ SENTE_GOAL_LOOP: "1" })).toBe(true)
+  test("a user's own goal command wins unless SENTE_GOAL_LOOP=1", () => {
+    expect(SessionGoal.useLoop(false, {})).toBe(true)
+    expect(SessionGoal.useLoop(true, {})).toBe(false)
+    expect(SessionGoal.useLoop(true, { SENTE_GOAL_LOOP: "1" })).toBe(true)
+    expect(SessionGoal.useLoop(false, { SENTE_GOAL_LOOP: "0" })).toBe(false)
   })
 
-  test("max rounds defaults to 20 and can be set", () => {
+  test("defaults: 20 rounds and a $3 budget, both configurable", () => {
     expect(SessionGoal.maxRounds({})).toBe(20)
     expect(SessionGoal.maxRounds({ SENTE_GOAL_MAX_ROUNDS: "5" })).toBe(5)
     expect(SessionGoal.maxRounds({ SENTE_GOAL_MAX_ROUNDS: "0" })).toBe(20)
-    expect(SessionGoal.maxRounds({ SENTE_GOAL_MAX_ROUNDS: "abc" })).toBe(20)
     expect(SessionGoal.maxRounds({ SENTE_GOAL_MAX_ROUNDS: "9999" })).toBe(SessionGoal.MAX_ROUNDS_CEILING)
+    expect(SessionGoal.budget({})).toBe(3)
+    expect(SessionGoal.budget({ SENTE_GOAL_BUDGET_USD: "$1.5" })).toBe(1.5)
+    expect(goal().budget).toBe(3)
   })
 
   test("metadata round-trips and other keys are kept", () => {
@@ -45,6 +57,14 @@ describe("session goal", () => {
     expect(SessionGoal.read({ goal: { id: 1 } })).toBeUndefined()
   })
 
+  test("a goal of an exited process or an earlier boot is orphaned; a live owner's is not", () => {
+    expect(SessionGoal.orphaned(goal())).toBe(false)
+    expect(SessionGoal.orphaned(goal({ owner: { pid: process.pid, boot: "earlier" } }))).toBe(true)
+    expect(SessionGoal.orphaned(goal({ owner: { pid: 999_999, boot: "x" } }), () => false)).toBe(true)
+    expect(SessionGoal.orphaned(goal({ owner: { pid: 999_999, boot: "x" } }), () => true)).toBe(false)
+    expect(SessionGoal.orphaned(goal({ status: "paused", owner: undefined }))).toBe(false)
+  })
+
   test("done completes, blocked pauses, continue counts a round", () => {
     expect(SessionGoal.decide(goal(), { verdict: "done", reason: "tests pass" }, 2, "en")).toEqual({
       type: "complete",
@@ -54,60 +74,59 @@ describe("session goal", () => {
       type: "pause",
       reason: "needs a key",
     })
-    const next = SessionGoal.decide(goal(), { verdict: "continue", reason: "no tests run", next: "run them" }, 2, "en")
+    const next = SessionGoal.decide(goal(), { ...cont("no tests run"), next: "run them" }, 2, "en")
     expect(next.type).toBe("continue")
     if (next.type === "continue") {
       expect(next.goal.rounds).toBe(1)
       expect(next.goal.repeats).toBe(1)
-      expect(next.goal.reason).toBe("no tests run")
       expect(next.next).toBe("run them")
     }
-  })
-
-  test("no verdict pauses instead of looping", () => {
     expect(SessionGoal.decide(goal(), undefined, 2, "en").type).toBe("pause")
   })
 
-  test("stops at the round limit", () => {
-    expect(SessionGoal.exhausted(goal({ rounds: 19, maxRounds: 20 }), "en")).toBeUndefined()
-    expect(SessionGoal.exhausted(goal({ rounds: 20, maxRounds: 20 }), "en")).toContain("20")
-    expect(
-      SessionGoal.decide(goal({ rounds: 20, maxRounds: 20 }), { verdict: "continue", reason: "x" }, 2, "en").type,
-    ).toBe("pause")
+  test("the last round is still reviewed: done wins over the round limit", () => {
+    const last = goal({ rounds: 20, maxRounds: 20 })
+    expect(SessionGoal.decide(last, { verdict: "done", reason: "ok" }, 2, "en").type).toBe("complete")
+    const stop = SessionGoal.decide(last, cont("x"), 2, "en")
+    expect(stop.type).toBe("pause")
+    expect(stop.reason).toContain("20")
   })
 
-  test("stops when the same missing point comes back three times in a row", () => {
+  test("continue stops once the budget is spent", () => {
+    const decision = SessionGoal.decide(goal({ budget: 1, spent: 1.2 }), cont("more work"), 2, "en")
+    expect(decision.type).toBe("pause")
+    expect(decision.reason).toContain("$1.00")
+  })
+
+  test("stops when the same missing point comes back three times, worded differently", () => {
     let state = goal()
     const decisions = ["The build still fails.", "the build still fails", "The build  still fails!"].map((reason) => {
-      const decision = SessionGoal.decide(state, { verdict: "continue", reason }, 2, "en")
+      const decision = SessionGoal.decide(state, cont(reason), 2, "en")
       if (decision.type === "continue") state = decision.goal
       return decision.type
     })
     expect(decisions).toEqual(["continue", "continue", "pause"])
   })
 
-  test("a different missing point resets the repeat count", () => {
+  test("a falling count is progress, not a repeat", () => {
     let state = goal()
-    const decisions = ["build fails", "build fails", "lint fails", "build fails"].map((reason) => {
-      const decision = SessionGoal.decide(state, { verdict: "continue", reason }, 2, "en")
+    const decisions = ["5 tests fail", "3 tests fail", "1 tests fail", "1 tests fail"].map((reason) => {
+      const decision = SessionGoal.decide(state, cont(reason), 2, "en")
       if (decision.type === "continue") state = decision.goal
       return decision.type
     })
     expect(decisions).toEqual(["continue", "continue", "continue", "continue"])
+    expect(SessionGoal.sameReason("テストが5件失敗", "テストが3件失敗")).toBe(false)
+    expect(SessionGoal.sameReason("テストが5件失敗しています", "テストが5件失敗している")).toBe(true)
   })
 
-  test("parses labelled lines, JSON and decorated answers", () => {
+  test("parses only an exact VERDICT line and takes the last one", () => {
     expect(SessionGoal.parseVerdict("VERDICT: continue\nREASON: no tests\nNEXT: run tests")).toEqual({
       verdict: "continue",
       reason: "no tests",
       next: "run tests",
     })
-    expect(SessionGoal.parseVerdict('{"verdict":"done","reason":"all green"}')).toEqual({
-      verdict: "done",
-      reason: "all green",
-      next: undefined,
-    })
-    expect(SessionGoal.parseVerdict("<think>hmm</think>\n**Verdict**: Blocked\n**Reason**: 鍵が必要")).toEqual({
+    expect(SessionGoal.parseVerdict("<think>hmm</think>\n**VERDICT**: Blocked\n**REASON**: 鍵が必要")).toEqual({
       verdict: "blocked",
       reason: "鍵が必要",
       next: undefined,
@@ -115,17 +134,31 @@ describe("session goal", () => {
     expect(SessionGoal.parseVerdict("VERDICT: done\nREASON: `cat a.txt` shows 1 2 3")?.reason).toBe(
       "`cat a.txt` shows 1 2 3",
     )
-    expect(SessionGoal.parseVerdict('VERDICT: done\nREASON: "quoted"')?.reason).toBe("quoted")
-    expect(SessionGoal.parseVerdict("I think it is fine")).toBeUndefined()
+    // Prose and echoed instructions never read as done.
+    expect(SessionGoal.parseVerdict("VERDICT: not done yet, continue")).toBeUndefined()
+    expect(SessionGoal.parseVerdict("VERDICT: done | continue | blocked")).toBeUndefined()
+    expect(SessionGoal.parseVerdict("I think it is done.")).toBeUndefined()
+    expect(SessionGoal.parseVerdict("VERDICT: done\nwait, no.\nVERDICT: continue\nREASON: lint fails")?.verdict).toBe(
+      "continue",
+    )
+    // The prompt's own instruction line, echoed back, is not a verdict.
+    const echoed = SessionGoal.judgePrompt(goal(), "log", "en")
+      .split("\n")
+      .filter((line) => line.startsWith("Line 1"))
+      .join("\n")
+    expect(SessionGoal.parseVerdict(echoed)).toBeUndefined()
   })
 
-  test("the user's own message is an interjection; goal and synthetic messages are not", () => {
+  test("the user's own message is an interjection; goal, synthetic and automated messages are not", () => {
     const meta = { metadata: { source: "goal", goalID: "g" } }
     expect(SessionGoal.interjected([text("what is the status?")])).toBe(true)
     expect(SessionGoal.interjected([text("Goal: x", meta), text("instructions", { ...meta, synthetic: true })])).toBe(
       false,
     )
     expect(SessionGoal.interjected([text("continue", { synthetic: true })])).toBe(false)
+    expect(SessionGoal.interjected([text("check the queue", { metadata: { source: "loop", loopID: "l1" } })])).toBe(
+      false,
+    )
   })
 
   test("the reminder goes after the first message only when history lost the goal", () => {
@@ -139,10 +172,9 @@ describe("session goal", () => {
     const lost = SessionGoal.withReminder(model, state, [], make)
     expect(lost).toHaveLength(4)
     expect(lost[1]?.content).toContain("make the tests pass")
-    // The cached tail stays where it was.
     expect(lost.at(-1)).toEqual(model.at(-1))
     const kept = [
-      { info: { id: "m" }, parts: [text("Goal", { metadata: { source: "goal", goalID: state.id } })] },
+      { info: { id: "m", role: "user" }, parts: [text("Goal", { metadata: { source: "goal", goalID: state.id } })] },
     ] as unknown as SessionV1.WithParts[]
     expect(SessionGoal.withReminder(model, state, kept, make)).toBe(model)
     expect(SessionGoal.withReminder(model, { ...state, status: "paused" }, [], make)).toBe(model)
@@ -155,38 +187,41 @@ describe("session goal", () => {
     expect(ja).toContain("未達の点: テスト未実行")
     expect(ja).toContain("次の一手: テストを実行")
     expect(ja).toContain("2/20")
-    expect(SessionGoal.continuation(state, "no tests", undefined, "en")).toContain("Not met yet: no tests")
+    expect(SessionGoal.continuation(state, "no tests", "-", "en")).not.toContain("Next step")
   })
 
-  test("the transcript starts at the goal, clips tool output and lists open todos", () => {
+  test("long tool output keeps its end, where test summaries are", () => {
+    const output = "line\n".repeat(2_000) + "Tests: 42 passed, 0 failed"
     const messages = [
-      { info: { id: "a", role: "user" }, parts: [text("earlier chat")] },
-      {
-        info: { id: "b", role: "user" },
-        parts: [text("Goal: x", { metadata: { source: "goal", goalID: "g" } })],
-      },
+      { info: { id: "b", role: "user" }, parts: [text("Goal: x", { metadata: { source: "goal", goalID: "g" } })] },
       {
         info: { id: "c", role: "assistant" },
-        parts: [
-          text("running tests"),
-          {
-            type: "tool",
-            tool: "bash",
-            state: { status: "completed", input: { command: "bun test" }, output: "ok ".repeat(1000) },
-          },
-        ],
+        parts: [{ type: "tool", tool: "bash", state: { status: "completed", input: { command: "bun test" }, output } }],
       },
+    ] as unknown as SessionV1.WithParts[]
+    const log = SessionGoal.transcript(messages, { id: "g" })
+    expect(log).toContain("Tests: 42 passed, 0 failed")
+    expect(log).toContain("chars omitted")
+    expect(log.length).toBeLessThan(1_500)
+  })
+
+  test("the transcript starts at the goal, keeps the newest work and lists open todos", () => {
+    const messages = [
+      { info: { id: "a", role: "user" }, parts: [text("earlier chat")] },
+      { info: { id: "b", role: "user" }, parts: [text("Goal: x", { metadata: { source: "goal", goalID: "g" } })] },
+      ...Array.from({ length: 60 }, (_, i) => ({
+        info: { id: `c${i}`, role: "assistant" },
+        parts: [text(`step ${i} ` + "x".repeat(1_000))],
+      })),
     ] as unknown as SessionV1.WithParts[]
     const log = SessionGoal.transcript(messages, { id: "g" }, [
       { content: "docs", status: "pending" },
       { content: "code", status: "completed" },
     ])
     expect(log).not.toContain("earlier chat")
-    expect(log).toContain("[user] Goal: x")
-    expect(log).toContain("[tool bash]")
-    expect(log).toContain("bun test")
-    expect(log.length).toBeLessThan(2_000)
+    expect(log).toContain("step 59")
+    expect(log).not.toContain("step 0 ")
     expect(log).toContain("- [pending] docs")
-    expect(log).not.toContain("code")
+    expect(log).not.toContain("[completed] code")
   })
 })

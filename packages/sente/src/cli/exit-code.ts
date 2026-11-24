@@ -43,6 +43,12 @@ export const ExitCode = {
    */
   PermissionDenied: 7,
   /**
+   * `sente run --goal` ended without the reviewer agreeing the condition is met:
+   * stopped at its budget or round limit, blocked, repeating, or interrupted. The
+   * reason is printed (and emitted as a `goal` event with --format json).
+   */
+  GoalUnmet: 8,
+  /**
    * The TUI asks to be relaunched with --resume (after a compaction).
    *
    * Deliberately outside 0-5 and matches `SENTE_RESTART_EXIT_CODE` in the

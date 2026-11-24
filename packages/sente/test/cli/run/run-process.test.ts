@@ -446,4 +446,63 @@ describe("sente run (non-interactive subprocess)", () => {
       }),
     30_000,
   )
+
+  // --goal keeps working until the reviewer agrees; it needs a small model for the reviewer.
+  const goalConfig = (url: string) => JSON.stringify({ ...testProviderConfig(url), small_model: "test/test-model" })
+  const isReview = (hit: { body: Record<string, unknown> }) => JSON.stringify(hit.body).includes("work_log")
+
+  cliIt.concurrent(
+    "--goal exits 0 and says the goal is met when the reviewer agrees",
+    ({ llm, sente }) =>
+      Effect.gen(function* () {
+        yield* llm.textMatch((hit) => !isReview(hit), "wrote hello.txt and ran cat: hello")
+        yield* llm.textMatch(isReview, "VERDICT: done\nREASON: cat shows hello\nNEXT: -")
+        const result = yield* sente.run("", {
+          extraArgs: ["--goal", "write hello.txt"],
+          env: { SENTE_CONFIG_CONTENT: goalConfig(llm.url) },
+        })
+        sente.expectExit(result, 0)
+        expect(result.stderr).toContain("Goal met: cat shows hello")
+        expect(result.stderr).toContain("of $3.00")
+      }),
+    60_000,
+  )
+
+  cliIt.concurrent(
+    "--goal exits 8 with the reason when the goal stops unmet, and limits reach the server",
+    ({ llm, sente }) =>
+      Effect.gen(function* () {
+        yield* llm.textMatch((hit) => !isReview(hit), "tried")
+        yield* llm.textMatch(isReview, "VERDICT: continue\nREASON: the file is still empty\nNEXT: write it")
+        yield* llm.textMatch((hit) => !isReview(hit), "tried again")
+        yield* llm.textMatch(isReview, "VERDICT: continue\nREASON: the file is still blank\nNEXT: -")
+        const result = yield* sente.run("", {
+          extraArgs: ["--goal", "write hello.txt", "--goal-max-rounds", "1", "--goal-budget", "2", "--format", "json"],
+          env: { SENTE_CONFIG_CONTENT: goalConfig(llm.url) },
+        })
+        sente.expectExit(result, ExitCode.GoalUnmet)
+        const event = result.stdout
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+          .find((item) => item.type === "goal")
+        expect(event?.goal?.status).toBe("paused")
+        expect(event?.goal?.maxRounds).toBe(1)
+        expect(event?.goal?.budget).toBe(2)
+        expect(event?.goal?.reason).toContain("1 rounds")
+      }),
+    60_000,
+  )
+
+  cliIt.concurrent(
+    "--goal without a reviewer model exits 8 at once instead of waiting",
+    ({ llm, sente }) =>
+      Effect.gen(function* () {
+        const result = yield* sente.run("", { extraArgs: ["--goal", "write hello.txt"], timeoutMs: 30_000 })
+        sente.expectExit(result, ExitCode.GoalUnmet)
+        expect(result.stderr).toContain("small_model")
+        expect(yield* llm.calls).toBe(0)
+      }),
+    60_000,
+  )
 })
