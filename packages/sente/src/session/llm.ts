@@ -147,7 +147,8 @@ const live: Layer.Layer<
           // /btw side answers are not messages; their cost lives in the session metadata.
           const spent =
             (Option.isSome(history) ? SessionEscalation.userFacingCost(history.value) : (base.cost ?? 0)) +
-            SessionBtw.spentOn(base.metadata)
+            SessionBtw.spentOn(base.metadata) +
+            (base.id === sessionInfo.value.id ? 0 : SessionBtw.spentOn(sessionInfo.value.metadata))
           // Estimate this one call from the request we are about to send, so a
           // small prompt to a cheap model is not blocked by the context window.
           const estimate = SessionEscalation.requestEstimate(

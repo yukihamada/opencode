@@ -24,6 +24,8 @@ export function createWorkerFetch(client: Caller): typeof fetch {
     const signal = request.signal
     if (signal.aborted) throw abortError(signal)
     const body = request.body ? await request.text() : undefined
+    // Aborted while the body was being read: the listener below would never fire.
+    if (signal.aborted) throw abortError(signal)
     const id = `${Date.now().toString(36)}-${next++}`
     const call = client.call("fetch", {
       id,

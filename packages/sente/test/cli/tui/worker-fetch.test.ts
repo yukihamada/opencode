@@ -52,3 +52,26 @@ describe("worker fetch over RPC", () => {
     expect(bridge.calls).toEqual([])
   })
 })
+
+describe("worker fetch abort while reading the body", () => {
+  test("an abort during the body read does not reach the server", async () => {
+    const bridge = wire(async () => new Response("no"))
+    const controller = new AbortController()
+    let pull = 0
+    const body = new ReadableStream({
+      pull(stream) {
+        pull++
+        if (pull === 1) {
+          stream.enqueue(new TextEncoder().encode("part"))
+          return
+        }
+        controller.abort()
+        stream.close()
+      },
+    })
+    await expect(
+      bridge.fetch("http://localhost/", { method: "POST", body, signal: controller.signal, duplex: "half" } as RequestInit),
+    ).rejects.toThrow()
+    expect(bridge.calls).toEqual([])
+  })
+})

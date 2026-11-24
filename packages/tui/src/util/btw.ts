@@ -38,7 +38,7 @@ export type BtwResult =
   | ({ type: "answer"; text: string } & Meta)
   | ({ type: "empty" } & Meta)
   | ({ type: "error"; message: string; text: string } & Meta)
-  | { type: "approval"; spent: number; limit: number; estimate?: number; model: string }
+  | { type: "approval"; spent: number; limit: number; estimate?: number; model: string; fallback: boolean }
 
 export type BtwModelRef = { providerID: string; modelID: string }
 
@@ -94,7 +94,7 @@ export async function askBtw(
   if (!response.data) return { type: "error", message: message(response.error ?? "no response"), text: "", ...empty }
   const data = response.data
   const model = data.modelID ? `${data.providerID}/${data.modelID}` : ""
-  if (data.approval) return { type: "approval", ...data.approval, model }
+  if (data.approval) return { type: "approval", ...data.approval, model, fallback: !!data.fallback }
   const meta = { usd: Number.isFinite(data.cost) && data.cost > 0 ? data.cost : 0, model, fallback: !!data.fallback }
   if (data.error) return { type: "error", message: data.error, text: data.text.trim(), ...meta }
   if (!data.text.trim()) return { type: "empty", ...meta }
@@ -118,6 +118,7 @@ const texts = {
     approval: (spent: number, limit: number, estimate?: number) =>
       `この会話の記録済み費用 ${formatSpend(spent, "ja")} に今回の見積${estimate === undefined ? "(不明)" : ` ${formatSpend(estimate, "ja")}`}を足すと、確認ライン ${formatSpend(limit, "ja")} を超えます。`,
     approve: "y で今回だけ実行 / esc でやめる",
+    approvalModel: (model: string) => `使うモデル: ${model}`,
   },
   en: {
     title: "Side question (/btw)",
@@ -135,6 +136,7 @@ const texts = {
     approval: (spent: number, limit: number, estimate?: number) =>
       `Recorded cost ${formatSpend(spent, "en")} plus this call's estimate${estimate === undefined ? " (unknown)" : ` ${formatSpend(estimate, "en")}`} crosses the ${formatSpend(limit, "en")} approval line.`,
     approve: "y to run once / esc to cancel",
+    approvalModel: (model: string) => `Model: ${model}`,
   },
 }
 

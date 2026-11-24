@@ -8,6 +8,9 @@ import type { Provider } from "@/provider/provider"
 import { SecretRedact } from "@/tool/secret-redact"
 import type { LLM } from "./llm"
 import { SessionEscalation } from "./escalation"
+import { SideSpend } from "./side-spend"
+import { Permission } from "@/permission"
+import type { PermissionV1 } from "@sente-ai/core/v1/permission"
 import { MessageID, SessionID } from "./schema"
 import { Session } from "./session"
 
@@ -30,8 +33,9 @@ const QUESTION_CHARS = 4_000
 export const MAX_OUTPUT_TOKENS = 1_500
 
 export const AGENT_NAME = "btw"
-export const SPEND_KEY = "btw_spend"
-const SPEND_RECENT = 200
+export const SPEND_KEY = SideSpend.KEY
+export const spentOn = SideSpend.spentOn
+export const withSpend = SideSpend.add
 
 const INSTRUCTIONS = [
   "You answer a quick side question (/btw) about a coding session that is still running.",
@@ -204,36 +208,6 @@ export const resolveModel = Effect.fn("SessionBtw.resolveModel")(function* (inpu
   return { model: main.value, fallback: true }
 })
 
-type SpendEntry = { usd: number; time: number }
-
-function spendOf(metadata: Record<string, unknown> | undefined) {
-  const value = metadata?.[SPEND_KEY]
-  if (typeof value !== "object" || value === null) return { total: 0, recent: [] as SpendEntry[] }
-  const total = "total" in value && typeof value.total === "number" && Number.isFinite(value.total) ? value.total : 0
-  const recent =
-    "recent" in value && Array.isArray(value.recent)
-      ? value.recent.filter(
-          (item): item is SpendEntry =>
-            typeof item === "object" && item !== null && typeof item.usd === "number" && typeof item.time === "number",
-        )
-      : []
-  return { total: Math.max(0, total), recent }
-}
-
-/** Total recorded /btw cost of a session (USD). */
-export function spentOn(metadata: Record<string, unknown> | undefined) {
-  return spendOf(metadata).total
-}
-
-/** Metadata with one more /btw cost added. Other keys are kept. */
-export function withSpend(metadata: Record<string, unknown> | undefined, usd: number, time: number): Record<string, unknown> {
-  const current = spendOf(metadata)
-  return {
-    ...metadata,
-    [SPEND_KEY]: { total: current.total + usd, recent: [...current.recent, { usd, time }].slice(-SPEND_RECENT) },
-  }
-}
-
 /**
  * The same approval line as the main run (`/cost`, metadata.cost_limit_usd,
  * SENTE_COST_LIMIT_USD): the conversation's recorded cost, earlier /btw costs
@@ -264,10 +238,44 @@ export function budget(input: {
   return { limit, spent, estimate, needsApproval: SessionEscalation.needsCostApproval(limit, spent, estimate) }
 }
 
+/**
+ * The session's `request_cost` rule for this model, evaluated like the main
+ * run's cost gate: only explicit request_cost rules count (a blanket "*" allow
+ * does not bypass it), and no rule means "ask".
+ */
+export function approvalRule(input: { model: Provider.Model; rulesets: PermissionV1.Ruleset[] }) {
+  const rules = Permission.merge(...input.rulesets).filter((rule) => rule.permission === SessionEscalation.COST_PERMISSION)
+  return Permission.evaluate(SessionEscalation.COST_PERMISSION, `${input.model.providerID}/${input.model.id}`, rules).action
+}
+
+export function deniedText() {
+  return SessionEscalation.language() === "ja"
+    ? "費用の確認ラインを超えるため実行しませんでした(この会話の設定 request_cost が deny です)。"
+    : "Not run: it would cross the cost approval line and this session's request_cost rule is deny."
+}
+
 function price(model: Provider.Model, input: number, output: number) {
   const cost = model.cost
   const value = (input * (cost?.input ?? 0) + output * (cost?.output ?? 0)) / 1_000_000
   return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+/**
+ * Cost of a side call interrupted before the provider reported usage. It errs
+ * high rather than low:
+ * - input: UTF-8 bytes / 3 (`requestTokens`). About one token per character for
+ *   Japanese/Chinese (close), and ~4/3 of the real count for English (high).
+ * - output: one token per character received. Close for Japanese, about 4x high
+ *   for English.
+ * - reasoning models: thinking that was streamed is counted the same way; when
+ *   none was visible (hidden or not started) half the output cap is added,
+ *   since it is billed as output.
+ */
+export function abortedEstimate(input: { model: Provider.Model; content: string; text: string; reasoning: string }) {
+  const inputTokens = SessionEscalation.requestTokens(INSTRUCTIONS + input.content) ?? 0
+  const visible = [...input.text].length + [...input.reasoning].length
+  const hidden = input.model.capabilities?.reasoning && input.reasoning.length === 0 ? MAX_OUTPUT_TOKENS / 2 : 0
+  return price(input.model, inputTokens, Math.min(visible, MAX_OUTPUT_TOKENS * 2) + hidden)
 }
 
 /**
@@ -298,6 +306,7 @@ export const ask = Effect.fn("SessionBtw.ask")(function* (input: {
       .filter(LLMEvent.is.stepFinish)
       .map((event) => Session.getUsage({ model: input.model, usage: event.usage ?? new Usage({}), metadata: event.providerMetadata }))
   const text = () => events.filter(LLMEvent.is.textDelta).map((event) => event.text).join("")
+  const reasoning = () => events.filter(LLMEvent.is.reasoningDelta).map((event) => event.text).join("")
   const result = yield* input
     .stream({
       agent: AGENT,
@@ -326,7 +335,7 @@ export const ask = Effect.fn("SessionBtw.ask")(function* (input: {
         const usd =
           known.length > 0
             ? known.reduce((sum, item) => sum + item.cost, 0)
-            : price(input.model, SessionEscalation.requestTokens(INSTRUCTIONS + content) ?? 0, Math.ceil(text().length / 3))
+            : abortedEstimate({ model: input.model, content, text: text(), reasoning: reasoning() })
         return usd > 0 ? input.record(usd) : Effect.void
       }),
       Effect.exit,

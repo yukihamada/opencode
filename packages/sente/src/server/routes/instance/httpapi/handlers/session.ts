@@ -19,7 +19,7 @@ import { Provider } from "@/provider/provider"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@sente-ai/core/util/error"
-import { Cause, Effect, Option, Schema, Scope, Semaphore } from "effect"
+import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -300,11 +300,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     // Read-only side question. It only reads the latest messages and never
     // touches run state, so it works while the main prompt is still running.
-    // Read-modify-write of the session metadata for /btw costs, one at a time.
-    const spendLock = Semaphore.makeUnsafe(1)
-
-    // Read-only side question. It only reads the latest messages and never
-    // touches run state, so it works while the main prompt is still running.
     const btw = Effect.fn("SessionHttpApi.btw")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof BtwPayload.Type
@@ -341,19 +336,28 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         model,
         content: SessionBtw.request({ title: info.title, messages, question }),
       })
-      if (check.needsApproval && !ctx.payload.approve)
-        return {
-          ...base,
-          approval: { spent: check.spent, limit: check.limit, ...(check.estimate === undefined ? {} : { estimate: check.estimate }) },
-        }
+      if (check.needsApproval) {
+        // The same request_cost rules as the main run's cost gate (llm.ts):
+        // deny refuses, allow skips the question, ask (default) needs approval.
+        const agentName = messages.findLast((message) => message.info.role === "user")?.info.agent
+        const agent = agentName ? yield* agentSvc.get(agentName).pipe(Effect.option) : Option.none()
+        const action = SessionBtw.approvalRule({
+          model,
+          rulesets: [Option.isSome(agent) ? (agent.value.permission ?? []) : [], info.permission ?? []],
+        })
+        if (action === "deny") return { ...base, error: SessionBtw.deniedText() }
+        if (action === "ask" && !ctx.payload.approve)
+          return {
+            ...base,
+            approval: { spent: check.spent, limit: check.limit, ...(check.estimate === undefined ? {} : { estimate: check.estimate }) },
+          }
+      }
 
+      // Atomic with other metadata writes and without touching time.updated.
       const record = (usd: number) =>
-        spendLock.withPermits(1)(
-          Effect.gen(function* () {
-            const current = yield* session.get(info.id)
-            yield* session.setMetadata({ sessionID: info.id, metadata: SessionBtw.withSpend(current.metadata, usd, Date.now()) })
-          }).pipe(Effect.catchCause((cause) => Effect.logWarning("failed to record /btw cost", { cause }))),
-        )
+        session
+          .addSideSpend({ sessionID: info.id, usd, time: Date.now() })
+          .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to record /btw cost", { cause })))
       return yield* SessionBtw.ask({
         session: info,
         messages,

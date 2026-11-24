@@ -90,6 +90,7 @@ describe("askBtw", () => {
       spent: 1,
       limit: 1,
       model: "p/m",
+      fallback: false,
     })
     expect(asked.calls).toEqual([{ sessionID: "s", question: "q", approve: true }])
   })

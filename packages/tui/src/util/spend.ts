@@ -160,8 +160,9 @@ export function todayCost(input: {
   let usd = 0
   let partial = false
   for (const session of input.sessions) {
-    if (session.time.updated < since) continue
+    // /btw costs do not bump time.updated (they must not reorder the session list), so count them first.
     usd += sideCost(session, since)
+    if (session.time.updated < since) continue
     if (session.time.created >= since) {
       usd += cost(session.cost)
       continue

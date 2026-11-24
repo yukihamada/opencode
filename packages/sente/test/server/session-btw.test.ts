@@ -77,10 +77,10 @@ function config(url: string) {
   }
 }
 
-function post(path: string, directory: string, body: unknown) {
+function post(path: string, directory: string, body: unknown, method = "POST") {
   const url = new URL(`${path}?directory=${encodeURIComponent(directory)}`, "http://localhost")
   return HttpClientRequest.fromWeb(
-    new Request(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    new Request(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
   ).pipe(HttpClientRequest.setUrl(url.pathname), HttpClient.execute)
 }
 
@@ -293,5 +293,85 @@ describe("session /btw", () => {
         expect(spent).toBeGreaterThan(0)
       }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
     20_000,
+  )
+
+  it.live("client metadata updates (PATCH, the /cost screen's stale copy) cannot overwrite or delete btw_spend", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const session = yield* Session.use.create({}).pipe(provideInstanceEffect(directory))
+      yield* llm.textMatch(isSide, "ok", { usage: { input: 1000, output: 100 } })
+      yield* post(SessionPaths.btw.replace(":sessionID", session.id), directory, { question: "hi" }).pipe(Effect.flatMap(answer))
+      const spent = SessionBtw.spentOn((yield* Session.use.get(session.id).pipe(provideInstanceEffect(directory))).metadata)
+      expect(spent).toBeGreaterThan(0)
+
+      const path = SessionPaths.update.replace(":sessionID", session.id)
+      // The /cost screen sends its (possibly stale) copy of the whole metadata.
+      expect((yield* post(path, directory, { metadata: { cost_limit_usd: 2 } }, "PATCH")).status).toBe(200)
+      // A client trying to reset or replace it.
+      expect((yield* post(path, directory, { metadata: { btw_spend: null } }, "PATCH")).status).toBe(200)
+      expect((yield* post(path, directory, { metadata: { btw_spend: { total: 0, recent: [] }, cost_limit_usd: 3 } }, "PATCH")).status).toBe(200)
+
+      const after = yield* Session.use.get(session.id).pipe(provideInstanceEffect(directory))
+      expect(SessionBtw.spentOn(after.metadata)).toBeCloseTo(spent, 12)
+      expect(after.metadata?.cost_limit_usd).toBe(3)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live("recording a side cost does not change time.updated (the session list order)", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const session = yield* Session.use.create({}).pipe(provideInstanceEffect(directory))
+      yield* llm.textMatch(isSide, "ok", { usage: { input: 1000, output: 100 } })
+      yield* Effect.sleep("20 millis")
+      yield* post(SessionPaths.btw.replace(":sessionID", session.id), directory, { question: "hi" }).pipe(Effect.flatMap(answer))
+      const after = yield* Session.use.get(session.id).pipe(provideInstanceEffect(directory))
+      expect(SessionBtw.spentOn(after.metadata)).toBeGreaterThan(0)
+      expect(after.time.updated).toBe(session.time.updated)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  // Session routes are always served in the session's own directory/project
+  // (workspace-routing uses session.directory), so asking through another
+  // project's directory cannot run or bill under that project's config. The
+  // handler's projectID check is a second guard behind that routing.
+  it.live("a session asked through another project's directory runs only under its own project", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const own = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const other = yield* tmpdirScoped({ git: true, config: { ...config(llm.url), small_model: "test/test-model" } })
+      const session = yield* Session.use.create({}).pipe(provideInstanceEffect(own))
+      yield* llm.textMatch(isSide, "ok", { usage: { input: 1000, output: 100 } })
+      const side = yield* post(SessionPaths.btw.replace(":sessionID", session.id), other, { question: "hi" }).pipe(Effect.flatMap(answer))
+      expect(side.modelID).toBe("test-small")
+      const after = yield* Session.use.get(session.id).pipe(provideInstanceEffect(own))
+      expect(SessionBtw.spentOn(after.metadata)).toBeCloseTo(side.cost, 12)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live("request_cost rules: deny refuses over the limit even with approve, allow runs without asking", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const over = SessionBtw.withSpend({ cost_limit_usd: 0.001 }, 0.001, Date.now())
+      const denied = yield* Session.use
+        .create({ metadata: over, permission: [{ permission: "request_cost", pattern: "*", action: "deny" }] })
+        .pipe(provideInstanceEffect(directory))
+      const refused = yield* post(SessionPaths.btw.replace(":sessionID", denied.id), directory, { question: "hi", approve: true }).pipe(
+        Effect.flatMap(answer),
+      )
+      expect(refused.error).toContain("deny")
+      expect(refused.approval).toBeUndefined()
+      expect(yield* llm.calls).toBe(0)
+
+      const allowed = yield* Session.use
+        .create({ metadata: over, permission: [{ permission: "request_cost", pattern: "*", action: "allow" }] })
+        .pipe(provideInstanceEffect(directory))
+      yield* llm.textMatch(isSide, "allowed answer")
+      const ran = yield* post(SessionPaths.btw.replace(":sessionID", allowed.id), directory, { question: "hi" }).pipe(Effect.flatMap(answer))
+      expect(ran.approval).toBeUndefined()
+      expect(ran.text).toBe("allowed answer")
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
   )
 })

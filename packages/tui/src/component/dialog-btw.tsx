@@ -86,6 +86,11 @@ export function DialogBtw(props: {
     const current = result()
     return current && current.type !== "approval" ? (current as Done) : undefined
   })
+  // Shown before running (approval) as well as after: the main model costs more than the small one.
+  const fallbackModel = createMemo(() => {
+    const current = result()
+    return current?.fallback ? current.model : undefined
+  })
   const answer = createMemo(() => {
     const current = done()
     return current?.type === "answer" || current?.type === "error" ? current.text : ""
@@ -109,9 +114,9 @@ export function DialogBtw(props: {
       <text fg={theme.textMuted} wrapMode="none">
         › {questionPreview(props.question, width() - 2)}
       </text>
-      <Show when={done()?.fallback}>
+      <Show when={fallbackModel()}>
         <text fg={theme.warning} wrapMode="word">
-          {text().fallback(done()!.model)}
+          {text().fallback(fallbackModel()!)}
         </text>
       </Show>
       <Switch>
@@ -126,6 +131,9 @@ export function DialogBtw(props: {
                 <text fg={theme.warning} wrapMode="word">
                   {text().approval(value.spent, value.limit, value.estimate)}
                 </text>
+                <Show when={value.model}>
+                  <text fg={theme.textMuted}>{text().approvalModel(value.model)}</text>
+                </Show>
                 <text fg={theme.text}>{text().approve}</text>
               </box>
             )

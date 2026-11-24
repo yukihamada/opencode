@@ -38,7 +38,8 @@ import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@sente-ai/core/global"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Effect, Layer, Option, Context, Schema, Semaphore, Types } from "effect"
+import { SideSpend } from "./side-spend"
 import { NonNegativeInt, optional } from "@sente-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@sente-ai/core/provider"
@@ -428,6 +429,12 @@ export interface Interface {
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
+  /**
+   * Adds one /btw side answer's cost to the session metadata, atomically with
+   * other metadata writes. Does not touch `time.updated`, so a side question
+   * does not reorder the session list.
+   */
+  readonly addSideSpend: (input: { sessionID: SessionID; usd: number; time: number }) => Effect.Effect<void, NotFound>
   readonly setAgentModel: (input: {
     sessionID: SessionID
     agent: string
@@ -697,7 +704,7 @@ const layer: Layer.Layer<
         path: sessionPath(ctx.worktree, ctx.directory),
         workspaceID: original.workspaceID,
         title,
-        metadata: structuredClone(original.metadata),
+        metadata: structuredClone(SideSpend.drop(original.metadata)),
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
@@ -758,8 +765,34 @@ const layer: Layer.Layer<
       yield* patch(input.sessionID, { time: { archived: input.time } }).pipe(Effect.orDie)
     })
 
+    // Metadata writes are read-modify-write; one at a time so /btw costs and
+    // client updates (PATCH, /cost) never overwrite each other.
+    const metadataLock = Semaphore.makeUnsafe(1)
+
     const setMetadata = Effect.fn("Session.setMetadata")(function* (input: typeof SetMetadataInput.Type) {
-      yield* patch(input.sessionID, { metadata: input.metadata, time: { updated: Date.now() } }).pipe(Effect.orDie)
+      yield* metadataLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* get(input.sessionID)
+          yield* patch(input.sessionID, {
+            metadata: SideSpend.keep(input.metadata, current.metadata),
+            time: { updated: Date.now() },
+          })
+        }),
+      ).pipe(Effect.orDie)
+    })
+
+    const addSideSpend = Effect.fn("Session.addSideSpend")(function* (input: {
+      sessionID: SessionID
+      usd: number
+      time: number
+    }) {
+      if (!(Number.isFinite(input.usd) && input.usd > 0)) return
+      yield* metadataLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* get(input.sessionID)
+          yield* patch(input.sessionID, { metadata: SideSpend.add(current.metadata, input.usd, input.time) })
+        }),
+      )
     })
 
     const setAgentModel = Effect.fn("Session.setAgentModel")(function* (input: {
@@ -913,6 +946,7 @@ const layer: Layer.Layer<
       setTitle,
       setArchived,
       setMetadata,
+      addSideSpend,
       setAgentModel,
       setPermission,
       setRevert,

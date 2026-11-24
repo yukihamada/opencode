@@ -5,6 +5,7 @@ import { LLMEvent } from "@sente-ai/llm"
 import type { Provider } from "@/provider/provider"
 import type { LLM } from "@/session/llm"
 import { SessionBtw } from "../../src/session/btw"
+import { SideSpend } from "../../src/session/side-spend"
 
 const user = (parts: unknown[], model = { providerID: "p", modelID: "main" }) =>
   ({ info: { role: "user", model }, parts }) as unknown as SessionV1.WithParts
@@ -274,5 +275,75 @@ describe("SessionBtw.ask", () => {
     expect(finalized).toBe(true)
     expect(recorded).toHaveLength(1)
     expect(recorded[0]).toBeGreaterThan(0)
+  })
+})
+
+describe("SessionBtw estimates and rules", () => {
+  const priced = {
+    ...model,
+    capabilities: { reasoning: false },
+    cost: { input: 1_000_000, output: 1_000_000, cache: { read: 0, write: 0 } },
+  } as unknown as Provider.Model
+
+  test("aborted estimate counts one output token per character, so Japanese is not under-counted", () => {
+    const base = SessionBtw.abortedEstimate({ model: priced, content: "", text: "", reasoning: "" })
+    const ja = SessionBtw.abortedEstimate({ model: priced, content: "", text: "あ".repeat(300), reasoning: "" })
+    const en = SessionBtw.abortedEstimate({ model: priced, content: "", text: "a".repeat(300), reasoning: "" })
+    expect(ja - base).toBe(300)
+    // English errs high (real ~75 tokens), never low.
+    expect(en - base).toBe(300)
+  })
+
+  test("aborted estimate adds hidden thinking for reasoning models and counts streamed thinking", () => {
+    const thinking = { ...priced, capabilities: { reasoning: true } } as unknown as Provider.Model
+    const plain = SessionBtw.abortedEstimate({ model: priced, content: "", text: "x", reasoning: "" })
+    const hidden = SessionBtw.abortedEstimate({ model: thinking, content: "", text: "x", reasoning: "" })
+    const shown = SessionBtw.abortedEstimate({ model: thinking, content: "", text: "x", reasoning: "考".repeat(10) })
+    expect(hidden - plain).toBe(SessionBtw.MAX_OUTPUT_TOKENS / 2)
+    expect(shown - plain).toBe(10)
+  })
+
+  test("aborted input estimate is bytes/3: ~1 token per CJK character, high for English", () => {
+    const base = SessionBtw.abortedEstimate({ model: priced, content: "", text: "", reasoning: "" })
+    const ja = SessionBtw.abortedEstimate({ model: priced, content: "日".repeat(300), text: "", reasoning: "" })
+    expect(ja - base).toBeGreaterThanOrEqual(300)
+  })
+
+  test("request_cost rules: explicit rules decide, a blanket allow does not bypass, none means ask", () => {
+    const rule = (permission: string, action: "allow" | "deny" | "ask") => ({ permission, pattern: "*", action })
+    expect(SessionBtw.approvalRule({ model, rulesets: [[rule("*", "allow")]] })).toBe("ask")
+    expect(SessionBtw.approvalRule({ model, rulesets: [[rule("request_cost", "deny")]] })).toBe("deny")
+    expect(SessionBtw.approvalRule({ model, rulesets: [[rule("request_cost", "deny")], [rule("request_cost", "allow")]] })).toBe("allow")
+  })
+
+  test("a child session counts the root's and its own /btw spend, like the main cost gate", () => {
+    const priced2 = {
+      ...model,
+      limit: { context: 10_000, output: 2_000 },
+      cost: { input: 1, output: 2, cache: { read: 0, write: 0 } },
+    } as unknown as Provider.Model
+    const result = SessionBtw.budget({
+      session: { metadata: SessionBtw.withSpend(undefined, 0.2, 1) },
+      root: { id: "ses_root" as never, metadata: SessionBtw.withSpend(undefined, 0.3, 1) },
+      rootHistory: [],
+      sameRoot: false,
+      model: priced2,
+      content: "x",
+    })
+    expect(result.spent).toBeCloseTo(0.5)
+  })
+})
+
+describe("SideSpend", () => {
+  test("keep puts the server value back over whatever the client sent", () => {
+    const server = SideSpend.add({ cost_limit_usd: 1 }, 0.4, 1)
+    expect(SideSpend.keep({ cost_limit_usd: 2 }, server)).toEqual({ cost_limit_usd: 2, btw_spend: server.btw_spend })
+    expect(SideSpend.keep({ btw_spend: null }, server)).toEqual({ btw_spend: server.btw_spend })
+    expect(SideSpend.keep({ btw_spend: { total: 99 } }, { other: true })).toEqual({})
+  })
+
+  test("drop removes it for forks", () => {
+    expect(SideSpend.drop(SideSpend.add({ a: 1 }, 0.1, 1))).toEqual({ a: 1 })
+    expect(SideSpend.drop(undefined)).toBeUndefined()
   })
 })

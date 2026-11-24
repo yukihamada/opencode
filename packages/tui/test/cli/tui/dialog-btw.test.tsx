@@ -116,11 +116,16 @@ test("over the cost limit it asks first and sends again with approval on y", asy
   const ui = await mount(tmp.path, (call) =>
     call.input.approve
       ? answer("approved answer")
-      : Promise.resolve({ data: { text: "", providerID: "sente", modelID: "gpt-nano", cost: 0, approval: { spent: 1, limit: 1, estimate: 0.01 } } }),
+      : Promise.resolve({
+          data: { text: "", providerID: "sente", modelID: "big-model", cost: 0, fallback: true, approval: { spent: 1, limit: 1, estimate: 0.01 } },
+        }),
   )
   try {
     await wait(() => ui.app.captureCharFrame().includes("y to run once"))
-    expect(await ui.frame()).toContain("approval line")
+    const asking = await ui.frame()
+    expect(asking).toContain("approval line")
+    expect(asking).toContain("Model: sente/big-model")
+    expect(asking).toContain("main model sente/big-model")
     await ui.app.mockInput.pressKeys(["y"])
     await wait(() => ui.calls.length === 2)
     expect(ui.calls[1]!.input.approve).toBe(true)
