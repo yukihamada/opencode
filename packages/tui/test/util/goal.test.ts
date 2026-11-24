@@ -48,9 +48,12 @@ describe("util.goal", () => {
 
   test("describes the goal with its costs in both languages", () => {
     expect(describeGoal(active, "ja")).toContain("ゴール進行中")
-    expect(describeGoal(active, "ja")).toContain("うち判定 $0.0030")
+    expect(describeGoal(active, "ja")).toContain("うち判定 $0.003")
     expect(describeGoal({ ...active, status: "paused", reason: "上限" }, "en")).toContain("Goal paused")
     expect(describeGoal(undefined, "ja")).toContain("使い方")
+    expect(describeGoal({ ...active, note: "価格が $0 のため予算では止まりません" }, "ja")).toContain(
+      "予算では止まりません",
+    )
   })
 
   test("notices only when an active goal ends, with what it cost", () => {

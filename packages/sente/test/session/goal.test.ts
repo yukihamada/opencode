@@ -31,6 +31,28 @@ describe("session goal", () => {
     expect(SessionGoal.parse("x".repeat(SessionGoal.MAX_OBJECTIVE + 1), "en").type).toBe("invalid")
   })
 
+  test("limits may follow the condition and --loop asks for the built-in loop", () => {
+    expect(SessionGoal.parse("ship it --budget 5", "en")).toEqual({ type: "set", objective: "ship it", budget: 5 })
+    expect(SessionGoal.parse("--budget 2 ship it --max-rounds 3", "en")).toEqual({
+      type: "set",
+      objective: "ship it",
+      budget: 2,
+      maxRounds: 3,
+    })
+    expect(SessionGoal.parse("--loop --budget 1 ship it", "en")).toEqual({
+      type: "set",
+      objective: "ship it",
+      budget: 1,
+      loop: true,
+    })
+    expect(SessionGoal.parse("--loop resume", "en")).toEqual({ type: "resume", loop: true })
+    // A word that only looks like a flag inside the condition stays.
+    expect(SessionGoal.parse("explain the --budget flag", "en")).toEqual({
+      type: "set",
+      objective: "explain the --budget flag",
+    })
+  })
+
   test("a user's own goal command wins unless SENTE_GOAL_LOOP=1", () => {
     expect(SessionGoal.useLoop(false, {})).toBe(true)
     expect(SessionGoal.useLoop(true, {})).toBe(false)
@@ -134,6 +156,22 @@ describe("session goal", () => {
     expect(SessionGoal.parseVerdict("VERDICT: done\nREASON: `cat a.txt` shows 1 2 3")?.reason).toBe(
       "`cat a.txt` shows 1 2 3",
     )
+    // Bold, numbered and bulleted labels are read.
+    expect(SessionGoal.parseVerdict("**VERDICT:** continue\n**REASON:** lint fails")).toEqual({
+      verdict: "continue",
+      reason: "lint fails",
+      next: undefined,
+    })
+    expect(SessionGoal.parseVerdict("VERDICT:** done\nREASON:** ok")?.verdict).toBe("done")
+    expect(SessionGoal.parseVerdict("1. VERDICT: done\n2. REASON: tests pass")).toEqual({
+      verdict: "done",
+      reason: "tests pass",
+      next: undefined,
+    })
+    expect(SessionGoal.parseVerdict("- **Verdict**: blocked")?.verdict).toBe("blocked")
+    // An example in the answer is not the verdict, even as the last match.
+    expect(SessionGoal.parseVerdict("VERDICT: continue\nREASON: x\nExample: VERDICT: done")?.verdict).toBe("continue")
+    expect(SessionGoal.parseVerdict("例: VERDICT: done")).toBeUndefined()
     // Prose and echoed instructions never read as done.
     expect(SessionGoal.parseVerdict("VERDICT: not done yet, continue")).toBeUndefined()
     expect(SessionGoal.parseVerdict("VERDICT: done | continue | blocked")).toBeUndefined()
@@ -159,6 +197,27 @@ describe("session goal", () => {
     expect(SessionGoal.interjected([text("check the queue", { metadata: { source: "loop", loopID: "l1" } })])).toBe(
       false,
     )
+    // The user's own words next to an automated part still count.
+    expect(
+      SessionGoal.interjected([
+        text("check the queue", { metadata: { source: "loop", loopID: "l1" } }),
+        text("and also stop the deploy"),
+      ]),
+    ).toBe(true)
+    // Files attached to the goal's kickoff belong to the goal.
+    expect(
+      SessionGoal.interjected([
+        text("Goal: x", meta),
+        {
+          id: "f",
+          sessionID: "s",
+          messageID: "m",
+          type: "file",
+          mime: "image/png",
+          url: "file:///a.png",
+        } as SessionV1.Part,
+      ]),
+    ).toBe(false)
   })
 
   test("the reminder goes after the first message only when history lost the goal", () => {
@@ -178,6 +237,13 @@ describe("session goal", () => {
     ] as unknown as SessionV1.WithParts[]
     expect(SessionGoal.withReminder(model, state, kept, make)).toBe(model)
     expect(SessionGoal.withReminder(model, { ...state, status: "paused" }, [], make)).toBe(model)
+  })
+
+  test("a $0 model is called out: only the round limit stops the goal", () => {
+    const state = goal({ note: SessionGoal.freeModelNote("en") })
+    expect(SessionGoal.describe(state, "en")).toContain("only the round limit")
+    expect(SessionGoal.settledNote({ ...state, status: "paused", reason: "x" }, "en")).toContain("$0")
+    expect(SessionGoal.read(SessionGoal.withGoal(undefined, state))?.note).toBe(state.note)
   })
 
   test("the continuation states the goal, what is missing and the round", () => {

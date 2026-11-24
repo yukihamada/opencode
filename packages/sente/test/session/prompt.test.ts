@@ -3351,3 +3351,167 @@ it.instance("goal asks the reviewer at most twice and stops on no usable verdict
     expect(goal?.status).toBe("paused")
   }),
 )
+
+// A recorded assistant turn that cost `cost` USD, as a subagent or an earlier turn leaves.
+const spend = Effect.fn("test.spend")(function* (sessionID: SessionID, cost: number) {
+  const sessions = yield* Session.Service
+  const msg = yield* user(sessionID, "work")
+  yield* sessions.updateMessage({
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID: msg.id,
+    sessionID,
+    mode: "build",
+    agent: "build",
+    cost,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ref.modelID,
+    providerID: ref.providerID,
+    time: { created: Date.now(), completed: Date.now() },
+    finish: "stop",
+  } satisfies SessionV1.Assistant)
+})
+
+it.instance("a subagent's cost during the turn counts against the goal's budget", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.pushMatch(isWork, reply().wait(deferredAsPromise(gate)).text("delegated the work").stop())
+    yield* review(llm, "VERDICT: continue\nREASON: should not be asked\nNEXT: -")
+
+    const run = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "--budget 0.2 big task", agent: "build" })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    // A task subagent (and one below it) spends while the turn runs.
+    const child = yield* sessions.create({ title: "Child", parentID: chat.id })
+    const grandchild = yield* sessions.create({ title: "Grandchild", parentID: child.id })
+    yield* spend(child.id, 0.15)
+    yield* spend(grandchild.id, 0.1)
+    yield* Deferred.succeed(gate, void 0)
+    yield* Fiber.await(run)
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.spent).toBeCloseTo(0.25, 5)
+    expect(reviewHits(yield* llm.hits)).toHaveLength(0)
+  }),
+)
+
+it.instance("a subagent below a goal stops at the goal's budget, before its next request", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: SessionGoal.withGoal(undefined, SessionGoal.create({ objective: "big task", budget: 0.1 })),
+    })
+    const child = yield* sessions.create({ title: "Background subagent", parentID: chat.id })
+    yield* spend(child.id, 0.2)
+    yield* prompt.prompt({
+      sessionID: child.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "keep going", synthetic: true }],
+    })
+    yield* work(llm, "should not run")
+
+    yield* prompt.loop({ sessionID: child.id })
+
+    expect(yield* llm.calls).toBe(0)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.reason).toContain("$0.10")
+  }),
+)
+
+it.instance("a turn woken by background results still checks the budget before each step", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: SessionGoal.withGoal(undefined, {
+        ...SessionGoal.create({ objective: "big task", budget: 0.5 }),
+        waitingSince: Date.now() - 1_000,
+      }),
+    })
+    // The background subagent spent while the goal waited.
+    const child = yield* sessions.create({ title: "Background subagent", parentID: chat.id })
+    yield* spend(child.id, 1)
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Background task completed: research", synthetic: true }],
+    })
+    yield* work(llm, "should not run")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    expect(yield* llm.calls).toBe(0)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("paused")
+    expect(goal?.waitingSince).toBeUndefined()
+  }),
+)
+
+it.instance("the goal's closing line is shown but never sent to the model again", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* llm.textMatch(isTitle, "Title")
+    yield* work(llm, "shipped")
+    yield* review(llm, "VERDICT: done\nREASON: the deploy log shows success\nNEXT: -")
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "ship it", agent: "build" })
+    expect(settledNotes(yield* sessions.messages({ sessionID: chat.id }))).toHaveLength(1)
+
+    yield* work(llm, "next answer")
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", parts: [{ type: "text", text: "what next?" }] })
+
+    const next = workHits(yield* llm.hits).at(-1)
+    expect(bodyOf(next!)).toContain("what next?")
+    expect(bodyOf(next!)).toContain("shipped")
+    expect(bodyOf(next!)).not.toContain("the deploy log shows success")
+  }),
+)
+
+it.instance("a subagent below a goal with budget left works normally and updates the goal's spend", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: SessionGoal.withGoal(undefined, SessionGoal.create({ objective: "big task", budget: 5 })),
+    })
+    const child = yield* sessions.create({ title: "Subagent", parentID: chat.id })
+    yield* spend(child.id, 0.3)
+    yield* prompt.prompt({
+      sessionID: child.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "look around", synthetic: true }],
+    })
+    yield* work(llm, "found it")
+
+    const result = yield* prompt.loop({ sessionID: child.id })
+
+    expect(yield* llm.calls).toBe(1)
+    expect(result.parts.some((part) => part.type === "text" && part.text === "found it")).toBe(true)
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("active")
+    expect(goal?.spent).toBeCloseTo(0.3, 5)
+  }),
+)

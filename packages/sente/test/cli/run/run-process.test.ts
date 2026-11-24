@@ -505,4 +505,28 @@ describe("sente run (non-interactive subprocess)", () => {
       }),
     60_000,
   )
+
+  cliIt.concurrent(
+    "--goal runs the built-in loop next to a user's own goal command, without its text",
+    ({ llm, sente }) =>
+      Effect.gen(function* () {
+        yield* llm.textMatch((hit) => !isReview(hit), "wrote hello.txt")
+        yield* llm.textMatch(isReview, "VERDICT: done\nREASON: cat shows hello\nNEXT: -")
+        const config = JSON.stringify({
+          ...testProviderConfig(llm.url),
+          small_model: "test/test-model",
+          command: { goal: { template: "House rule: never continue on your own. $ARGUMENTS" } },
+        })
+        const result = yield* sente.run("", {
+          extraArgs: ["--goal", "write hello.txt", "--goal-budget", "2"],
+          env: { SENTE_CONFIG_CONTENT: config },
+        })
+        sente.expectExit(result, 0)
+        expect(result.stderr).toContain("Goal met: cat shows hello")
+        const work = (yield* llm.hits).find((hit) => !isReview(hit))
+        expect(JSON.stringify(work?.body)).not.toContain("House rule")
+        expect(JSON.stringify(work?.body)).not.toContain("--budget")
+      }),
+    60_000,
+  )
 })

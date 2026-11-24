@@ -65,6 +65,8 @@ export type State = {
   waitingSince?: number
   /** The process driving the goal. */
   owner?: { pid: number; boot: string }
+  /** A standing caveat shown with the goal, e.g. that a $0 model makes the budget moot. */
+  note?: string
 }
 
 export type Verdict = { verdict: "done" | "continue" | "blocked"; reason: string; next?: string }
@@ -140,6 +142,7 @@ export function read(metadata: Record<string, unknown> | undefined): State | und
     judgeCost: num(goal.judgeCost, 0),
     spent: num(goal.spent, 0),
     ...(typeof goal.waitingSince === "number" ? { waitingSince: goal.waitingSince } : {}),
+    ...(typeof goal.note === "string" ? { note: goal.note } : {}),
     ...(owner && typeof owner.pid === "number" && typeof owner.boot === "string"
       ? { owner: { pid: owner.pid, boot: owner.boot } }
       : {}),
@@ -199,8 +202,8 @@ function pidAlive(pid: number) {
 export type Command =
   | { type: "show" }
   | { type: "clear" }
-  | { type: "resume" }
-  | { type: "set"; objective: string; budget?: number; maxRounds?: number }
+  | { type: "resume"; loop?: boolean }
+  | { type: "set"; objective: string; budget?: number; maxRounds?: number; loop?: boolean }
   | { type: "invalid"; reason: string }
 
 /**
@@ -209,37 +212,46 @@ export type Command =
  */
 export function parse(text: string, lang: Lang = ProviderQuota.language()): Command {
   let rest = text.trim()
-  const options: { budget?: number; maxRounds?: number } = {}
+  const options: { budget?: number; maxRounds?: number; loop?: boolean } = {}
+  const invalid = (flag: string): Command => ({
+    type: "invalid",
+    reason:
+      flag === "budget"
+        ? lang === "ja"
+          ? "--budget は正の金額です（例 --budget 3）。"
+          : "--budget must be a positive amount (e.g. --budget 3)."
+        : lang === "ja"
+          ? "--max-rounds は正の整数です。"
+          : "--max-rounds must be a positive integer.",
+  })
+  // `--loop` (no value) asks for the built-in loop even when a user's own goal command exists.
+  if (/(^|\s)--loop(?=\s|$)/.test(rest)) {
+    options.loop = true
+    rest = rest.replace(/(^|\s)--loop(?=\s|$)/g, " ").trim()
+  }
+  // Limits go before or after the condition: `/goal --budget 5 ship it` or `/goal ship it --budget 5`.
+  // At the end only a number counts, so "explain the --budget flag" stays the condition.
+  const patterns = [/^--(budget|max-rounds)(?:=|\s+)(\S+)\s*/, /\s+--(budget|max-rounds)(?:=|\s+)(\$?\d+(?:\.\d+)?)$/]
   while (true) {
-    const flag = /^--(budget|max-rounds)(?:=|\s+)(\S+)\s*/.exec(rest)
+    const flag = patterns.map((pattern) => pattern.exec(rest)).find((match) => match !== null)
     if (!flag) break
     if (flag[1] === "budget") {
       const value = dollars(flag[2])
-      if (value === undefined)
-        return {
-          type: "invalid",
-          reason:
-            lang === "ja"
-              ? "--budget は正の金額です（例 --budget 3）。"
-              : "--budget must be a positive amount (e.g. --budget 3).",
-        }
+      if (value === undefined) return invalid("budget")
       options.budget = value
     } else {
       const value = rounds(flag[2])
-      if (value === undefined)
-        return {
-          type: "invalid",
-          reason: lang === "ja" ? "--max-rounds は正の整数です。" : "--max-rounds must be a positive integer.",
-        }
+      if (value === undefined) return invalid("max-rounds")
       options.maxRounds = value
     }
-    rest = rest.slice(flag[0].length)
+    rest = (flag.index === 0 ? rest.slice(flag[0].length) : rest.slice(0, flag.index)).trim()
   }
   const trimmed = unquote(rest.trim())
   const control = trimmed.toLowerCase()
+  const loop = options.loop ? { loop: true } : {}
   if (trimmed === "") return { type: "show" }
   if (["clear", "off", "stop", "cancel", "解除", "クリア"].includes(control)) return { type: "clear" }
-  if (["resume", "再開"].includes(control)) return { type: "resume" }
+  if (["resume", "再開"].includes(control)) return { type: "resume", ...loop }
   if (trimmed.length > MAX_OBJECTIVE)
     return {
       type: "invalid",
@@ -248,7 +260,8 @@ export function parse(text: string, lang: Lang = ProviderQuota.language()): Comm
           ? `完了条件は${MAX_OBJECTIVE}文字までです（${trimmed.length}文字）。`
           : `A goal condition is limited to ${MAX_OBJECTIVE} characters (got ${trimmed.length}).`,
     }
-  return { type: "set", objective: trimmed, ...options }
+  const { loop: _, ...limits } = options
+  return { type: "set", objective: trimmed, ...limits, ...loop }
 }
 
 export function usage(lang: Lang = ProviderQuota.language()) {
@@ -257,7 +270,9 @@ export function usage(lang: Lang = ProviderQuota.language()) {
     : "Usage: /goal [--budget $N] [--max-rounds N] <condition> | /goal (show) | /goal clear | /goal resume"
 }
 
-export const money = (value: number) => `$${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`
+// Small amounts keep up to four decimals ($0.015, not $0.01): goal budgets are often cents.
+export const money = (value: number) =>
+  `$${value >= 1 || value === 0 ? value.toFixed(2) : value.toFixed(4).replace(/(\.\d\d\d*?)0+$/, "$1")}`
 
 export function costLine(goal: State, lang: Lang = ProviderQuota.language()) {
   return lang === "ja"
@@ -272,7 +287,9 @@ export function describe(goal: State | undefined, lang: Lang = ProviderQuota.lan
       ? { active: "ゴール進行中", complete: "ゴール達成", paused: "ゴール停止中" }[goal.status]
       : { active: "Goal active", complete: "Goal met", paused: "Goal paused" }[goal.status]
   const progress = lang === "ja" ? `継続 ${goal.rounds}/${goal.maxRounds}回` : `${goal.rounds}/${goal.maxRounds} rounds`
-  return [`${head} (${progress}, ${costLine(goal, lang)}): ${goal.objective}`, goal.reason].filter(Boolean).join("\n")
+  return [`${head} (${progress}, ${costLine(goal, lang)}): ${goal.objective}`, goal.reason, goal.note]
+    .filter(Boolean)
+    .join("\n")
 }
 
 /** The line left in the conversation when a goal ends. */
@@ -289,7 +306,16 @@ export function settledNote(goal: State, lang: Lang = ProviderQuota.language()) 
         : lang === "ja"
           ? "ゴール進行中"
           : "Goal active"
-  return `${head}: ${goal.reason ?? goal.objective}\n(${costLine(goal, lang)})`
+  return [`${head}: ${goal.reason ?? goal.objective}`, `(${costLine(goal, lang)})`, goal.note]
+    .filter(Boolean)
+    .join("\n")
+}
+
+/** Shown when the conversation's model is priced at $0: spend never grows, only the round limit stops the goal. */
+export function freeModelNote(lang: Lang = ProviderQuota.language()) {
+  return lang === "ja"
+    ? "このモデルは価格が $0 のため費用が増えず、予算では止まりません。止まる歯止めは継続回数の上限（--max-rounds）だけです。"
+    : "This model is priced at $0, so spend never grows and the budget cannot stop the goal; only the round limit (--max-rounds) does."
 }
 
 /**
@@ -298,11 +324,13 @@ export function settledNote(goal: State, lang: Lang = ProviderQuota.language()) 
  * `metadata.source`. Typing while a goal runs takes over, so the goal stops.
  */
 export function interjected(parts: ReadonlyArray<SessionV1.Part>): boolean {
-  if (parts.some((part) => part.type === "text" && AUTOMATED_SOURCES.has(String(part.metadata?.source)))) return false
-  return parts.some(
-    (part) =>
-      (part.type === "text" && !part.synthetic && !part.ignored) || part.type === "file" || part.type === "agent",
-  )
+  const automated = (part: SessionV1.Part) =>
+    part.type === "text" && AUTOMATED_SOURCES.has(String(part.metadata?.source))
+  // The user's own words, even next to an automated part in the same message, count.
+  if (parts.some((part) => part.type === "text" && !part.synthetic && !part.ignored && !automated(part))) return true
+  // Attachments sent with the goal's kickoff are part of the goal, not a new request.
+  if (parts.some((part) => isGoalPart(part))) return false
+  return parts.some((part) => part.type === "file" || part.type === "agent")
 }
 
 /** Marks the visible line a settled goal leaves on the last assistant message. */
@@ -381,9 +409,11 @@ export function decide(
 }
 
 /**
- * Reviewers word the same gap a little differently each time ("tests fail" / "the tests
- * are failing"). Treat near-identical reasons as the same, so a loop that makes no
- * progress still stops. Numbers count: "5 tests fail" then "3 tests fail" is progress.
+ * Whether two reviewer reasons name the same gap. Case, whitespace, punctuation and small
+ * edits (a word or a particle) are ignored: character-bigram overlap of 0.85 or more counts
+ * as the same. A real rephrasing ("tests fail" / "the suite is red") does not match, so a
+ * stuck loop is caught only when the reviewer repeats itself closely. Numbers must match
+ * exactly: "5 tests fail" then "3 tests fail" is progress, not a repeat.
  */
 export function sameReason(previous: string, next: string): boolean {
   const numbers = (text: string) => (text.match(/\d+(?:\.\d+)?/g) ?? []).join(",")
@@ -411,21 +441,32 @@ export function sameReason(previous: string, next: string): boolean {
  * "not done yet, continue" or an echoed instruction cannot read as done.
  */
 export function parseVerdict(text: string): Verdict | undefined {
+  // Markdown and list decoration around the label are dropped: `**VERDICT:** done`,
+  // `VERDICT:** done`, `1. VERDICT: done`, `- VERDICT: done`.
   const lines = text
     .replace(/<think>[\s\S]*?<\/think>/g, "")
     .split("\n")
-    .map((line) => line.trim().replace(/^[*_#>\s-]+/, ""))
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^(?:[-*+>#]+\s*|\d+[.)]\s*)+/, "")
+        .replace(/^[*_`]+/, "")
+        .trim(),
+    )
+  const label = (name: string) => new RegExp(`^${name}[*_\`]*\\s*[:：][*_\`]*\\s*(.*)$`, "i")
   const field = (name: string) =>
     lines
       .flatMap((line) => {
-        const match = new RegExp(`^${name}[*_]*\\s*[:：]\\s*(.*)$`, "i").exec(line)
+        const match = label(name).exec(line)
         return match ? [match[1].trim()] : []
       })
       .at(-1)
+  // Anchored at the start of the line, so "Example: VERDICT: done" or "例: VERDICT: done" never counts.
   const verdict = lines
     .flatMap((line) => {
-      const match = /^verdict[*_]*\s*[:：]\s*[*_`"']*(done|continue|blocked)[*_`"'.]*$/i.exec(line)
-      return match ? [match[1].toLowerCase() as Verdict["verdict"]] : []
+      const value = label("verdict").exec(line)?.[1]
+      const word = value && /^[*_`"']*(done|continue|blocked)[*_`"'.]*$/i.exec(value.trim())
+      return word ? [word[1].toLowerCase() as Verdict["verdict"]] : []
     })
     .at(-1)
   if (!verdict) return undefined

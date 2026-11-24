@@ -19,6 +19,8 @@ export type GoalInfo = {
   budget: number
   spent: number
   judgeCost: number
+  /** A standing caveat, e.g. that a $0 model makes the budget moot. */
+  note?: string
 }
 
 const num = (value: unknown, fallback: number) =>
@@ -40,6 +42,7 @@ export function readGoal(metadata: Record<string, unknown> | undefined): GoalInf
     budget: num(goal.budget, 3),
     spent: num(goal.spent, 0),
     judgeCost: num(goal.judgeCost, 0),
+    ...(typeof goal.note === "string" ? { note: goal.note } : {}),
   }
 }
 
@@ -50,7 +53,8 @@ export function showsGoalLocally(input: string, command: { description?: string 
   return hasGoal || !command || command.description === BUILTIN_GOAL_DESCRIPTION
 }
 
-const money = (value: number) => `$${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`
+const money = (value: number) =>
+  `$${value >= 1 || value === 0 ? value.toFixed(2) : value.toFixed(4).replace(/(\.\d\d\d*?)0+$/, "$1")}`
 
 export function costLine(goal: GoalInfo, language: Language) {
   return language === "ja"
@@ -79,7 +83,7 @@ export function describeGoal(goal: GoalInfo | undefined, language: Language) {
       : { active: "Goal active", complete: "Goal met", paused: "Goal paused" }[goal.status]
   const progress =
     language === "ja" ? `継続 ${goal.rounds}/${goal.maxRounds}回` : `${goal.rounds}/${goal.maxRounds} rounds`
-  return [`${head} (${progress}, ${costLine(goal, language)}): ${goal.objective}`, goal.reason]
+  return [`${head} (${progress}, ${costLine(goal, language)}): ${goal.objective}`, goal.reason, goal.note]
     .filter(Boolean)
     .join("\n")
 }

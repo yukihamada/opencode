@@ -395,7 +395,9 @@ export const RunCommand = effectCmd({
         const budget = args["goal-budget"]
         if (budget !== undefined && !(Number.isFinite(budget) && budget > 0)) die("--goal-budget must be a positive amount")
         args.command = "goal"
+        // `--loop`: --goal always means the built-in loop, even next to a user's own goal command.
         message = [
+          "--loop",
           ...(budget !== undefined ? [`--budget ${budget}`] : []),
           ...(rounds !== undefined ? [`--max-rounds ${rounds}`] : []),
           [args.goal, message].filter((item) => item.trim()).join("\n\n"),
@@ -885,9 +887,10 @@ export const RunCommand = effectCmd({
               }
 
               if (part.type === "text" && part.time?.end) {
-                if (emit("text", { part })) continue
-                // The goal's closing line goes to stderr with the outcome; keep stdout the answer.
+                // The goal's closing line is reported once, with the outcome (stderr, or the
+                // `goal` event with --format json); keep the answer stream to the answer.
                 if (typeof part.metadata?.goal === "object") continue
+                if (emit("text", { part })) continue
                 const text = part.text.trim()
                 if (!text) continue
                 if (!process.stdout.isTTY) {
@@ -1054,11 +1057,10 @@ export const RunCommand = effectCmd({
               const { SessionGoal } = await import("../../session/goal")
               const info = await client.session.get({ sessionID }).catch(() => undefined)
               const goal = SessionGoal.read(info?.data?.metadata)
-              if (!goal) {
-                if (!emit("goal", { goal: null, message: SessionGoal.customNotice() }))
-                  process.stderr.write(SessionGoal.customNotice() + EOL)
-              } else if (!emit("goal", { goal })) process.stderr.write(SessionGoal.settledNote(goal) + EOL)
-              if (goal && goal.status !== "complete") process.exitCode = ExitCode.GoalUnmet
+              if (goal) {
+                if (!emit("goal", { goal })) process.stderr.write(SessionGoal.settledNote(goal) + EOL)
+              }
+              if (goal?.status !== "complete") process.exitCode = ExitCode.GoalUnmet
             }
             // A /goal that started no turn (no reviewer model, show, clear) never makes the
             // session busy, so no idle event would ever arrive to end the wait.
