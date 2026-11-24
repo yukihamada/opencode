@@ -23,17 +23,39 @@ export type HoldInput = {
 /** Leasing failed (twice); the caller stops the run rather than leave background commands unawaited. */
 export class LeaseError extends Error {}
 
+/**
+ * SENTE_SHELL_TIMEOUT_BACKGROUND=0 on the client: the user opted out, so run without a lease (the
+ * escape hatch when leasing fails). Set on the server too, timed-out commands are then stopped.
+ */
+export function leaseDisabled(env: NodeJS.ProcessEnv = process.env) {
+  const value = env.SENTE_SHELL_TIMEOUT_BACKGROUND?.trim().toLowerCase()
+  return value === "0" || value === "false" || value === "no" || value === "off"
+}
+
+// Server clocks this far from ours are reported, though still used (the server judges the lease).
+const SKEW_WARN_MS = 12 * 60 * 60 * 1000
+
 export async function holdOneShot(input: HoldInput) {
   const signals = input.signals ?? process
+  const id = crypto.randomUUID()
+  let clockNoted = false
+  const note = (message: string) => {
+    if (clockNoted) return
+    clockNoted = true
+    input.warn(message)
+  }
   // Change only our key, on a fresh read right before the write: the server replaces metadata
   // wholesale and has no partial update, so this keeps the window for clobbering others minimal.
-  // The lease expiry is put on the server's clock (from its Date header), since the server judges it.
+  // The lease expiry is put on the server's clock, since the server judges it.
   const write = async (lease: boolean) => {
     const sent = Date.now()
-    const current = await input.client.session.get({ sessionID: input.sessionID })
+    const current = await input.client.session.get(
+      { sessionID: input.sessionID },
+      { headers: { "cache-control": "no-store" } },
+    )
     if (!current.data) throw new Error("session not found")
     const metadata: Record<string, unknown> = { ...current.data.metadata }
-    if (lease) metadata[ShellBackground.ONE_SHOT] = ShellBackground.lease(serverNow(current.response, sent))
+    if (lease) metadata[ShellBackground.ONE_SHOT] = ShellBackground.lease(id, serverNow(current.response, sent, note))
     else delete metadata[ShellBackground.ONE_SHOT]
     const updated = await input.client.session.update({ sessionID: input.sessionID, metadata })
     if (updated.error) throw new Error(String(updated.error))
@@ -46,8 +68,6 @@ export async function holdOneShot(input: HoldInput) {
     return next
   }
 
-  // Jobs already in a joined session before this run are not ours (no clocks involved).
-  const before = new Set(input.owned ? [] : (await jobs(input.client, input.sessionID)).started)
   // One retry, then give up: without the lease the server would tell the model a notification will
   // come, and this run would end (stopping the command) before it does.
   await queue(true)
@@ -57,7 +77,24 @@ export async function holdOneShot(input: HoldInput) {
         `could not mark the session as a one-shot run (${error instanceof Error ? error.message : String(error)})`,
       )
     })
-  const timer = setInterval(() => void queue(true).catch(() => undefined), input.renewMs ?? ShellBackground.RENEW_MS)
+  // A renewal failing now and then is harmless (the lease lasts three renewals); two in a row is not.
+  let failures = 0
+  const timer = setInterval(
+    () =>
+      void queue(true).then(
+        () => {
+          failures = 0
+        },
+        (error: unknown) => {
+          failures++
+          if (failures === 2)
+            input.warn(
+              `could not renew the one-shot lease twice in a row (${error instanceof Error ? error.message : String(error)}); if it lapses, a command that outlives its timeout may not be waited for`,
+            )
+        },
+      ),
+    input.renewMs ?? ShellBackground.RENEW_MS,
+  )
   timer.unref?.()
 
   // Ctrl-C / kill: drop the lease before going, then let the signal take its normal course.
@@ -77,8 +114,19 @@ export async function holdOneShot(input: HoldInput) {
       signals.off("SIGINT", onSignal)
       signals.off("SIGTERM", onSignal)
       await queue(false).catch(() => undefined)
-      const seen = await jobs(input.client, input.sessionID)
-      const running = seen.started.filter((id) => !before.has(id) && !seen.finished.includes(id))
+      // In a session this run made every job is its own; in a joined one, only jobs stamped with its id.
+      const seen = await jobs(input.client, input.sessionID, input.owned ? undefined : id).catch((error: unknown) => {
+        input.warn(
+          `could not check for background commands left by this run (${error instanceof Error ? error.message : String(error)})`,
+        )
+        return undefined
+      })
+      // Unknown: in a session this run made, stopping is the safe side; elsewhere it is not ours to stop.
+      if (!seen) {
+        if (input.owned) await input.client.session.abort({ sessionID: input.sessionID }).catch(() => undefined)
+        return
+      }
+      const running = seen.started.filter((job) => !seen.finished.includes(job))
       if (running.length === 0) return
       // Only a session this run made is ours to interrupt; in someone else's session it would also stop
       // their turn, subagents and jobs. There the commands end on their own or at the lifetime limit.
@@ -96,18 +144,29 @@ export async function holdOneShot(input: HoldInput) {
   return { release }
 }
 
-/** The server's current time, from the Date header of a response to a request sent at `sent`. */
-function serverNow(response: Response | undefined, sent: number) {
+/** The server's current time, from the Date (and Age) headers of a response to a request sent at `sent`. */
+function serverNow(response: Response | undefined, sent: number, warn: (message: string) => void) {
   const date = Date.parse(response?.headers.get("date") ?? "")
-  if (Number.isNaN(date)) return Date.now()
-  // The header is the server time when it answered; add what has passed since (and its 1s rounding).
-  return date + Math.max(0, Date.now() - sent)
+  if (Number.isNaN(date)) {
+    warn("the server sent no Date header; the one-shot lease expiry uses this machine's clock")
+    return Date.now()
+  }
+  // A cached answer is older than its Date by Age seconds.
+  const age = Number(response?.headers.get("age") ?? 0)
+  // The header is the server time when it answered (1s resolution); add what has passed since.
+  const now = date + (Number.isFinite(age) && age > 0 ? age * 1000 : 0) + Math.max(0, Date.now() - sent)
+  if (Math.abs(now - Date.now()) > SKEW_WARN_MS)
+    warn(
+      `the server clock differs from this machine by about ${Math.round(Math.abs(now - Date.now()) / 3_600_000)} h; the one-shot lease follows the server clock`,
+    )
+  return now
 }
 
-/** Background shell jobs of the session, and those whose result was delivered. */
-async function jobs(client: Client, sessionID: string) {
-  const response = await client.session.messages({ sessionID }).catch(() => undefined)
-  const parts = (response?.data ?? []).flatMap((message) => message.parts)
+/** Background shell jobs of the session (only those stamped with `run`, if given), and delivered ones. */
+async function jobs(client: Client, sessionID: string, run?: string) {
+  const response = await client.session.messages({ sessionID })
+  if (!response.data) throw new Error(response.error ? String(response.error) : "no messages returned")
+  const parts = response.data.flatMap((message) => message.parts)
   const started: string[] = []
   const finished: string[] = []
   for (const part of parts) {
@@ -117,8 +176,9 @@ async function jobs(client: Client, sessionID: string) {
     }
     if (part.type !== "tool" || part.state.status !== "completed") continue
     const metadata = part.state.metadata as Record<string, unknown> | undefined
-    if (part.tool === "bash" && metadata?.background === true && typeof metadata.jobId === "string")
-      started.push(metadata.jobId)
+    if (part.tool === "bash" && metadata?.background === true && typeof metadata.jobId === "string") {
+      if (run === undefined || metadata.run === run) started.push(metadata.jobId)
+    }
     if (part.tool === "wait" && typeof metadata?.jobId === "string" && metadata.status !== "pending")
       finished.push(metadata.jobId)
   }

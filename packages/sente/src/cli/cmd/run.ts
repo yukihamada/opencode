@@ -971,11 +971,11 @@ export const RunCommand = effectCmd({
           // Under --attach the server outlives this run: lease the session as one-shot so a shell command
           // that outlives its timeout is waited for in-turn, and clean up after the run. A local run is
           // recognised by SENTE_NONINTERACTIVE, and disposing its instance stops what is left.
-          const { holdOneShot, LeaseError } = await import("./run/runtime.oneshot")
+          const { holdOneShot, LeaseError, leaseDisabled } = await import("./run/runtime.oneshot")
           // Without the lease the server would promise the model a notification this run never waits
           // for, so a failed lease stops the run (before any prompt) instead of risking that.
           const hold =
-            args.attach && sessionID
+            args.attach && sessionID && !leaseDisabled()
               ? await holdOneShot({
                   client,
                   sessionID,
@@ -984,7 +984,7 @@ export const RunCommand = effectCmd({
                 }).catch((error: unknown) => {
                   if (!(error instanceof LeaseError)) throw error
                   return die(
-                    `${error.message}. Retry, or set SENTE_SHELL_TIMEOUT_BACKGROUND=0 on the server so timed-out commands are stopped instead.`,
+                    `${error.message}. Retry, or run with SENTE_SHELL_TIMEOUT_BACKGROUND=0 to go on without it (also set it on the server so timed-out commands are stopped rather than left unawaited).`,
                     ExitCode.Network,
                   )
                 })

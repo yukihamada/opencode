@@ -451,7 +451,7 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
           const dir = yield* tmpdirScoped()
           const jobs = yield* BackgroundJob.Service
           for (const session of [
-            { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease() } },
+            { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease("run_test") } },
             { parentID: "ses_parent" },
           ]) {
             const rec = recorder()
@@ -482,7 +482,10 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
         yield* Effect.gen(function* () {
           const result = yield* execute(
             { command: "sleep 1.8", timeout: 100 },
-            { ...ctx, extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease() } } } },
+            {
+              ...ctx,
+              extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease("run_test") } } },
+            },
           )
           const job = (result.metadata as { jobId?: string }).jobId!
           const first = JSON.parse((yield* waitTool({ job, timeout: 1 })).output)
@@ -615,11 +618,39 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
   )
 })
 
+describe("shell background: run stamp", () => {
+  it.live(
+    "a job started under a live sente run lease carries that run's id; others carry none",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const leased = yield* execute(
+            { command: "sleep 0.3", timeout: 100 },
+            {
+              ...ctx,
+              extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease("run_abc") } } },
+            },
+          )
+          expect((leased.metadata as { run?: string }).run).toBe("run_abc")
+          const job = (leased.metadata as { jobId?: string }).jobId!
+          expect((yield* jobs.get(job))?.metadata?.run).toBe("run_abc")
+          const plain = yield* execute({ command: "sleep 0.3", timeout: 100 })
+          expect((plain.metadata as { run?: string }).run).toBeUndefined()
+          yield* jobs.wait({ id: job, timeout: 10_000 })
+          yield* jobs.wait({ id: (plain.metadata as { jobId?: string }).jobId!, timeout: 10_000 })
+        }).pipe(provideInstance(dir))
+      }),
+    20_000,
+  )
+})
+
 describe("shell background: one-shot lease", () => {
   it.effect("a live lease means wait in-turn; an expired or dead-run lease does not", () =>
     Effect.sync(() => {
       const now = Date.now()
-      const fresh = ShellBackground.lease(now)
+      const fresh = ShellBackground.lease("run_test", now)
       expect(ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: fresh } }, {}, now)).toBe(true)
       expect(
         ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: { ...fresh, until: now - 1 } } }, {}, now),

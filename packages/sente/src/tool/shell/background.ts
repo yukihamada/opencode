@@ -15,13 +15,22 @@ export const RENEW_MS = 60 * 1000
 export const DEFAULT_MAX_MS = 60 * 60 * 1000
 export const DEFAULT_MAX_JOBS = 4
 
-export type Lease = { pid: number; host: string; until: number }
+type SessionLike = { parentID?: string; metadata?: Record<string, unknown> }
 
-export function lease(now = Date.now()): Lease {
-  return { pid: process.pid, host: os.hostname(), until: now + LEASE_MS }
+/** `id` names the run, so the jobs it starts can be told apart from other clients' in the session. */
+export type Lease = { id: string; pid: number; host: string; until: number }
+
+export function lease(id: string, now = Date.now()): Lease {
+  return { id, pid: process.pid, host: os.hostname(), until: now + LEASE_MS }
 }
 
-type SessionLike = { parentID?: string; metadata?: Record<string, unknown> }
+/** The run holding a live lease on the session, if any. */
+export function runID(session: SessionLike | undefined, now = Date.now()) {
+  const value = session?.metadata?.[ONE_SHOT]
+  if (!live(value, now)) return undefined
+  const id = (value as Partial<Lease>).id
+  return typeof id === "string" ? id : undefined
+}
 
 /**
  * Nobody will read a follow-up turn: a one-shot `sente run` (it ends, and stops the command, when the

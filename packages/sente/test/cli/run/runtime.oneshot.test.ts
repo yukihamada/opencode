@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
-import { holdOneShot, LeaseError } from "../../../src/cli/cmd/run/runtime.oneshot"
+import { holdOneShot, LeaseError, leaseDisabled } from "../../../src/cli/cmd/run/runtime.oneshot"
 import { ShellBackground } from "../../../src/tool/shell/background"
 
 type Part = Record<string, unknown>
@@ -11,6 +11,9 @@ function fakeServer(
     parts?: Part[]
     failUpdates?: number
     skewMs?: number
+    /** Replaces the Date/Age headers of GET responses. */
+    headers?: Record<string, string>
+    failMessages?: boolean
   } = {},
 ) {
   const state = {
@@ -19,16 +22,19 @@ function fakeServer(
     // Lets a test hold an update in flight.
     gate: undefined as Promise<void> | undefined,
   }
-  const calls = { update: 0, abort: 0 }
+  const calls = { update: 0, abort: 0, getHeaders: [] as unknown[] }
   let failures = input.failUpdates ?? 0
   const client = {
     session: {
-      get: async () => ({
-        data: { id: "ses_1", metadata: { ...state.metadata } },
-        response: new Response(null, {
-          headers: { date: new Date(Date.now() + (input.skewMs ?? 0)).toUTCString() },
-        }),
-      }),
+      get: async (_params: unknown, options?: { headers?: unknown }) => {
+        calls.getHeaders.push(options?.headers)
+        return {
+          data: { id: "ses_1", metadata: { ...state.metadata } },
+          response: new Response(null, {
+            headers: input.headers ?? { date: new Date(Date.now() + (input.skewMs ?? 0)).toUTCString() },
+          }),
+        }
+      },
       update: async (args: { metadata?: Record<string, unknown> }) => {
         calls.update++
         // One-shot: only the update that finds the gate waits on it; later ones go straight through.
@@ -46,7 +52,8 @@ function fakeServer(
         calls.abort++
         return { data: true }
       },
-      messages: async () => ({ data: [{ info: {}, parts: state.parts }] }),
+      messages: async () =>
+        input.failMessages ? { error: "unavailable" } : { data: [{ info: {}, parts: state.parts }] },
     },
   }
   return { state, calls, client: client as never }
@@ -67,10 +74,14 @@ const signals = () => {
   }
 }
 
-const bash = (jobId: string): Part => ({
+const bash = (jobId: string, run?: string): Part => ({
   type: "tool",
   tool: "bash",
-  state: { status: "completed", metadata: { background: true, jobId }, time: { start: 0, end: 0 } },
+  state: {
+    status: "completed",
+    metadata: { background: true, jobId, ...(run ? { run } : {}) },
+    time: { start: 0, end: 0 },
+  },
 })
 const waited = (jobId: string, status: string): Part => ({
   type: "tool",
@@ -185,7 +196,7 @@ describe("sente run --attach one-shot lease", () => {
     expect(server.calls.abort).toBe(1)
   })
 
-  test("in a session it joined (-s/-c), it never aborts and only names jobs that appeared during the run", async () => {
+  test("in a session it joined (-s/-c), it never aborts and names only the jobs this run started", async () => {
     const warnings: string[] = []
     const server = fakeServer({ parts: [bash("job_old")] })
     const hold = await holdOneShot({
@@ -195,11 +206,14 @@ describe("sente run --attach one-shot lease", () => {
       warn: (text) => void warnings.push(text),
       signals: signals().signals,
     })
-    server.state.parts.push(bash("job_mine"))
+    const run = lease(server)!.id
+    // Another client (a TUI, another run) starts jobs in the same session meanwhile.
+    server.state.parts.push(bash("job_mine", run), bash("job_tui"), bash("job_other_run", "run_other"))
     await hold.release()
     expect(server.calls.abort).toBe(0)
-    expect(warnings.join("\n")).toContain("job_mine")
-    expect(warnings.join("\n")).not.toContain("job_old")
+    const text = warnings.join("\n")
+    expect(text).toContain("job_mine")
+    for (const other of ["job_old", "job_tui", "job_other_run"]) expect(text).not.toContain(other)
   })
 
   test("with nothing left running it does nothing", async () => {
@@ -247,5 +261,113 @@ describe("sente run --attach one-shot lease", () => {
     expect(String(result)).toContain("could not mark the session as a one-shot run")
     expect(sig.emitter.listenerCount("SIGINT")).toBe(0)
     expect(server.calls.abort).toBe(0)
+  })
+
+  test("reads the session uncached", async () => {
+    const server = fakeServer()
+    const hold = await holdOneShot({
+      client: server.client,
+      sessionID: "ses_1",
+      owned: true,
+      warn: () => {},
+      signals: signals().signals,
+    })
+    expect(server.calls.getHeaders[0]).toEqual({ "cache-control": "no-store" })
+    await hold.release()
+  })
+
+  test("no Date header: warns once and uses this machine's clock", async () => {
+    const warnings: string[] = []
+    const server = fakeServer({ headers: {} })
+    const hold = await holdOneShot({
+      client: server.client,
+      sessionID: "ses_1",
+      owned: true,
+      warn: (text) => void warnings.push(text),
+      signals: signals().signals,
+    })
+    await hold.release()
+    expect(warnings.filter((text) => text.includes("no Date header"))).toHaveLength(1)
+  })
+
+  test("a cached (Age) or far-off Date is accounted for and reported", async () => {
+    const warnings: string[] = []
+    const stale = new Date(Date.now() - 2 * 24 * 3_600_000)
+    const server = fakeServer({ headers: { date: stale.toUTCString(), age: "60" } })
+    const hold = await holdOneShot({
+      client: server.client,
+      sessionID: "ses_1",
+      owned: true,
+      warn: (text) => void warnings.push(text),
+      signals: signals().signals,
+    })
+    const until = lease(server)!.until
+    // Date + Age + lease time, on the (reported) server clock.
+    expect(Math.abs(until - (stale.getTime() + 60_000 + ShellBackground.LEASE_MS))).toBeLessThan(3_000)
+    expect(warnings.join("\n")).toContain("server clock differs")
+    await hold.release()
+  })
+
+  test("two renewals failing in a row are reported once", async () => {
+    const warnings: string[] = []
+    const server = fakeServer()
+    const hold = await holdOneShot({
+      client: server.client,
+      sessionID: "ses_1",
+      owned: true,
+      warn: (text) => void warnings.push(text),
+      signals: signals().signals,
+      renewMs: 15,
+    })
+    const update = server.client as unknown as { session: { update: (args: unknown) => Promise<unknown> } }
+    const real = update.session.update
+    update.session.update = async () => ({ error: "down" })
+    await Bun.sleep(100)
+    update.session.update = real
+    await hold.release()
+    expect(warnings.filter((text) => text.includes("could not renew"))).toHaveLength(1)
+  })
+
+  test("if its own session's messages cannot be read, it warns and stops the session to be safe", async () => {
+    const warnings: string[] = []
+    const server = fakeServer({ failMessages: true })
+    const hold = await holdOneShot({
+      client: server.client,
+      sessionID: "ses_1",
+      owned: true,
+      warn: (text) => void warnings.push(text),
+      signals: signals().signals,
+    })
+    await hold.release()
+    expect(warnings.join("\n")).toContain("could not check for background commands")
+    expect(server.calls.abort).toBe(1)
+  })
+
+  test("in a joined session an unreadable message list only warns", async () => {
+    const warnings: string[] = []
+    const server = fakeServer({ failMessages: true })
+    const hold = await holdOneShot({
+      client: server.client,
+      sessionID: "ses_1",
+      owned: false,
+      warn: (text) => void warnings.push(text),
+      signals: signals().signals,
+    })
+    await hold.release()
+    expect(warnings.join("\n")).toContain("could not check for background commands")
+    expect(server.calls.abort).toBe(0)
+  })
+})
+
+describe("SENTE_SHELL_TIMEOUT_BACKGROUND=0 on the client skips the lease", () => {
+  test.each([
+    ["0", true],
+    ["false", true],
+    ["off", true],
+    ["1", false],
+    ["", false],
+    [undefined, false],
+  ])("%p → %p", (value, disabled) => {
+    expect(leaseDisabled(value === undefined ? {} : { SENTE_SHELL_TIMEOUT_BACKGROUND: value })).toBe(disabled)
   })
 })

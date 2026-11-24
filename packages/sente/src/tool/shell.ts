@@ -620,6 +620,8 @@ export const ShellTool = Tool.define(
             const maxJobs = flags.shellBackgroundMaxJobs ?? ShellBackground.DEFAULT_MAX_JOBS
             const session = ctx.extra?.session as { parentID?: string; metadata?: Record<string, unknown> } | undefined
             const mustWait = ShellBackground.mustWait(session)
+            // The `sente run --attach` that started it, so that run can find its own leftovers.
+            const run = ShellBackground.runID(session)
             const pid = Number(handle.pid)
             const known = Number.isInteger(pid) && pid > 0
             const maxMs = flags.shellBackgroundMaxMs ?? ShellBackground.DEFAULT_MAX_MS
@@ -648,6 +650,7 @@ export const ShellTool = Tool.define(
                             command: input.command,
                             outputPath: file,
                             mustWait,
+                            ...(run ? { run } : {}),
                             ...(known ? { pid } : {}),
                           },
                           run: Effect.gen(function* () {
@@ -733,6 +736,7 @@ export const ShellTool = Tool.define(
                   background: true,
                   jobId: info.id,
                   ...(known ? { pid } : {}),
+                  ...(run ? { run } : {}),
                 },
                 output: result.output,
               }
