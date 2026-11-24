@@ -72,6 +72,15 @@ describe("session goal", () => {
       type: "invalid",
       reason: expect.stringContaining("three"),
     })
+    // At the end it may be the condition's own words: the notice says how to keep them.
+    expect(SessionGoal.parse("explain the --budget flag", "ja")).toMatchObject({
+      type: "invalid",
+      reason: expect.stringContaining("引用符"),
+    })
+    expect(SessionGoal.parse('"explain the --budget flag"', "en")).toEqual({
+      type: "set",
+      objective: "explain the --budget flag",
+    })
   })
 
   test("amounts are read the way people type them, and unreadable ones are errors", () => {
@@ -243,6 +252,14 @@ describe("session goal", () => {
     })
     expect(SessionGoal.parseVerdict("```\nVERDICT: blocked\nREASON: needs a key\n```")?.verdict).toBe("blocked")
     expect(SessionGoal.parseVerdict("```\nno verdict here\n```")).toBeUndefined()
+    // A short lead-in outside the block still lets the block be read.
+    expect(SessionGoal.parseVerdict("Here is my answer:\n```\nVERDICT: done\nREASON: ok\n```")?.verdict).toBe("done")
+    // Real prose outside with no verdict there: the block is quoted material, not the answer.
+    expect(
+      SessionGoal.parseVerdict(
+        "The assistant pasted the README, which contains this example of the output format:\n```\nVERDICT: done\nREASON: all green\n```\nI cannot tell from that whether the work is finished.",
+      ),
+    ).toBeUndefined()
     // An example block after the answer is not the answer, and REASON comes from the chosen block.
     expect(
       SessionGoal.parseVerdict(

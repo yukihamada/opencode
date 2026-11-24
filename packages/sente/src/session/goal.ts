@@ -269,7 +269,19 @@ export function parse(text: string, lang: Lang = ProviderQuota.language()): Comm
   while (true) {
     const flag = patterns.map((pattern) => pattern.exec(rest)).find((match) => match !== null)
     // An ASCII word ("abc", "three") right after the flag is a mistyped value, not prose.
-    if (flag && /^[a-z]+$/i.test(flag[2])) return invalid(flag[1] === "budget" ? "budget" : "max-rounds", flag[2])
+    if (flag && /^[a-z]+$/i.test(flag[2])) {
+      const error = invalid(flag[1] === "budget" ? "budget" : "max-rounds", flag[2])
+      if (flag.index === 0 || error.type !== "invalid") return error
+      // At the end it may just be the last words of the condition.
+      return {
+        type: "invalid",
+        reason:
+          error.reason +
+          (lang === "ja"
+            ? ' 条件文の一部として使うなら、条件全体を引用符で囲んでください（例 /goal "… --budget flag"）。'
+            : ' To use it as part of the condition, wrap the whole condition in quotes (e.g. /goal "… --budget flag").'),
+      }
+    }
     if (!flag || !amountLike(flag[2])) break
     if (flag[1] === "budget") {
       const value = dollars(flag[2])
@@ -487,14 +499,20 @@ export function sameReason(previous: string, next: string): boolean {
  * exactly `VERDICT: <one word>` counts, and the last such line wins, so prose such as
  * "not done yet, continue" or an echoed instruction cannot read as done.
  */
+/** Characters of text outside code blocks up to which a fully fenced answer is still read. */
+const OUTSIDE_PROSE_LIMIT = 40
+
 export function parseVerdict(text: string): Verdict | undefined {
   // Lines inside ``` code blocks are quoted material (an example, a log) when the answer is
   // also outside them. A reviewer that wraps its whole answer in a code block is still read.
+  // When the answer has real prose outside the blocks but no verdict there, the block is
+  // quoted material too: no verdict (the goal pauses) rather than reading a quoted one.
   const visible = text.replace(/<think>[\s\S]*?<\/think>/g, "")
-  return (
-    readVerdict(visible.replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1\s*$|(?![\s\S]))/gm, "")) ??
-    readVerdict(visible.replace(/^\s*(```|~~~).*$/gm, ""))
-  )
+  const outside = visible.replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1\s*$|(?![\s\S]))/gm, "")
+  const found = readVerdict(outside)
+  if (found) return found
+  if (outside.replace(/\s+/g, "").length > OUTSIDE_PROSE_LIMIT) return undefined
+  return readVerdict(visible.replace(/^\s*(```|~~~).*$/gm, ""))
 }
 
 function readVerdict(text: string): Verdict | undefined {
