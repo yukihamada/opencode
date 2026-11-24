@@ -619,9 +619,11 @@ export const ShellTool = Tool.define(
                 : exit
             const maxJobs = flags.shellBackgroundMaxJobs ?? ShellBackground.DEFAULT_MAX_JOBS
             const session = ctx.extra?.session as { parentID?: string; metadata?: Record<string, unknown> } | undefined
-            const mustWait = ShellBackground.mustWait(session)
-            // The `sente run --attach` that started it, so that run can find its own leftovers.
-            const run = ShellBackground.runID(session)
+            // This turn's user message: a `sente run --attach` lease names the one it sent.
+            const turn = ctx.messages.findLast((message) => message.info.role === "user")?.info.id
+            const mustWait = ShellBackground.mustWait(session, turn)
+            // The `sente run --attach` whose turn started it.
+            const run = ShellBackground.turnRun(session, turn)
             const pid = Number(handle.pid)
             const known = Number.isInteger(pid) && pid > 0
             const maxMs = flags.shellBackgroundMaxMs ?? ShellBackground.DEFAULT_MAX_MS

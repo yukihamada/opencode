@@ -4,9 +4,11 @@ import os from "node:os"
 // Kept dependency-free so `sente run` can import the session marker cheaply.
 
 /**
- * Session metadata key a `sente run --attach` sets while it drives a session on another server
- * (a local run is recognised by SENTE_NONINTERACTIVE instead). The value is a lease, renewed while
- * the run lives, so a run that died without removing it stops counting soon after.
+ * Session metadata key under which each `sente run --attach` driving the session holds a lease,
+ * keyed by its run ID: `{ [runID]: Lease }` (a local run is recognised by SENTE_NONINTERACTIVE
+ * instead). A lease names the user message the run sent, so only that run's turn counts as one-shot
+ * (a TUI turn in the same session stays interactive). It is renewed while the run lives, so a run that
+ * died without removing it stops counting soon after.
  */
 export const ONE_SHOT = "sente.oneShot"
 export const LEASE_MS = 3 * 60 * 1000
@@ -17,30 +19,41 @@ export const DEFAULT_MAX_JOBS = 4
 
 type SessionLike = { parentID?: string; metadata?: Record<string, unknown> }
 
-/** `id` names the run, so the jobs it starts can be told apart from other clients' in the session. */
-export type Lease = { id: string; pid: number; host: string; until: number }
+export type Lease = { message: string; pid: number; host: string; until: number }
 
-export function lease(id: string, now = Date.now()): Lease {
-  return { id, pid: process.pid, host: os.hostname(), until: now + LEASE_MS }
+export function lease(message: string, now = Date.now()): Lease {
+  return { message, pid: process.pid, host: os.hostname(), until: now + LEASE_MS }
 }
 
-/** The run holding a live lease on the session, if any. */
-export function runID(session: SessionLike | undefined, now = Date.now()) {
+/** The leases of a session, by run ID (anything malformed is ignored). */
+export function leases(session: SessionLike | undefined): Record<string, unknown> {
   const value = session?.metadata?.[ONE_SHOT]
-  if (!live(value, now)) return undefined
-  const id = (value as Partial<Lease>).id
-  return typeof id === "string" ? id : undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  return value as Record<string, unknown>
+}
+
+/** The run whose live lease names this turn's user message, if any. */
+export function turnRun(session: SessionLike | undefined, message: string | undefined, now = Date.now()) {
+  if (!message) return undefined
+  return Object.entries(leases(session)).find(
+    ([, entry]) => (entry as Partial<Lease> | undefined)?.message === message && live(entry, now),
+  )?.[0]
 }
 
 /**
- * Nobody will read a follow-up turn: a one-shot `sente run` (it ends, and stops the command, when the
- * reply ends) or a subagent (its parent only sees its final reply). The model has to wait in-turn.
+ * Nobody will read a follow-up turn: a one-shot `sente run` turn (it ends, and stops the command, when
+ * the reply ends) or a subagent (its parent only sees its final reply). The model has to wait in-turn.
  */
-export function mustWait(session: SessionLike | undefined, env: NodeJS.ProcessEnv = process.env, now = Date.now()) {
+export function mustWait(
+  session: SessionLike | undefined,
+  message: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  now = Date.now(),
+) {
   if (env.SENTE_NONINTERACTIVE === "1") return true
   if (!session) return false
   if (session.parentID) return true
-  return live(session.metadata?.[ONE_SHOT], now)
+  return turnRun(session, message, now) !== undefined
 }
 
 /** A lease counts until it expires, or until its run is seen to be gone on this same machine. */

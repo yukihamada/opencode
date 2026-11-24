@@ -82,6 +82,16 @@ const gone = (pid: number, ms = 6_000) =>
 
 const flags = (overrides: Partial<RuntimeFlags.Info>) => Effect.provide(RuntimeFlags.layer(overrides))
 
+// A turn of `sente run --attach`: its user message is named by the run's lease on the session.
+const leasedTurn = (run: string, extra: Record<string, unknown> = {}) => ({
+  ...ctx,
+  messages: [{ info: { id: "msg_run_turn", role: "user" }, parts: [] }] as never,
+  extra: {
+    ...extra,
+    session: { metadata: { [ShellBackground.ONE_SHOT]: { [run]: ShellBackground.lease("msg_run_turn") } } },
+  },
+})
+
 // POSIX-only: these drive real `sleep` processes and process-group signals.
 describe.skipIf(process.platform === "win32")("tool.shell timeout → background", () => {
   it.live("a command that finishes in time behaves as before", () =>
@@ -450,15 +460,14 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
         Effect.gen(function* () {
           const dir = yield* tmpdirScoped()
           const jobs = yield* BackgroundJob.Service
-          for (const session of [
-            { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease("run_test") } },
-            { parentID: "ses_parent" },
-          ]) {
+          for (const kind of ["one-shot", "subagent"]) {
             const rec = recorder()
             yield* Effect.gen(function* () {
               const result = yield* execute(
                 { command: "sleep 0.4", timeout: 100 },
-                { ...ctx, extra: { promptOps: rec.ops, session } },
+                kind === "one-shot"
+                  ? leasedTurn("run_test", { promptOps: rec.ops })
+                  : { ...ctx, extra: { promptOps: rec.ops, session: { parentID: "ses_parent" } } },
               )
               expect(result.output).toContain("This session ends when you finish your reply")
               expect(result.output).not.toContain("notified automatically")
@@ -480,13 +489,7 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
       Effect.gen(function* () {
         const dir = yield* tmpdirScoped()
         yield* Effect.gen(function* () {
-          const result = yield* execute(
-            { command: "sleep 1.8", timeout: 100 },
-            {
-              ...ctx,
-              extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease("run_test") } } },
-            },
-          )
+          const result = yield* execute({ command: "sleep 1.8", timeout: 100 }, leasedTurn("run_test"))
           const job = (result.metadata as { jobId?: string }).jobId!
           const first = JSON.parse((yield* waitTool({ job, timeout: 1 })).output)
           expect(first.status).toBe("pending")
@@ -626,18 +629,18 @@ describe("shell background: run stamp", () => {
         const dir = yield* tmpdirScoped()
         const jobs = yield* BackgroundJob.Service
         yield* Effect.gen(function* () {
-          const leased = yield* execute(
-            { command: "sleep 0.3", timeout: 100 },
-            {
-              ...ctx,
-              extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease("run_abc") } } },
-            },
-          )
+          const leased = yield* execute({ command: "sleep 0.3", timeout: 100 }, leasedTurn("run_abc"))
           expect((leased.metadata as { run?: string }).run).toBe("run_abc")
           const job = (leased.metadata as { jobId?: string }).jobId!
           expect((yield* jobs.get(job))?.metadata?.run).toBe("run_abc")
-          const plain = yield* execute({ command: "sleep 0.3", timeout: 100 })
+          // A TUI turn in the same leased session: a different user message, so not the run's, and interactive.
+          const tui = leasedTurn("run_abc")
+          const plain = yield* execute(
+            { command: "sleep 0.3", timeout: 100 },
+            { ...tui, messages: [{ info: { id: "msg_tui", role: "user" }, parts: [] }] as never },
+          )
           expect((plain.metadata as { run?: string }).run).toBeUndefined()
+          expect(plain.output).toContain("notified automatically")
           yield* jobs.wait({ id: job, timeout: 10_000 })
           yield* jobs.wait({ id: (plain.metadata as { jobId?: string }).jobId!, timeout: 10_000 })
         }).pipe(provideInstance(dir))
@@ -647,33 +650,26 @@ describe("shell background: run stamp", () => {
 })
 
 describe("shell background: one-shot lease", () => {
-  it.effect("a live lease means wait in-turn; an expired or dead-run lease does not", () =>
+  it.effect("a live lease means wait in-turn for its own turn only; expired or dead-run leases do not", () =>
     Effect.sync(() => {
       const now = Date.now()
-      const fresh = ShellBackground.lease("run_test", now)
-      expect(ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: fresh } }, {}, now)).toBe(true)
-      expect(
-        ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: { ...fresh, until: now - 1 } } }, {}, now),
-      ).toBe(false)
+      const fresh = ShellBackground.lease("msg_turn", now)
+      const with_ = (entry: unknown) => ({ metadata: { [ShellBackground.ONE_SHOT]: { run_1: entry } } })
+      expect(ShellBackground.mustWait(with_(fresh), "msg_turn", {}, now)).toBe(true)
+      expect(ShellBackground.mustWait(with_(fresh), "msg_other_turn", {}, now)).toBe(false)
+      expect(ShellBackground.mustWait(with_(fresh), undefined, {}, now)).toBe(false)
+      expect(ShellBackground.mustWait(with_({ ...fresh, until: now - 1 }), "msg_turn", {}, now)).toBe(false)
       // Same machine, but the run that took the lease is gone (Ctrl-C, crash): ignored right away.
-      expect(
-        ShellBackground.mustWait(
-          { metadata: { [ShellBackground.ONE_SHOT]: { ...fresh, pid: 2 ** 22 + 12345 } } },
-          {},
-          now,
-        ),
-      ).toBe(false)
+      expect(ShellBackground.mustWait(with_({ ...fresh, pid: 2 ** 22 + 12345 }), "msg_turn", {}, now)).toBe(false)
       // Another machine's run cannot be probed; its lease counts until it expires.
       expect(
-        ShellBackground.mustWait(
-          { metadata: { [ShellBackground.ONE_SHOT]: { ...fresh, host: "elsewhere", pid: 2 ** 22 + 12345 } } },
-          {},
-          now,
-        ),
+        ShellBackground.mustWait(with_({ ...fresh, host: "elsewhere", pid: 2 ** 22 + 12345 }), "msg_turn", {}, now),
       ).toBe(true)
-      expect(ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: true } }, {}, now)).toBe(false)
-      expect(ShellBackground.mustWait({}, {}, now)).toBe(false)
-      expect(ShellBackground.mustWait({}, { SENTE_NONINTERACTIVE: "1" }, now)).toBe(true)
+      expect(ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: true } }, "msg_turn", {}, now)).toBe(
+        false,
+      )
+      expect(ShellBackground.mustWait({}, "msg_turn", {}, now)).toBe(false)
+      expect(ShellBackground.mustWait({}, undefined, { SENTE_NONINTERACTIVE: "1" }, now)).toBe(true)
     }),
   )
 })

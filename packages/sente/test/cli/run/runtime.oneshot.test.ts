@@ -1,25 +1,30 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
-import { holdOneShot, LeaseError, leaseDisabled } from "../../../src/cli/cmd/run/runtime.oneshot"
+import { holdOneShot, LeaseError, leaseDisabled, type HoldInput } from "../../../src/cli/cmd/run/runtime.oneshot"
 import { ShellBackground } from "../../../src/tool/shell/background"
 
 type Part = Record<string, unknown>
+type Message = { info: Record<string, unknown>; parts: Part[] }
+
+const TURN = "msg_run_turn"
 
 function fakeServer(
   input: {
     metadata?: Record<string, unknown>
-    parts?: Part[]
+    messages?: Message[]
     failUpdates?: number
     skewMs?: number
     /** Replaces the Date/Age headers of GET responses. */
     headers?: Record<string, string>
     failMessages?: boolean
+    /** Delay inside update(), so concurrent read-modify-writes interleave. */
+    updateDelayMs?: number
   } = {},
 ) {
   const state = {
     metadata: { ...input.metadata } as Record<string, unknown>,
-    parts: input.parts ?? [],
-    // Lets a test hold an update in flight.
+    messages: input.messages ?? [],
+    // Lets a test hold one update in flight.
     gate: undefined as Promise<void> | undefined,
   }
   const calls = { update: 0, abort: 0, getHeaders: [] as unknown[] }
@@ -41,6 +46,7 @@ function fakeServer(
         const gate = state.gate
         state.gate = undefined
         if (gate) await gate
+        if (input.updateDelayMs) await Bun.sleep(input.updateDelayMs)
         if (failures > 0) {
           failures--
           return { error: "boom" }
@@ -52,8 +58,7 @@ function fakeServer(
         calls.abort++
         return { data: true }
       },
-      messages: async () =>
-        input.failMessages ? { error: "unavailable" } : { data: [{ info: {}, parts: state.parts }] },
+      messages: async () => (input.failMessages ? { error: "unavailable" } : { data: state.messages }),
     },
   }
   return { state, calls, client: client as never }
@@ -74,219 +79,210 @@ const signals = () => {
   }
 }
 
-const bash = (jobId: string, run?: string): Part => ({
+const hold = (server: ReturnType<typeof fakeServer>, extra: Partial<HoldInput> = {}) =>
+  holdOneShot({
+    client: server.client,
+    sessionID: "ses_1",
+    owned: true,
+    message: TURN,
+    warn: () => {},
+    signals: signals().signals,
+    settleMs: 5,
+    ...extra,
+  })
+
+/** An assistant reply in the turn answering `parent`, with the given parts. */
+const reply = (parent: string, ...parts: Part[]): Message => ({ info: { role: "assistant", parentID: parent }, parts })
+const bash = (jobId: string): Part => ({
   type: "tool",
   tool: "bash",
-  state: {
-    status: "completed",
-    metadata: { background: true, jobId, ...(run ? { run } : {}) },
-    time: { start: 0, end: 0 },
-  },
+  state: { status: "completed", metadata: { background: true, jobId }, time: { start: 0, end: 0 } },
 })
 const waited = (jobId: string, status: string): Part => ({
   type: "tool",
   tool: "wait",
   state: { status: "completed", metadata: { jobId, status }, time: { start: 0, end: 0 } },
 })
-const lease = (server: ReturnType<typeof fakeServer>) =>
-  server.state.metadata[ShellBackground.ONE_SHOT] as ShellBackground.Lease | undefined
+const entries = (server: ReturnType<typeof fakeServer>) =>
+  Object.values(ShellBackground.leases({ metadata: server.state.metadata })) as ShellBackground.Lease[]
+const lease = (server: ReturnType<typeof fakeServer>) => entries(server)[0]
 
 describe("sente run --attach one-shot lease", () => {
-  test("leases only its own key and removes it again, keeping other metadata", async () => {
+  test("leases only its own entry (naming its message) and removes it again, keeping other metadata", async () => {
     const server = fakeServer({ metadata: { other: "keep" } })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-    })
+    const held = await hold(server)
     expect(server.state.metadata.other).toBe("keep")
+    expect(lease(server).message).toBe(TURN)
     expect(ShellBackground.live(lease(server))).toBe(true)
     server.state.metadata.later = 1
-    await hold.release()
+    await held.release()
     expect(server.state.metadata).toEqual({ other: "keep", later: 1 })
     expect(server.calls.abort).toBe(0)
   })
 
+  test("two runs on the same session keep separate leases; the first to finish leaves the other's", async () => {
+    const server = fakeServer()
+    const first = await hold(server, { owned: false, message: "msg_first" })
+    const second = await hold(server, { owned: false, message: "msg_second" })
+    expect(
+      entries(server)
+        .map((entry) => entry.message)
+        .toSorted(),
+    ).toEqual(["msg_first", "msg_second"])
+    await first.release()
+    expect(entries(server).map((entry) => entry.message)).toEqual(["msg_second"])
+    // Only the second run's turn is one-shot now.
+    expect(ShellBackground.mustWait({ metadata: server.state.metadata }, "msg_second", {})).toBe(true)
+    expect(ShellBackground.mustWait({ metadata: server.state.metadata }, "msg_first", {})).toBe(false)
+    await second.release()
+    expect(server.state.metadata[ShellBackground.ONE_SHOT]).toBeUndefined()
+  })
+
+  test("two runs releasing at the same moment both end up removed (no resurrected lease)", async () => {
+    const server = fakeServer({ updateDelayMs: 20 })
+    const first = await hold(server, { owned: false, message: "msg_first" })
+    const second = await hold(server, { owned: false, message: "msg_second" })
+    expect(entries(server)).toHaveLength(2)
+    // Both read before either writes: without re-checking, one write brings the other's entry back.
+    await Promise.all([first.release(), second.release()])
+    expect(entries(server)).toHaveLength(0)
+  })
+
+  test("two runs taking the lease at the same moment both hold one", async () => {
+    const server = fakeServer({ updateDelayMs: 20 })
+    const [first, second] = await Promise.all([
+      hold(server, { owned: false, message: "msg_first" }),
+      hold(server, { owned: false, message: "msg_second" }),
+    ])
+    expect(
+      entries(server)
+        .map((entry) => entry.message)
+        .toSorted(),
+    ).toEqual(["msg_first", "msg_second"])
+    await first.release()
+    await second.release()
+  })
+
+  test("a TUI turn in a session with a live lease stays interactive", async () => {
+    const server = fakeServer()
+    const held = await hold(server, { owned: false })
+    expect(ShellBackground.mustWait({ metadata: server.state.metadata }, TURN, {})).toBe(true)
+    expect(ShellBackground.mustWait({ metadata: server.state.metadata }, "msg_tui", {})).toBe(false)
+    expect(ShellBackground.turnRun({ metadata: server.state.metadata }, "msg_tui")).toBeUndefined()
+    await held.release()
+  })
+
   test("renews the lease while the run lives, and stops renewing after release", async () => {
     const server = fakeServer()
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-      renewMs: 20,
-    })
-    const first = lease(server)!.until
+    const held = await hold(server, { renewMs: 20 })
+    const first = lease(server).until
     await Bun.sleep(80)
-    expect(lease(server)!.until).toBeGreaterThanOrEqual(first)
+    expect(lease(server).until).toBeGreaterThanOrEqual(first)
     expect(server.calls.update).toBeGreaterThan(1)
-    await hold.release()
+    await held.release()
     const updates = server.calls.update
     await Bun.sleep(60)
     expect(server.calls.update).toBe(updates)
-    expect(lease(server)).toBeUndefined()
+    expect(entries(server)).toHaveLength(0)
   })
 
   test("a renewal still in flight at release cannot bring the lease back", async () => {
     const server = fakeServer()
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-      renewMs: 10,
-    })
+    const held = await hold(server, { renewMs: 10 })
     let open = () => {}
     server.state.gate = new Promise<void>((resolve) => (open = resolve))
     await Bun.sleep(30) // a renewal is now blocked inside update()
-    const releasing = hold.release()
+    const releasing = held.release()
     // Without the write chain the removal would land now, and the stale renewal after it.
     await Bun.sleep(10)
     open()
     await releasing
     await Bun.sleep(30)
-    expect(lease(server)).toBeUndefined()
+    expect(entries(server)).toHaveLength(0)
   })
 
   test.each([5 * 60_000, -5 * 60_000])("the expiry follows the server clock (skew %d ms)", async (skewMs) => {
     const server = fakeServer({ skewMs })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-    })
+    const held = await hold(server)
     const serverNow = Date.now() + skewMs
-    const until = lease(server)!.until
-    expect(Math.abs(until - (serverNow + ShellBackground.LEASE_MS))).toBeLessThan(2_000)
-    // Judged on the server: live now, gone once the lease time has passed there.
-    expect(ShellBackground.mustWait({ metadata: server.state.metadata }, {}, serverNow)).toBe(true)
-    expect(
-      ShellBackground.mustWait({ metadata: server.state.metadata }, {}, serverNow + ShellBackground.LEASE_MS + 2_000),
-    ).toBe(false)
-    await hold.release()
+    expect(Math.abs(lease(server).until - (serverNow + ShellBackground.LEASE_MS))).toBeLessThan(2_000)
+    const session = { metadata: server.state.metadata }
+    expect(ShellBackground.mustWait(session, TURN, {}, serverNow)).toBe(true)
+    expect(ShellBackground.mustWait(session, TURN, {}, serverNow + ShellBackground.LEASE_MS + 2_000)).toBe(false)
+    await held.release()
   })
 
   test("Ctrl-C drops the lease before the signal goes through", async () => {
     const server = fakeServer()
     const sig = signals()
-    await holdOneShot({ client: server.client, sessionID: "ses_1", owned: false, warn: () => {}, signals: sig.signals })
+    await hold(server, { owned: false, signals: sig.signals })
     sig.emitter.emit("SIGINT", "SIGINT")
     await Bun.sleep(20)
-    expect(lease(server)).toBeUndefined()
+    expect(entries(server)).toHaveLength(0)
     expect(sig.killed).toEqual(["SIGINT"])
   })
 
   test("in a session it made, a background command never collected is stopped by aborting", async () => {
-    const server = fakeServer({ parts: [bash("job_b"), waited("job_b", "completed")] })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-    })
-    server.state.parts.push(bash("job_a"))
-    await hold.release()
+    const server = fakeServer({ messages: [reply("msg_old", bash("job_b"), waited("job_b", "completed"))] })
+    const held = await hold(server)
+    server.state.messages.push(reply(TURN, bash("job_a")))
+    await held.release()
     expect(server.calls.abort).toBe(1)
   })
 
-  test("in a session it joined (-s/-c), it never aborts and names only the jobs this run started", async () => {
+  test("in a session it joined (-s/-c), it never aborts and names only its own turn's jobs", async () => {
     const warnings: string[] = []
-    const server = fakeServer({ parts: [bash("job_old")] })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: false,
-      warn: (text) => void warnings.push(text),
-      signals: signals().signals,
-    })
-    const run = lease(server)!.id
-    // Another client (a TUI, another run) starts jobs in the same session meanwhile.
-    server.state.parts.push(bash("job_mine", run), bash("job_tui"), bash("job_other_run", "run_other"))
-    await hold.release()
+    const server = fakeServer({ messages: [reply("msg_old", bash("job_old"))] })
+    const held = await hold(server, { owned: false, warn: (text) => void warnings.push(text) })
+    // A TUI turn starts jobs in the same session meanwhile.
+    server.state.messages.push(reply(TURN, bash("job_mine")), reply("msg_tui", bash("job_tui")))
+    await held.release()
     expect(server.calls.abort).toBe(0)
     const text = warnings.join("\n")
     expect(text).toContain("job_mine")
-    for (const other of ["job_old", "job_tui", "job_other_run"]) expect(text).not.toContain(other)
+    for (const other of ["job_old", "job_tui"]) expect(text).not.toContain(other)
   })
 
   test("with nothing left running it does nothing", async () => {
     const server = fakeServer()
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-    })
-    server.state.parts.push(bash("job_a"), waited("job_a", "completed"))
-    await hold.release()
-    await hold.release()
+    const held = await hold(server)
+    server.state.messages.push(reply(TURN, bash("job_a"), waited("job_a", "completed")))
+    await held.release()
+    await held.release()
     expect(server.calls.abort).toBe(0)
   })
 
   test("a lease that fails once is retried", async () => {
     const server = fakeServer({ failUpdates: 1 })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-    })
+    const held = await hold(server)
     expect(ShellBackground.live(lease(server))).toBe(true)
-    await hold.release()
+    await held.release()
   })
 
   test("a lease that keeps failing stops the run with LeaseError and leaves no handlers", async () => {
     const server = fakeServer({ failUpdates: 2 })
     const sig = signals()
-    const result = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: sig.signals,
-    }).then(
+    const result = await hold(server, { signals: sig.signals }).then(
       () => undefined,
       (error: unknown) => error,
     )
     expect(result).toBeInstanceOf(LeaseError)
     expect(String(result)).toContain("could not mark the session as a one-shot run")
     expect(sig.emitter.listenerCount("SIGINT")).toBe(0)
-    expect(server.calls.abort).toBe(0)
   })
 
   test("reads the session uncached", async () => {
     const server = fakeServer()
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: () => {},
-      signals: signals().signals,
-    })
+    const held = await hold(server)
     expect(server.calls.getHeaders[0]).toEqual({ "cache-control": "no-store" })
-    await hold.release()
+    await held.release()
   })
 
   test("no Date header: warns once and uses this machine's clock", async () => {
     const warnings: string[] = []
     const server = fakeServer({ headers: {} })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: (text) => void warnings.push(text),
-      signals: signals().signals,
-    })
-    await hold.release()
+    const held = await hold(server, { warn: (text) => void warnings.push(text) })
+    await held.release()
     expect(warnings.filter((text) => text.includes("no Date header"))).toHaveLength(1)
   })
 
@@ -294,51 +290,30 @@ describe("sente run --attach one-shot lease", () => {
     const warnings: string[] = []
     const stale = new Date(Date.now() - 2 * 24 * 3_600_000)
     const server = fakeServer({ headers: { date: stale.toUTCString(), age: "60" } })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: (text) => void warnings.push(text),
-      signals: signals().signals,
-    })
-    const until = lease(server)!.until
-    // Date + Age + lease time, on the (reported) server clock.
-    expect(Math.abs(until - (stale.getTime() + 60_000 + ShellBackground.LEASE_MS))).toBeLessThan(3_000)
+    const held = await hold(server, { warn: (text) => void warnings.push(text) })
+    expect(Math.abs(lease(server).until - (stale.getTime() + 60_000 + ShellBackground.LEASE_MS))).toBeLessThan(3_000)
     expect(warnings.join("\n")).toContain("server clock differs")
-    await hold.release()
+    await held.release()
   })
 
   test("two renewals failing in a row are reported once", async () => {
     const warnings: string[] = []
     const server = fakeServer()
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: (text) => void warnings.push(text),
-      signals: signals().signals,
-      renewMs: 15,
-    })
-    const update = server.client as unknown as { session: { update: (args: unknown) => Promise<unknown> } }
-    const real = update.session.update
-    update.session.update = async () => ({ error: "down" })
+    const held = await hold(server, { warn: (text) => void warnings.push(text), renewMs: 15 })
+    const session = (server.client as unknown as { session: { update: (args: unknown) => Promise<unknown> } }).session
+    const real = session.update
+    session.update = async () => ({ error: "down" })
     await Bun.sleep(100)
-    update.session.update = real
-    await hold.release()
+    session.update = real
+    await held.release()
     expect(warnings.filter((text) => text.includes("could not renew"))).toHaveLength(1)
   })
 
   test("if its own session's messages cannot be read, it warns and stops the session to be safe", async () => {
     const warnings: string[] = []
     const server = fakeServer({ failMessages: true })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: true,
-      warn: (text) => void warnings.push(text),
-      signals: signals().signals,
-    })
-    await hold.release()
+    const held = await hold(server, { warn: (text) => void warnings.push(text) })
+    await held.release()
     expect(warnings.join("\n")).toContain("could not check for background commands")
     expect(server.calls.abort).toBe(1)
   })
@@ -346,16 +321,25 @@ describe("sente run --attach one-shot lease", () => {
   test("in a joined session an unreadable message list only warns", async () => {
     const warnings: string[] = []
     const server = fakeServer({ failMessages: true })
-    const hold = await holdOneShot({
-      client: server.client,
-      sessionID: "ses_1",
-      owned: false,
-      warn: (text) => void warnings.push(text),
-      signals: signals().signals,
-    })
-    await hold.release()
+    const held = await hold(server, { owned: false, warn: (text) => void warnings.push(text) })
+    await held.release()
     expect(warnings.join("\n")).toContain("could not check for background commands")
     expect(server.calls.abort).toBe(0)
+  })
+
+  test("without the lease (client opted out) it writes nothing, warns, and still cleans up its session", async () => {
+    const warnings: string[] = []
+    const server = fakeServer()
+    const sig = signals()
+    const held = await hold(server, { lease: false, warn: (text) => void warnings.push(text), signals: sig.signals })
+    expect(server.calls.update).toBe(0)
+    expect(warnings.join("\n")).toContain("running without the one-shot lease")
+    expect(sig.emitter.listenerCount("SIGINT")).toBe(0)
+    // The server backgrounded a command for this turn and the model ended without it.
+    server.state.messages.push(reply(TURN, bash("job_left")))
+    await held.release()
+    expect(server.calls.update).toBe(0)
+    expect(server.calls.abort).toBe(1)
   })
 })
 

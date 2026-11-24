@@ -15,9 +15,15 @@ export type HoldInput = {
   sessionID: string
   /** This run created (or forked) the session, so nobody else's work lives in it. */
   owned: boolean
+  /** The user message ID this run sends its prompt with: its turn, as far as the server can tell. */
+  message: string
+  /** false when SENTE_SHELL_TIMEOUT_BACKGROUND=0 here: no lease, only the cleanup at the end. */
+  lease?: boolean
   warn: (message: string) => void
   signals?: Signals
   renewMs?: number
+  /** Pause before re-reading a write (tests). */
+  settleMs?: number
 }
 
 /** Leasing failed (twice); the caller stops the run rather than leave background commands unawaited. */
@@ -38,6 +44,7 @@ const SKEW_WARN_MS = 12 * 60 * 60 * 1000
 export async function holdOneShot(input: HoldInput) {
   const signals = input.signals ?? process
   const id = crypto.randomUUID()
+  const leasing = input.lease !== false
   let clockNoted = false
   const note = (message: string) => {
     if (clockNoted) return
@@ -54,48 +61,71 @@ export async function holdOneShot(input: HoldInput) {
       { headers: { "cache-control": "no-store" } },
     )
     if (!current.data) throw new Error("session not found")
+    // Only this run's entry in the map: concurrent runs on the same session keep theirs.
     const metadata: Record<string, unknown> = { ...current.data.metadata }
-    if (lease) metadata[ShellBackground.ONE_SHOT] = ShellBackground.lease(id, serverNow(current.response, sent, note))
+    const map = { ...ShellBackground.leases(current.data) }
+    if (lease) map[id] = ShellBackground.lease(input.message, serverNow(current.response, sent, note))
+    else delete map[id]
+    if (Object.keys(map).length > 0) metadata[ShellBackground.ONE_SHOT] = map
     else delete metadata[ShellBackground.ONE_SHOT]
     const updated = await input.client.session.update({ sessionID: input.sessionID, metadata })
     if (updated.error) throw new Error(String(updated.error))
   }
+  // Another run on the same session may write its own entry from a read taken just before ours and so
+  // undo our change (no atomic update on the server). Re-read after a short random pause and redo it
+  // until it holds; both sides doing this converges.
+  const settle = async (lease: boolean) => {
+    for (let attempt = 0; ; attempt++) {
+      await write(lease)
+      await Bun.sleep(input.settleMs ?? 100 + Math.floor(Math.random() * 200))
+      const current = await input.client.session.get(
+        { sessionID: input.sessionID },
+        { headers: { "cache-control": "no-store" } },
+      )
+      const held = id in ShellBackground.leases(current.data ?? undefined)
+      if (held === lease || attempt >= 4) return
+    }
+  }
   // Every write goes through one chain, so a renewal still in flight cannot land after the removal.
   let chain = Promise.resolve()
   const queue = (lease: boolean) => {
-    const next = chain.then(() => write(lease))
+    const next = chain.then(() => settle(lease))
     chain = next.catch(() => undefined)
     return next
   }
 
   // One retry, then give up: without the lease the server would tell the model a notification will
   // come, and this run would end (stopping the command) before it does.
-  await queue(true)
-    .catch(() => queue(true))
-    .catch((error: unknown) => {
-      throw new LeaseError(
-        `could not mark the session as a one-shot run (${error instanceof Error ? error.message : String(error)})`,
-      )
-    })
+  if (leasing)
+    await queue(true)
+      .catch(() => queue(true))
+      .catch((error: unknown) => {
+        throw new LeaseError(
+          `could not mark the session as a one-shot run (${error instanceof Error ? error.message : String(error)})`,
+        )
+      })
+  else
+    input.warn(
+      "running without the one-shot lease (SENTE_SHELL_TIMEOUT_BACKGROUND=0 here); if the server moves a timed-out command to the background, the model may not wait for it. Commands this run leaves behind are cleaned up at the end",
+    )
   // A renewal failing now and then is harmless (the lease lasts three renewals); two in a row is not.
   let failures = 0
-  const timer = setInterval(
-    () =>
-      void queue(true).then(
-        () => {
-          failures = 0
-        },
-        (error: unknown) => {
-          failures++
-          if (failures === 2)
-            input.warn(
-              `could not renew the one-shot lease twice in a row (${error instanceof Error ? error.message : String(error)}); if it lapses, a command that outlives its timeout may not be waited for`,
-            )
-        },
-      ),
-    input.renewMs ?? ShellBackground.RENEW_MS,
-  )
-  timer.unref?.()
+  const timer = leasing ? setInterval(renew, input.renewMs ?? ShellBackground.RENEW_MS) : undefined
+  timer?.unref?.()
+  function renew() {
+    void queue(true).then(
+      () => {
+        failures = 0
+      },
+      (error: unknown) => {
+        failures++
+        if (failures === 2)
+          input.warn(
+            `could not renew the one-shot lease twice in a row (${error instanceof Error ? error.message : String(error)}); if it lapses, a command that outlives its timeout may not be waited for`,
+          )
+      },
+    )
+  }
 
   // Ctrl-C / kill: drop the lease before going, then let the signal take its normal course.
   let released: Promise<void> | undefined
@@ -105,22 +135,26 @@ export async function holdOneShot(input: HoldInput) {
       signals.kill(signals.pid, signal)
     })
   }
-  signals.on("SIGINT", onSignal)
-  signals.on("SIGTERM", onSignal)
+  if (leasing) {
+    signals.on("SIGINT", onSignal)
+    signals.on("SIGTERM", onSignal)
+  }
 
   function release() {
     released ??= (async () => {
       clearInterval(timer)
       signals.off("SIGINT", onSignal)
       signals.off("SIGTERM", onSignal)
-      await queue(false).catch(() => undefined)
-      // In a session this run made every job is its own; in a joined one, only jobs stamped with its id.
-      const seen = await jobs(input.client, input.sessionID, input.owned ? undefined : id).catch((error: unknown) => {
-        input.warn(
-          `could not check for background commands left by this run (${error instanceof Error ? error.message : String(error)})`,
-        )
-        return undefined
-      })
+      if (leasing) await queue(false).catch(() => undefined)
+      // In a session this run made every job is its own; in a joined one, only those of its own turn.
+      const seen = await jobs(input.client, input.sessionID, input.owned ? undefined : input.message).catch(
+        (error: unknown) => {
+          input.warn(
+            `could not check for background commands left by this run (${error instanceof Error ? error.message : String(error)})`,
+          )
+          return undefined
+        },
+      )
       // Unknown: in a session this run made, stopping is the safe side; elsewhere it is not ours to stop.
       if (!seen) {
         if (input.owned) await input.client.session.abort({ sessionID: input.sessionID }).catch(() => undefined)
@@ -162,25 +196,26 @@ function serverNow(response: Response | undefined, sent: number, warn: (message:
   return now
 }
 
-/** Background shell jobs of the session (only those stamped with `run`, if given), and delivered ones. */
-async function jobs(client: Client, sessionID: string, run?: string) {
+/** Background shell jobs of the session (only those of the turn answering `turn`, if given), and delivered ones. */
+async function jobs(client: Client, sessionID: string, turn?: string) {
   const response = await client.session.messages({ sessionID })
   if (!response.data) throw new Error(response.error ? String(response.error) : "no messages returned")
-  const parts = response.data.flatMap((message) => message.parts)
   const started: string[] = []
   const finished: string[] = []
-  for (const part of parts) {
-    if (part.type === "text" && part.synthetic) {
-      const match = /<background_shell job="([^"]+)"/.exec(part.text)
-      if (match) finished.push(match[1])
+  for (const message of response.data) {
+    const ours = turn === undefined || (message.info as { parentID?: string }).parentID === turn
+    for (const part of message.parts) {
+      if (part.type === "text" && part.synthetic) {
+        const match = /<background_shell job="([^"]+)"/.exec(part.text)
+        if (match) finished.push(match[1])
+      }
+      if (part.type !== "tool" || part.state.status !== "completed") continue
+      const metadata = part.state.metadata as Record<string, unknown> | undefined
+      if (ours && part.tool === "bash" && metadata?.background === true && typeof metadata.jobId === "string")
+        started.push(metadata.jobId)
+      if (part.tool === "wait" && typeof metadata?.jobId === "string" && metadata.status !== "pending")
+        finished.push(metadata.jobId)
     }
-    if (part.type !== "tool" || part.state.status !== "completed") continue
-    const metadata = part.state.metadata as Record<string, unknown> | undefined
-    if (part.tool === "bash" && metadata?.background === true && typeof metadata.jobId === "string") {
-      if (run === undefined || metadata.run === run) started.push(metadata.jobId)
-    }
-    if (part.tool === "wait" && typeof metadata?.jobId === "string" && metadata.status !== "pending")
-      finished.push(metadata.jobId)
   }
   return { started, finished }
 }

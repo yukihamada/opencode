@@ -972,14 +972,19 @@ export const RunCommand = effectCmd({
           // that outlives its timeout is waited for in-turn, and clean up after the run. A local run is
           // recognised by SENTE_NONINTERACTIVE, and disposing its instance stops what is left.
           const { holdOneShot, LeaseError, leaseDisabled } = await import("./run/runtime.oneshot")
+          const { MessageID } = await import("@/session/schema")
           // Without the lease the server would promise the model a notification this run never waits
           // for, so a failed lease stops the run (before any prompt) instead of risking that.
+          // The run's own user message ID: the lease names it, so only this run's turn counts as one-shot.
+          const turn = MessageID.ascending()
           const hold =
-            args.attach && sessionID && !leaseDisabled()
+            args.attach && sessionID
               ? await holdOneShot({
                   client,
                   sessionID,
                   owned: Boolean(sess.created),
+                  message: turn,
+                  lease: !leaseDisabled(),
                   warn: (text) => diag("warn", text),
                 }).catch((error: unknown) => {
                   if (!(error instanceof LeaseError)) throw error
@@ -1031,6 +1036,7 @@ export const RunCommand = effectCmd({
             if (args.command) {
               const result = await client.session.command({
                 sessionID,
+                messageID: turn,
                 agent,
                 model: args.model,
                 command: args.command,
@@ -1052,6 +1058,7 @@ export const RunCommand = effectCmd({
             const model = pick(args.model)
             const result = await client.session.prompt({
               sessionID,
+              messageID: turn,
               agent,
               model,
               variant: args.variant,
