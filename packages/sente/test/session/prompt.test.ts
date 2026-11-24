@@ -53,7 +53,7 @@ import { Ripgrep } from "@sente-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { reply, TestLLMServer } from "../lib/llm-server"
+import { httpError, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { ModelV2 } from "@sente-ai/core/model"
@@ -790,6 +790,57 @@ it.instance("loop stops provider overflow instead of auto-compacting when disabl
       expect(result.info.finish).toBe("error")
     }
     expect(messages.some((message) => message.parts.some((part) => part.type === "compaction"))).toBe(false)
+  }),
+)
+
+// /loop(TUI)は、自動要約のあとサーバーが元の依頼を複製して送り直したメッセージを、パーツの中身や
+// metadata.source = "loop" の印で「ループの回の続き」と見分ける。その前提(複製のパーツが元と同じ)を固定する。
+it.instance("provider overflow auto-compacts and replays the request with identical parts (text, metadata.source)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    // 要約に残す以前の会話
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text: "earlier" }] })
+
+    // ループの回(依頼文には source: "loop" の印)。プロバイダーが文脈あふれを返す → 自動要約 → 複製して送り直し
+    const loopMessageID = MessageID.ascending()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: loopMessageID,
+      agent: "build",
+      noReply: true,
+      parts: [
+        { type: "text", text: "今の時刻を一言で", metadata: { source: "loop" } },
+        { type: "text", text: "Review the recent changes." },
+      ],
+    })
+    // タイトル生成の依頼(非同期)が順番待ちの応答を先に取らないよう、本文の依頼だけに割り当てる
+    const main = (hit: { body: Record<string, unknown> }) => !JSON.stringify(hit.body).includes("title generator")
+    yield* llm.pushMatch(main, httpError(413, { error: { message: "request entity too large" } }))
+    yield* llm.pushMatch(main, reply().text("summary of the conversation").stop())
+    yield* llm.pushMatch(main, reply().text("10時です").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const users = messages.filter((message) => message.info.role === "user")
+    const original = users.find((message) => message.info.id === loopMessageID)!
+    const compactionIndex = messages.findIndex((message) => message.parts.some((part) => part.type === "compaction"))
+    expect(compactionIndex).toBeGreaterThan(messages.indexOf(original))
+    const compaction = messages[compactionIndex].parts.find((part) => part.type === "compaction")
+    expect(compaction?.type === "compaction" && compaction.auto).toBe(true)
+    // 要約のあとに届く最初のユーザーメッセージが複製(直前のユーザーメッセージは compaction)
+    const replay = messages.slice(compactionIndex + 1).find((message) => message.info.role === "user")!
+    expect(replay).toBeDefined()
+    expect(replay.info.id).not.toBe(loopMessageID)
+    const shape = (part: SessionV1.Part) => {
+      const { id: _id, messageID: _messageID, sessionID: _sessionID, time: _time, ...rest } = part as SessionV1.Part & { time?: unknown }
+      return rest
+    }
+    expect(replay.parts.map(shape)).toEqual(original.parts.map(shape))
+    expect(replay.parts.map((part) => (part.type === "text" ? part.metadata?.source : undefined))).toEqual(["loop", undefined])
   }),
 )
 

@@ -1311,6 +1311,45 @@ describe("session.compaction.process", () => {
     }),
   )
 
+  // /loop(TUI)はコマンドのループの複製再送を、subtask パーツの中身(コマンド・prompt)で見分ける。その前提を固定する。
+  it.instance(
+    "replays a subtask part (command loop) unchanged on overflow",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "root")
+      const loop = yield* ssn.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: session.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      const original = {
+        type: "subtask" as const,
+        agent: "general",
+        description: "Review",
+        command: "review",
+        prompt: "Review the recent changes.",
+      }
+      yield* ssn.updatePart({ id: PartID.ascending(), messageID: loop.id, sessionID: session.id, ...original })
+      const msg = yield* createUserMessage(session.id, "current")
+      const result = yield* SessionCompaction.use.process({
+        parentID: msg.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+        sessionID: session.id,
+        auto: true,
+        overflow: true,
+      })
+      expect(result).toBe("continue")
+      const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)!
+      expect(last.info.role).toBe("user")
+      expect(last.info.id).not.toBe(loop.id)
+      expect(last.parts.map(({ id: _id, messageID: _messageID, sessionID: _sessionID, ...rest }) => rest)).toEqual([original])
+    }),
+  )
+
   it.instance(
     "falls back to overflow guidance when no replayable turn exists",
     Effect.gen(function* () {

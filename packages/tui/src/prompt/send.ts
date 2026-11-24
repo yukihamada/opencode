@@ -27,10 +27,15 @@ export async function sendPrompt(
     variant?: string
     commands: string[]
     editorParts: TextPartInput[]
+    /** 送るメッセージのIDを指定する(/loop が自分の回の応答を見分けるのに使う)。 */
+    messageID?: string
+    /** 依頼文のパーツに付ける印(/loop は { source: "loop" } を付け、/goal 等が本人の依頼と取り違えないようにする)。 */
+    textMetadata?: Record<string, unknown>
   },
 ) {
   const options = { throwOnError: true } as const
   const common = { sessionID: input.sessionID, agent: input.agent, model: input.model }
+  const id = input.messageID ? { messageID: input.messageID } : {}
   if (input.prompt.mode === "shell") {
     await client.session.shell({ ...common, command: input.text }, options)
     return { editorSent: false }
@@ -44,6 +49,7 @@ export async function sendPrompt(
     await client.session.command(
       {
         ...common,
+        ...id,
         model: `${input.model.providerID}/${input.model.modelID}`,
         command: command.slice(1),
         arguments: args.join(" ") + (firstLineEnd === -1 ? "" : input.text.slice(firstLineEnd)),
@@ -58,8 +64,13 @@ export async function sendPrompt(
   await client.session.prompt(
     {
       ...common,
+      ...id,
       variant: input.variant,
-      parts: [...input.editorParts, { type: "text", text: input.text }, ...parts],
+      parts: [
+        ...input.editorParts,
+        { type: "text", text: input.text, ...(input.textMetadata ? { metadata: input.textMetadata } : {}) },
+        ...parts,
+      ],
     },
     options,
   )

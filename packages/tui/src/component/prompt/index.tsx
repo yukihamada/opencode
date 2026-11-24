@@ -54,6 +54,9 @@ import { DialogSkill } from "../dialog-skill"
 import { useLanguage } from "../../context/language"
 import { useUsageMode } from "../dialog-mode"
 import { invalidModeMessage, parseModeCommand } from "../../util/usage-mode"
+import { Loop } from "../../util/loop"
+import { useOptionalLoop } from "../../context/loop"
+import { DialogLoop } from "../dialog-loop"
 import {
   backend as dictationBackend,
   buildLexicon,
@@ -75,7 +78,7 @@ import { stopSpeaking } from "../../util/voice"
 import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
-import { formatKeySequence, SENTE_BASE_MODE, useBindings, useKeymapSelector, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
+import { formatKeySequence, SENTE_BASE_MODE, useBindings, useKeymapSelector, useCommandShortcut, useCommandSlashes, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
@@ -194,6 +197,8 @@ export function Prompt(props: PromptProps) {
   const { theme, syntax } = useTheme()
   const kv = useKV()
   const language = useLanguage()
+  const loop = useOptionalLoop()
+  const commandSlashes = useCommandSlashes()
   const usageMode = useUsageMode()
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
   const list = createMemo(() => props.placeholders?.normal ?? [])
@@ -1579,6 +1584,95 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  function handleLoopCommand(loop: NonNullable<ReturnType<typeof useOptionalLoop>>, command: Loop.Command, agent: string) {
+    const t = loop.text()
+    if (command.type === "list") {
+      dialog.replace(() => <DialogLoop />)
+      return true
+    }
+    // 対象を省いた stop / resume は、開いている会話のループ全件が対象。
+    if (command.type === "stop") {
+      toast.show({ variant: "info", message: t.stopped(loop.stop(command.target, props.sessionID).length) })
+      return true
+    }
+    if (command.type === "resume") {
+      const result = loop.resume(command.target, props.sessionID)
+      toast.show({
+        variant: result.waiting.length ? "warning" : "info",
+        message: [result.resumed.length || !result.waiting.length ? t.resumed(result.resumed.length) : "", result.waiting.length ? t.waiting(result.waiting.length) : ""]
+          .filter(Boolean)
+          .join("\n"),
+      })
+      return true
+    }
+    if (command.type === "invalid") {
+      toast.show({ variant: "error", message: `${t.invalid[command.reason]}\n${t.usage}` })
+      return false
+    }
+    const prepared = Loop.prepareStart(command, {
+      sessionID: props.sessionID,
+      agent,
+      model: local.model.current(),
+      variant: local.model.variant.current(),
+      serverCommands: sync.data.command.map((item) => item.name),
+      localCommands: [
+        "mode",
+        "v",
+        "loop",
+        ...commandSlashes().flatMap((entry) => [entry.display, ...(entry.aliases ?? [])].map((name) => name.slice(1))),
+      ],
+    })
+    if ("error" in prepared) {
+      toast.show({ variant: "error", message: t[prepared.error] })
+      return false
+    }
+    const result = loop.start(prepared.input)
+    if (!result.item) {
+      toast.show({ variant: "error", message: t.limit })
+      return false
+    }
+    const until = new Date(result.item.expiresAt).toLocaleString(language.current() === "ja" ? "ja-JP" : "en-US", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    // 会話の累計が費用確認ラインを超えていると、毎回承認が必要になるので先に知らせる。
+    const line = loop.costLine({
+      sessionID: prepared.input.target.sessionID,
+      agent: prepared.input.target.agent,
+      model: `${prepared.input.target.model.providerID}/${prepared.input.target.model.modelID}`,
+    })
+    toast.show({
+      variant: line === undefined ? "info" : "warning",
+      message: [
+        line === undefined ? "" : t.costLine(line),
+        command.rounded ? t.rounded : "",
+        command.capped.length ? t.capped(command.capped) : "",
+        command.tail.length
+          ? t.tail({
+              keys: command.tail,
+              maxRuns: result.item.maxRuns,
+              expiresIn: Loop.formatInterval(command.expiresIn),
+              budget: result.item.budget,
+            })
+          : "",
+        t.started({
+          id: result.item.id,
+          every: Loop.formatInterval(result.item.interval),
+          runs: result.item.maxRuns,
+          until,
+          budget: result.item.budget,
+          model: `${prepared.input.target.model.providerID}/${prepared.input.target.model.modelID}`,
+        }),
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      duration: 12_000,
+    })
+    return true
+  }
+
   let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
@@ -1648,6 +1742,18 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
       handleVoiceCommand(voiceCommand)
+      return true
+    }
+    // `/loop 5m 依頼` もサーバーへ送らず手元で登録する(このセッション内だけの繰り返し)。
+    const loopCommand = loop ? Loop.parseCommand(trimmed) : undefined
+    if (loop && loopCommand) {
+      const done = handleLoopCommand(loop, loopCommand, agent.name)
+      if (!done) return false
+      history.append(structuredClone(unwrap({ ...store.prompt, mode: store.mode })))
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
       return true
     }
     const selectedModel = local.model.current()
@@ -1741,6 +1847,8 @@ export function Prompt(props: PromptProps) {
         variant,
         commands: sync.data.command.map((command) => command.name),
         editorParts,
+        // ループのある会話では、入力欄からの依頼を本人の依頼として見分けられるよう ID を付けて送る。
+        messageID: loop?.list(sessionID).length ? loop.humanMessageID(sessionID) : undefined,
       },
       stash,
     ).then((result) => {
@@ -2022,6 +2130,7 @@ export function Prompt(props: PromptProps) {
               maxHeight={maxHeight()}
               onContentChange={() => {
                 const value = input.plainText
+                loop?.typed(value)
                 setStore("prompt", "input", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()
@@ -2337,6 +2446,15 @@ export function Prompt(props: PromptProps) {
               <box paddingLeft={3}>
                 <text fg={theme.accent}>(new working copy)</text>
               </box>
+            </Match>
+            <Match when={!props.hint && props.sessionID && loop?.status(props.sessionID)}>
+              {(label) => (
+                <box marginLeft={1}>
+                  <text fg={theme.accent} wrapMode="none">
+                    {label()}
+                  </text>
+                </box>
+              )}
             </Match>
             <Match when={true}>
               {props.hint ?? (
