@@ -59,6 +59,9 @@ import { DialogLanguage } from "./component/dialog-language"
 import { DialogMode } from "./component/dialog-mode"
 import { useLanguage } from "./context/language"
 import { DialogHelp } from "./ui/dialog-help"
+import { LoopProvider } from "./context/loop"
+import { DialogLoop } from "./component/dialog-loop"
+import { loopText } from "./util/loop-text"
 import { DialogOnboarding } from "./ui/dialog-onboarding"
 import { ONBOARDING_KEY, shouldShowOnboarding } from "./onboarding"
 import { DialogAgent } from "./component/dialog-agent"
@@ -359,24 +362,26 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                   <ThemeProvider mode={mode}>
                                                     <LocalProvider>
                                                       <PromptStashProvider>
-                                                        <DialogProvider>
-                                                          <FrecencyProvider>
-                                                            <PromptHistoryProvider>
-                                                              <PromptRefProvider>
-                                                                <EditorContextProvider>
-                                                                  <LocationProvider>
-                                                                    <App
-                                                                      onSnapshot={input.onSnapshot}
-                                                                      onEnv={input.onEnv}
-                                                                      notice={input.notice}
-                                                                      pluginHost={input.pluginHost}
-                                                                    />
-                                                                  </LocationProvider>
-                                                                </EditorContextProvider>
-                                                              </PromptRefProvider>
-                                                            </PromptHistoryProvider>
-                                                          </FrecencyProvider>
-                                                        </DialogProvider>
+                                                        <LoopProvider>
+                                                          <DialogProvider>
+                                                            <FrecencyProvider>
+                                                              <PromptHistoryProvider>
+                                                                <PromptRefProvider>
+                                                                  <EditorContextProvider>
+                                                                    <LocationProvider>
+                                                                      <App
+                                                                        onSnapshot={input.onSnapshot}
+                                                                        onEnv={input.onEnv}
+                                                                        notice={input.notice}
+                                                                        pluginHost={input.pluginHost}
+                                                                      />
+                                                                    </LocationProvider>
+                                                                  </EditorContextProvider>
+                                                                </PromptRefProvider>
+                                                              </PromptHistoryProvider>
+                                                            </FrecencyProvider>
+                                                          </DialogProvider>
+                                                        </LoopProvider>
                                                       </PromptStashProvider>
                                                     </LocalProvider>
                                                   </ThemeProvider>
@@ -916,6 +921,13 @@ function App(props: {
         title: taskText(language.current()).title,
         slashName: "tasks",
         run: () => dialog.replace(() => <DialogTaskBudget client={taskBudget} session={taskSession()} />),
+        category: "Session",
+      },
+      {
+        name: "sente.loop",
+        title: loopText(language.current()).title,
+        slashName: "loop",
+        run: () => dialog.replace(() => <DialogLoop />),
         category: "Session",
       },
       {

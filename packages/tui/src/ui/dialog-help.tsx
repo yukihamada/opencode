@@ -5,6 +5,8 @@ import { useLanguage } from "../context/language"
 import { useDialog } from "./dialog"
 import { useBindings, useCommandShortcut } from "../keymap"
 import { voiceState } from "../util/voice"
+import { useLanguage } from "../context/language"
+import { loopText } from "../util/loop-text"
 
 // 主要なキーを「今の状態つき」で一覧する。キーバインドは設定で変えられるので、
 // 説明文はハードコードせず useCommandShortcut で実際の割当を引いて表示する。
@@ -51,6 +53,7 @@ export function DialogHelp() {
   const language = useLanguage()
   const { theme } = useTheme()
   const commandShortcut = useCommandShortcut("command.palette.show")
+  const language = useLanguage()
 
   useBindings(() => ({
     bindings: [
@@ -88,6 +91,11 @@ export function DialogHelp() {
         </box>
       </box>
       <box paddingTop={1}>
+        <text fg={theme.text} wrapMode="word">
+          {loopText(language.current()).help}
+        </text>
+      </box>
+      <box>
         <text fg={theme.textMuted} wrapMode="word">
           {commandShortcut()} で全ての操作を検索できます。{useCommandShortcut("which-key.toggle")()} でキー一覧パネルを
           常時表示できます。キーは ~/.config/sente/tui.json の keybinds で変更できます。
