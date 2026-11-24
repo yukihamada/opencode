@@ -1,32 +1,15 @@
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Effect, Exit, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit } from "effect"
 import { LayerNode } from "@sente-ai/core/effect/layer-node"
 import { BackgroundJob } from "@/background/job"
 import { MessageID, SessionID } from "@/session/schema"
-import { CrossSpawnSpawner } from "@sente-ai/core/cross-spawn-spawner"
-import { FSUtil } from "@sente-ai/core/fs-util"
-import { Plugin } from "@/plugin"
-import { Config } from "@/config/config"
 import { Agent } from "@/agent/agent"
 import { Truncate } from "@/tool/truncate"
-import { RuntimeFlags } from "@/effect/runtime-flags"
-import { WaitTool, Parameters, githubCommand } from "@/tool/wait"
+import { Config } from "@/config/config"
+import { WaitTool } from "@/tool/wait"
 import { testEffect } from "../lib/effect"
 
-const it = testEffect(
-  LayerNode.compile(
-    LayerNode.group([
-      CrossSpawnSpawner.node,
-      FSUtil.node,
-      Plugin.node,
-      Config.node,
-      Agent.node,
-      Truncate.node,
-      RuntimeFlags.node,
-      BackgroundJob.node,
-    ]),
-  ),
-)
+const it = testEffect(LayerNode.compile(LayerNode.group([Config.node, Agent.node, Truncate.node, BackgroundJob.node])))
 const ctx = {
   sessionID: SessionID.make("ses_wait"),
   messageID: MessageID.make("msg_wait"),
@@ -36,31 +19,18 @@ const ctx = {
   metadata: () => Effect.void,
   ask: () => Effect.void,
 }
+const tool = WaitTool.pipe(Effect.flatMap((info) => info.init()))
 
-describe("tool.wait", () => {
-  it.effect("validates GitHub identifiers and builds a bounded pinned wait", () =>
-    Effect.sync(() => {
-      const decode = Schema.decodeUnknownSync(Parameters)
-      const params = decode({ kind: "github", repo: "owner/repo", run: "42", attempt: 2, timeout: 300 })
-      expect(githubCommand(params)).toBe("te wait github --repo 'owner/repo' --run '42' --attempt 2 --timeout 300")
-      for (const fields of [{ repo: "o/r; touch /tmp/x" }, { run: "$(id)" }, { timeout: 0 }, { timeout: 3601 }]) {
-        expect(() => decode({ kind: "github", repo: "o/r", run: "1", ...fields })).toThrow()
-      }
-      expect(() => githubCommand({ kind: "github" })).toThrow("requires repo")
-    }),
-  )
-
-  it.instance("returns completed job output without a prompt operation", () =>
+describe("tool.wait (background bash jobs)", () => {
+  it.instance("returns a completed job's output", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const job = yield* jobs.start({
-        type: "test",
-        metadata: { parentSessionId: ctx.sessionID },
+        type: "bash",
+        metadata: { sessionId: ctx.sessionID },
         run: Effect.succeed("verified output"),
       })
-      const tool = yield* WaitTool
-      const def = yield* tool.init()
-      const result = yield* def.execute({ kind: "job", job: job.id }, ctx)
+      const result = yield* (yield* tool).execute({ job: job.id }, ctx)
       expect(JSON.parse(result.output)).toMatchObject({ status: "completed", output: "verified output" })
     }),
   )
@@ -69,10 +39,8 @@ describe("tool.wait", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const gate = yield* Deferred.make<string>()
-      const job = yield* jobs.start({ type: "test", metadata: { parentSessionId: ctx.sessionID }, run: Deferred.await(gate) })
-      const tool = yield* WaitTool
-      const def = yield* tool.init()
-      const result = yield* def.execute({ kind: "job", job: job.id, timeout: 1 }, ctx)
+      const job = yield* jobs.start({ type: "bash", metadata: { sessionId: ctx.sessionID }, run: Deferred.await(gate) })
+      const result = yield* (yield* tool).execute({ job: job.id, timeout: 1 }, ctx)
       expect(JSON.parse(result.output).status).toBe("pending")
       expect((yield* jobs.get(job.id))?.status).toBe("running")
       yield* Deferred.succeed(gate, "done")
@@ -80,45 +48,37 @@ describe("tool.wait", () => {
     }),
   )
 
-  it.instance("rejects another session's job and abort leaves owned work running", () =>
+  it.instance("refuses other sessions' jobs and subagent task jobs; abort leaves the job running", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
-      const job = yield* jobs.start({ type: "test", metadata: { parentSessionId: "other" }, run: Effect.never })
-      const tool = yield* WaitTool
-      const def = yield* tool.init()
-      const denied = yield* def.execute({ kind: "job", job: job.id }, ctx).pipe(Effect.exit)
-      expect(Exit.isFailure(denied)).toBe(true)
-      if (Exit.isFailure(denied)) expect(Cause.pretty(denied.cause)).toContain("Job not found in this session")
-      const owned = yield* jobs.start({ type: "test", metadata: { sessionId: ctx.sessionID }, run: Effect.never })
-      const aborted = yield* def
-        .execute({ kind: "job", job: owned.id }, { ...ctx, abort: AbortSignal.abort() })
-        .pipe(Effect.exit)
+      const def = yield* tool
+      const foreign = yield* jobs.start({ type: "bash", metadata: { sessionId: "other" }, run: Effect.never })
+      const task = yield* jobs.start({ type: "task", metadata: { parentSessionId: ctx.sessionID }, run: Effect.never })
+      for (const id of [foreign.id, task.id]) {
+        for (const stop of [false, true]) {
+          const denied = yield* def.execute({ job: id, stop }, ctx).pipe(Effect.exit)
+          expect(Exit.isFailure(denied)).toBe(true)
+          if (Exit.isFailure(denied)) expect(Cause.pretty(denied.cause)).toContain("No background bash command")
+        }
+      }
+      expect((yield* jobs.get(task.id))?.status).toBe("running")
+      const owned = yield* jobs.start({ type: "bash", metadata: { sessionId: ctx.sessionID }, run: Effect.never })
+      const aborted = yield* def.execute({ job: owned.id }, { ...ctx, abort: AbortSignal.abort() }).pipe(Effect.exit)
       expect(Exit.isFailure(aborted)).toBe(true)
       expect((yield* jobs.get(owned.id))?.status).toBe("running")
     }),
   )
 
-  it.instance("GitHub wait still enforces shell permission", () =>
+  it.instance("asks the wait permission with the job ID as pattern", () =>
     Effect.gen(function* () {
-      const tool = yield* WaitTool
-      const def = yield* tool.init()
-      const asked: string[] = []
-      const result = yield* def
-        .execute(
-          { kind: "github", repo: "owner/repo", run: "42" },
-          {
-            ...ctx,
-            ask: (req) => {
-              asked.push(req.permission)
-              return req.permission === "bash" ? Effect.die(new Error("shell denied")) : Effect.void
-            },
-          },
-        )
-        .pipe(Effect.exit)
-      expect(asked).toContain("wait")
-      expect(asked).toContain("bash")
-      expect(Exit.isFailure(result)).toBe(true)
-      if (Exit.isFailure(result)) expect(Cause.pretty(result.cause)).toContain("shell denied")
+      const jobs = yield* BackgroundJob.Service
+      const job = yield* jobs.start({ type: "bash", metadata: { sessionId: ctx.sessionID }, run: Effect.succeed("") })
+      const asked: string[][] = []
+      yield* (yield* tool).execute(
+        { job: job.id },
+        { ...ctx, ask: (req) => Effect.sync(() => void asked.push([req.permission, ...req.patterns])) },
+      )
+      expect(asked).toEqual([["wait", job.id]])
     }),
   )
 })

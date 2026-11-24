@@ -31,6 +31,8 @@ import { BashArity } from "@/permission/arity"
 export { Parameters } from "./shell/prompt"
 
 const MAX_METADATA_LENGTH = 30_000
+// Serializes the per-session background limit check with registering the job (process-wide: cheap).
+const admit = Semaphore.makeUnsafe(1)
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -616,114 +618,124 @@ export const ShellTool = Tool.define(
                   }
                 : exit
             const maxJobs = flags.shellBackgroundMaxJobs ?? ShellBackground.DEFAULT_MAX_JOBS
-            const crowded =
-              lapsed &&
-              input.background &&
-              (yield* jobs.list()).filter(
-                (job) =>
-                  job.type === ShellID.ToolID && job.status === "running" && job.metadata?.sessionId === ctx.sessionID,
-              ).length >= maxJobs
-
-            if (lapsed && input.background && !crowded) {
-              // Uninterruptible from here until the job owns the process, so an interrupt cannot orphan it.
-              return yield* Effect.uninterruptible(
-                Effect.gen(function* () {
-                  yield* lock.withPermits(1)(spill())
-                  detached = true
-                  const pid = Number(handle.pid)
-                  const known = Number.isInteger(pid) && pid > 0
-                  const session = ctx.extra?.session as { parentID?: string; metadata?: Record<string, unknown> }
-                  const mustWait = ShellBackground.mustWait(session)
-                  const maxMs = flags.shellBackgroundMaxMs ?? ShellBackground.DEFAULT_MAX_MS
-                  const info = yield* jobs.start({
-                    type: ShellID.ToolID,
-                    title: input.command,
-                    metadata: {
-                      sessionId: ctx.sessionID,
-                      background: true,
-                      command: input.command,
-                      outputPath: file,
-                      mustWait,
-                      ...(known ? { pid } : {}),
-                    },
-                    run: Effect.gen(function* () {
-                      const finished = yield* handle.exitCode.pipe(
-                        Effect.catch(() => Effect.succeed(null)),
-                        Effect.timeoutOption(maxMs),
-                      )
-                      // Past the lifetime cap: stop it like a timeout used to.
-                      if (Option.isNone(finished))
-                        yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.ignore)
-                      const code = Option.getOrNull(finished)
-                      // Let the reader drain what the process wrote last (bounded: a grandchild may hold the pipe).
-                      yield* Fiber.await(reader).pipe(Effect.timeoutOption("1 second"))
-                      yield* closeSink()
-                      const result = yield* format(
-                        code,
-                        Option.isNone(finished)
-                          ? [
-                              `Stopped after running ${Math.round(maxMs / 60_000)} minutes in the background (limit set by SENTE_SHELL_BACKGROUND_MAX_MS).`,
-                            ]
-                          : [],
-                      )
-                      return SecretRedact.redact(
-                        `Exit code: ${code ?? "none (terminated by a signal)"}\n\n${result.output}`,
-                      )
-                    }).pipe(Effect.ensuring(Scope.close(owner, Exit.void).pipe(Effect.andThen(closeSink())))),
-                  })
-                  const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
-                  // Only an interactive top-level session reads a follow-up turn; the others wait in-turn.
-                  if (ops && !mustWait)
-                    yield* jobs.wait({ id: info.id }).pipe(
-                      Effect.flatMap((done) => {
-                        const state = done.info?.status
-                        if (state !== "completed" && state !== "error") return Effect.void
-                        // A wait call already handed the result to the model.
-                        if (!ShellBackground.shouldNotify(info.id)) return Effect.void
-                        return ops.prompt({
-                          sessionID: ctx.sessionID,
-                          agent: ctx.agent,
-                          parts: [
-                            {
-                              type: "text",
-                              synthetic: true,
-                              text: [
-                                `<background_shell job="${info.id}" state="${state}">`,
-                                `<command>${SecretRedact.redact(input.command)}</command>`,
-                                done.info?.output ?? done.info?.error ?? "",
-                                "</background_shell>",
-                              ].join("\n"),
-                            },
-                          ],
+            const session = ctx.extra?.session as { parentID?: string; metadata?: Record<string, unknown> } | undefined
+            const mustWait = ShellBackground.mustWait(session)
+            const pid = Number(handle.pid)
+            const known = Number.isInteger(pid) && pid > 0
+            const maxMs = flags.shellBackgroundMaxMs ?? ShellBackground.DEFAULT_MAX_MS
+            // Counting and registering under one permit, so commands timing out together cannot all slip
+            // past the per-session limit; uninterruptible until the job owns the process (no orphan).
+            const info =
+              lapsed && input.background
+                ? yield* Effect.uninterruptible(
+                    admit.withPermits(1)(
+                      Effect.gen(function* () {
+                        const running = (yield* jobs.list()).filter(
+                          (job) =>
+                            job.type === ShellID.ToolID &&
+                            job.status === "running" &&
+                            job.metadata?.sessionId === ctx.sessionID,
+                        ).length
+                        if (running >= maxJobs) return undefined
+                        yield* lock.withPermits(1)(spill())
+                        detached = true
+                        return yield* jobs.start({
+                          type: ShellID.ToolID,
+                          title: input.command,
+                          metadata: {
+                            sessionId: ctx.sessionID,
+                            background: true,
+                            command: input.command,
+                            outputPath: file,
+                            mustWait,
+                            ...(known ? { pid } : {}),
+                          },
+                          run: Effect.gen(function* () {
+                            const finished = yield* handle.exitCode.pipe(
+                              Effect.catch(() => Effect.succeed(null)),
+                              Effect.timeoutOption(maxMs),
+                            )
+                            // Past the lifetime cap: stop it like a timeout used to.
+                            if (Option.isNone(finished))
+                              yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.ignore)
+                            const code = Option.getOrNull(finished)
+                            // Let the reader drain what the process wrote last (bounded: a grandchild may hold the pipe).
+                            yield* Fiber.await(reader).pipe(Effect.timeoutOption("1 second"))
+                            yield* closeSink()
+                            const result = yield* format(
+                              code,
+                              Option.isNone(finished)
+                                ? [
+                                    `Stopped after running ${Math.round(maxMs / 60_000)} minutes in the background (limit set by SENTE_SHELL_BACKGROUND_MAX_MS).`,
+                                  ]
+                                : [],
+                            )
+                            return SecretRedact.redact(
+                              `Exit code: ${code ?? "none (terminated by a signal)"}\n\n${result.output}`,
+                            )
+                          }).pipe(Effect.ensuring(Scope.close(owner, Exit.void).pipe(Effect.andThen(closeSink())))),
                         })
                       }),
-                      Effect.ignore,
-                      Effect.forkIn(scope, { startImmediately: true }),
-                    )
-                  const result = yield* format(null, [
-                    `The command did not finish within its timeout of ${input.timeout} ms. It was NOT killed: it keeps running in the background as job ${info.id}${known ? ` (PID ${pid})` : ""}.`,
-                    `Output keeps streaming to: ${file}`,
-                    mustWait
-                      ? `This session ends when you finish your reply, and the command is stopped then. Before you finish, call the wait tool with job "${info.id}"; if it returns pending, call it again until the job has finished.`
-                      : "You will be notified automatically when it finishes. Wait for that notification instead of checking on it; if you have nothing else to do now, end your reply.",
-                    `Do not start another copy while it is running. To stop it early, call the wait tool with job "${info.id}" and stop: true.`,
-                    "(Setting SENTE_SHELL_TIMEOUT_BACKGROUND=0 turns this off: timed-out commands are then stopped.)",
-                  ])
-                  return {
-                    title: input.command,
-                    metadata: {
-                      output: last || preview(result.output),
-                      exit: null,
-                      truncated: result.cut,
-                      outputPath: file,
-                      background: true,
-                      jobId: info.id,
-                      ...(known ? { pid } : {}),
-                    },
-                    output: result.output,
-                  }
-                }),
-              )
+                    ),
+                  )
+                : undefined
+            const crowded = lapsed && input.background && !info
+
+            if (info) {
+              const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
+              // Only an interactive top-level session reads a follow-up turn; the others wait in-turn.
+              if (ops && !mustWait) {
+                ShellBackground.expectAnnouncement(info.id)
+                yield* jobs.wait({ id: info.id }).pipe(
+                  Effect.flatMap((done) => {
+                    const state = done.info?.status
+                    // Decided once; a wait call that delivered the result suppresses it.
+                    const announce = ShellBackground.takeAnnouncement(info.id)
+                    if (state !== "completed" && state !== "error") return Effect.void
+                    if (!announce) return Effect.void
+                    return ops.prompt({
+                      sessionID: ctx.sessionID,
+                      agent: ctx.agent,
+                      parts: [
+                        {
+                          type: "text",
+                          synthetic: true,
+                          text: [
+                            `<background_shell job="${info.id}" state="${state}">`,
+                            `<command>${SecretRedact.redact(input.command)}</command>`,
+                            done.info?.output ?? done.info?.error ?? "",
+                            "</background_shell>",
+                          ].join("\n"),
+                        },
+                      ],
+                    })
+                  }),
+                  Effect.ignore,
+                  Effect.forkIn(scope, { startImmediately: true }),
+                )
+              }
+              const result = yield* format(null, [
+                `The command did not finish within its timeout of ${input.timeout} ms. It was NOT killed: it keeps running in the background as job ${info.id}${known ? ` (PID ${pid})` : ""}.`,
+                `Output keeps streaming to: ${file}`,
+                mustWait
+                  ? `This session ends when you finish your reply, and the command is stopped then. Before you finish, call the wait tool with job "${info.id}"; if it returns pending, call it again until the job has finished.`
+                  : "You will be notified automatically when it finishes. Wait for that notification instead of checking on it; if you have nothing else to do now, end your reply.",
+                `Do not start another copy while it is running. To stop it early, call the wait tool with job "${info.id}" and stop: true.`,
+                "(Setting SENTE_SHELL_TIMEOUT_BACKGROUND=0 turns this off: timed-out commands are then stopped.)",
+              ])
+              return {
+                title: input.command,
+                metadata: {
+                  output: last || preview(result.output),
+                  exit: null,
+                  truncated: result.cut,
+                  outputPath: file,
+                  background: true,
+                  jobId: info.id,
+                  ...(known ? { pid } : {}),
+                },
+                output: result.output,
+              }
             }
 
             if (settled.kind === "abort") {

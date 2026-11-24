@@ -1,11 +1,25 @@
+import os from "node:os"
+
 // Shared state for shell commands that outlived their timeout and now run as background jobs.
 // Kept dependency-free so `sente run` can import the session marker cheaply.
 
-/** Session metadata key set by `sente run` (also over --attach) while a one-shot run drives the session. */
+/**
+ * Session metadata key a `sente run --attach` sets while it drives a session on another server
+ * (a local run is recognised by SENTE_NONINTERACTIVE instead). The value is a lease, renewed while
+ * the run lives, so a run that died without removing it stops counting soon after.
+ */
 export const ONE_SHOT = "sente.oneShot"
+export const LEASE_MS = 3 * 60 * 1000
+export const RENEW_MS = 60 * 1000
 
 export const DEFAULT_MAX_MS = 60 * 60 * 1000
 export const DEFAULT_MAX_JOBS = 4
+
+export type Lease = { pid: number; host: string; until: number }
+
+export function lease(now = Date.now()): Lease {
+  return { pid: process.pid, host: os.hostname(), until: now + LEASE_MS }
+}
 
 type SessionLike = { parentID?: string; metadata?: Record<string, unknown> }
 
@@ -13,14 +27,36 @@ type SessionLike = { parentID?: string; metadata?: Record<string, unknown> }
  * Nobody will read a follow-up turn: a one-shot `sente run` (it ends, and stops the command, when the
  * reply ends) or a subagent (its parent only sees its final reply). The model has to wait in-turn.
  */
-export function mustWait(session: SessionLike | undefined, env: NodeJS.ProcessEnv = process.env) {
+export function mustWait(session: SessionLike | undefined, env: NodeJS.ProcessEnv = process.env, now = Date.now()) {
   if (env.SENTE_NONINTERACTIVE === "1") return true
   if (!session) return false
-  return Boolean(session.parentID) || session.metadata?.[ONE_SHOT] === true
+  if (session.parentID) return true
+  return live(session.metadata?.[ONE_SHOT], now)
+}
+
+/** A lease counts until it expires, or until its run is seen to be gone on this same machine. */
+export function live(value: unknown, now = Date.now()) {
+  if (!value || typeof value !== "object") return false
+  const item = value as Partial<Lease>
+  if (typeof item.until !== "number" || item.until <= now) return false
+  if (item.host !== os.hostname() || typeof item.pid !== "number") return true
+  try {
+    process.kill(item.pid, 0)
+    return true
+  } catch (error) {
+    // EPERM: the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
 }
 
 const waiting = new Map<string, number>()
+const announcing = new Set<string>()
 const collected = new Set<string>()
+
+/** A completion announcement is pending for this job (interactive sessions only). */
+export function expectAnnouncement(id: string) {
+  announcing.add(id)
+}
 
 /** The wait tool is blocking on this job; its result reaches the model through that call. */
 export function beginWait(id: string) {
@@ -29,15 +65,22 @@ export function beginWait(id: string) {
 
 /** Called in one step with the outcome, so a finishing job is always seen as waited-on or collected. */
 export function endWait(id: string, finished: boolean) {
-  if (finished) collected.add(id)
+  // Only remembered while an announcement is still undecided; afterwards nothing reads it.
+  if (finished && announcing.has(id)) collected.add(id)
   const count = (waiting.get(id) ?? 1) - 1
   if (count > 0) waiting.set(id, count)
   else waiting.delete(id)
 }
 
-/** A finished job is announced only if no wait call delivered (or is delivering) its result. */
-export function shouldNotify(id: string) {
-  return !collected.has(id) && !waiting.has(id)
+/**
+ * Decides, once, whether the finished job is announced: not if a wait call delivered (or is
+ * delivering) its result. Clears what was kept for the decision.
+ */
+export function takeAnnouncement(id: string) {
+  const announce = announcing.has(id) && !collected.has(id) && !waiting.has(id)
+  announcing.delete(id)
+  collected.delete(id)
+  return announce
 }
 
 export * as ShellBackground from "./background"

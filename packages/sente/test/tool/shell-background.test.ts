@@ -15,8 +15,9 @@ import { Plugin } from "../../src/plugin"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { ShellTool } from "../../src/tool/shell"
 import type { TaskPromptOps } from "../../src/tool/task"
-import { JobWaitTool } from "../../src/tool/wait"
+import { WaitTool } from "../../src/tool/wait"
 import { ShellBackground } from "../../src/tool/shell/background"
+import { ShellPrompt } from "../../src/tool/shell/prompt"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -327,7 +328,7 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
         }),
     )
   const waitTool = (args: { job: string; timeout?: number; stop?: boolean }, next: Tool.Context = ctx) =>
-    JobWaitTool.pipe(
+    WaitTool.pipe(
       Effect.flatMap((info) => info.init()),
       Effect.flatMap((tool) => tool.execute(args, next)),
     )
@@ -411,7 +412,6 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
             const waited = JSON.parse((yield* waitTool({ job, timeout: 1 }, next)).output)
             expect(waited.status).toBe("pending")
             expect(waited.note).toContain("notified")
-            expect(ShellBackground.shouldNotify(job)).toBe(true)
           }).pipe(provideInstance(dir))
           const until = Date.now() + 5_000
           while (rec.prompts.length === 0 && Date.now() < until) yield* Effect.promise(() => Bun.sleep(20))
@@ -450,7 +450,10 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
         Effect.gen(function* () {
           const dir = yield* tmpdirScoped()
           const jobs = yield* BackgroundJob.Service
-          for (const session of [{ metadata: { [ShellBackground.ONE_SHOT]: true } }, { parentID: "ses_parent" }]) {
+          for (const session of [
+            { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease() } },
+            { parentID: "ses_parent" },
+          ]) {
             const rec = recorder()
             yield* Effect.gen(function* () {
               const result = yield* execute(
@@ -479,7 +482,7 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
         yield* Effect.gen(function* () {
           const result = yield* execute(
             { command: "sleep 1.8", timeout: 100 },
-            { ...ctx, extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: true } } } },
+            { ...ctx, extra: { session: { metadata: { [ShellBackground.ONE_SHOT]: ShellBackground.lease() } } } },
           )
           const job = (result.metadata as { jobId?: string }).jobId!
           const first = JSON.parse((yield* waitTool({ job, timeout: 1 })).output)
@@ -587,5 +590,78 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
         }).pipe(provideInstance(dir))
       }),
     30_000,
+  )
+
+  it.live(
+    "commands timing out together still respect the per-session limit",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const results = yield* Effect.all(
+            [1, 2, 3, 4].map(() => execute({ command: "sleep 40", timeout: 100 })),
+            { concurrency: "unbounded" },
+          )
+          const moved = results.filter((result) => (result.metadata as { background?: boolean }).background)
+          expect(moved).toHaveLength(2)
+          expect(results.filter((result) => result.output.includes("already running in the background"))).toHaveLength(
+            2,
+          )
+          for (const result of moved) yield* jobs.cancel((result.metadata as { jobId?: string }).jobId!)
+        }).pipe(provideInstance(dir), flags({ shellBackgroundMaxJobs: 2 }))
+      }),
+    20_000,
+  )
+})
+
+describe("shell background: one-shot lease", () => {
+  it.effect("a live lease means wait in-turn; an expired or dead-run lease does not", () =>
+    Effect.sync(() => {
+      const now = Date.now()
+      const fresh = ShellBackground.lease(now)
+      expect(ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: fresh } }, {}, now)).toBe(true)
+      expect(
+        ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: { ...fresh, until: now - 1 } } }, {}, now),
+      ).toBe(false)
+      // Same machine, but the run that took the lease is gone (Ctrl-C, crash): ignored right away.
+      expect(
+        ShellBackground.mustWait(
+          { metadata: { [ShellBackground.ONE_SHOT]: { ...fresh, pid: 2 ** 22 + 12345 } } },
+          {},
+          now,
+        ),
+      ).toBe(false)
+      // Another machine's run cannot be probed; its lease counts until it expires.
+      expect(
+        ShellBackground.mustWait(
+          { metadata: { [ShellBackground.ONE_SHOT]: { ...fresh, host: "elsewhere", pid: 2 ** 22 + 12345 } } },
+          {},
+          now,
+        ),
+      ).toBe(true)
+      expect(ShellBackground.mustWait({ metadata: { [ShellBackground.ONE_SHOT]: true } }, {}, now)).toBe(false)
+      expect(ShellBackground.mustWait({}, {}, now)).toBe(false)
+      expect(ShellBackground.mustWait({}, { SENTE_NONINTERACTIVE: "1" }, now)).toBe(true)
+    }),
+  )
+})
+
+describe("shell tool description", () => {
+  it.effect("every shell profile carries the exact timeout note for each mode", () =>
+    Effect.sync(() => {
+      const limits = { maxLines: 2000, maxBytes: 51200 } as never
+      for (const name of ["bash", "zsh", "pwsh", "powershell", "cmd"]) {
+        for (const background of [false, true]) {
+          const description = ShellPrompt.render(name, "darwin", limits, 1234, background).description
+          expect(description).toContain(ShellPrompt.timeoutNote(1234, background))
+          expect(description).not.toContain(ShellPrompt.timeoutNote(1234, !background))
+        }
+      }
+      const note = ShellPrompt.timeoutNote(1234, true)
+      expect(note).not.toContain("kind")
+      expect(note).toContain("notification")
+      expect(note).toContain("offered once such a job exists")
+    }),
   )
 })

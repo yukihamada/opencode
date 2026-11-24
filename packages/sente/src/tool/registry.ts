@@ -10,7 +10,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
-import { JobWaitTool } from "./wait"
+import { WaitTool } from "./wait"
 import { Database } from "@sente-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -106,7 +106,7 @@ const layer = Layer.effect(
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
-    const waittool = yield* JobWaitTool
+    const waittool = yield* WaitTool
     const background = yield* BackgroundJob.Service
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
@@ -299,7 +299,7 @@ const layer = Layer.effect(
           (job) => job.type === ShellTool.id && job.metadata?.sessionId === input.sessionID,
         )
       const filtered = (yield* all()).filter((tool) => {
-        if (tool.id === JobWaitTool.id) return waitable
+        if (tool.id === WaitTool.id) return waitable
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }

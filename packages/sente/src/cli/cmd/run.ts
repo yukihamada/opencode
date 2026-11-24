@@ -28,7 +28,6 @@ import { INTERACTIVE_INPUT_ERROR, readRunStdin, resolveInteractiveStdin } from "
 import { ExitCode, diagnostic, exitCodeForError } from "../exit-code"
 import { Unattended } from "@/permission/unattended"
 import { ShellSandbox } from "@/tool/shell/sandbox"
-import { ShellBackground } from "@/tool/shell/background"
 import { ShellID } from "@/tool/shell/id"
 
 type ModelInput = Parameters<SenteClient["session"]["prompt"]>[0]["model"]
@@ -73,6 +72,8 @@ type SessionInfo = {
   id: string
   title?: string
   directory?: string
+  /** Made (created or forked) by this run rather than an existing session it joined. */
+  created?: boolean
 }
 
 function inline(info: Inline) {
@@ -572,6 +573,7 @@ export const RunCommand = effectCmd({
 
             return {
               id,
+              created: true,
               title: forked.data?.title ?? current.data.title,
               directory: forked.data?.directory ?? current.data.directory,
             }
@@ -597,6 +599,7 @@ export const RunCommand = effectCmd({
 
           return {
             id,
+            created: true,
             title: forked.data?.title ?? base.title,
             directory: forked.data?.directory ?? base.directory,
           }
@@ -622,6 +625,7 @@ export const RunCommand = effectCmd({
 
         return {
           id,
+          created: true,
           title: result.data?.title ?? name,
           directory: result.data?.directory,
         }
@@ -964,66 +968,86 @@ export const RunCommand = effectCmd({
         await share(client, sessionID)
 
         if (!interactive) {
-          // Mark the session as driven by a one-shot run (on the server too, under --attach): a shell
-          // command that outlives its timeout then tells the model to wait for it before finishing.
-          const runSession = sessionID
-          const marked = async (on: boolean) => {
-            if (!runSession) return
-            const current = await client.session.get({ sessionID: runSession }).catch(() => undefined)
-            const metadata: Record<string, unknown> = { ...current?.data?.metadata }
-            if (on) metadata[ShellBackground.ONE_SHOT] = true
-            else delete metadata[ShellBackground.ONE_SHOT]
-            await client.session.update({ sessionID: runSession, metadata }).catch(() => undefined)
+          // Under --attach the server outlives this run: lease the session as one-shot so a shell command
+          // that outlives its timeout is waited for in-turn, and clean up after the run. A local run is
+          // recognised by SENTE_NONINTERACTIVE, and disposing its instance stops what is left.
+          const { holdOneShot } = await import("./run/runtime.oneshot")
+          const hold =
+            args.attach && sessionID
+              ? await holdOneShot({
+                  client,
+                  sessionID,
+                  owned: Boolean(sess.created),
+                  warn: (text) => diag("warn", text),
+                })
+              : undefined
+          const release = async () => {
+            await hold?.release()
           }
-          await marked(true)
-          // The run is over: drop the marker and, on a remote server (which outlives this process),
-          // stop any background command left behind. Locally, disposing the instance stops them.
-          async function release() {
-            await marked(false)
-            if (args.attach && runSession) await client.session.abort({ sessionID: runSession }).catch(() => undefined)
-          }
-          const events = await client.event.subscribe()
-          const completed = loop(client, events).catch((e) => {
-            console.error(e)
-            return { error: String(e), code: ExitCode.Other as ExitCode }
-          })
-          const startedAt = Date.now()
-          let recorded = false
-          async function record(outcome: "completed" | "error", error?: string, exitCode = 0) {
-            if (args.attach || recorded) return
-            recorded = true
-            await recordRunMetric({
-              sessionID: sessionID!,
-              directory: cwd,
-              model: args.model,
-              agent,
-              prompt: message,
-              outcome,
-              error,
-              exitCode,
-              startedAt,
-              durationMs: Date.now() - startedAt,
+          // Whatever ends the run (an error thrown by a request included), drop the lease.
+          try {
+            const events = await client.event.subscribe()
+            const completed = loop(client, events).catch((e) => {
+              console.error(e)
+              return { error: String(e), code: ExitCode.Other as ExitCode }
             })
-          }
-          async function finish() {
-            const result = await completed
-            await release()
-            if (result?.error) process.exitCode = result.code ?? ExitCode.Other
-            await record(
-              result?.error ? "error" : "completed",
-              result?.error,
-              typeof process.exitCode === "number" ? process.exitCode : 0,
-            )
-          }
+            const startedAt = Date.now()
+            let recorded = false
+            async function record(outcome: "completed" | "error", error?: string, exitCode = 0) {
+              if (args.attach || recorded) return
+              recorded = true
+              await recordRunMetric({
+                sessionID: sessionID!,
+                directory: cwd,
+                model: args.model,
+                agent,
+                prompt: message,
+                outcome,
+                error,
+                exitCode,
+                startedAt,
+                durationMs: Date.now() - startedAt,
+              })
+            }
+            async function finish() {
+              const result = await completed
+              await release()
+              if (result?.error) process.exitCode = result.code ?? ExitCode.Other
+              await record(
+                result?.error ? "error" : "completed",
+                result?.error,
+                typeof process.exitCode === "number" ? process.exitCode : 0,
+              )
+            }
 
-          if (args.command) {
-            const result = await client.session.command({
+            if (args.command) {
+              const result = await client.session.command({
+                sessionID,
+                agent,
+                model: args.model,
+                command: args.command,
+                arguments: message,
+                variant: args.variant,
+              })
+              if (result.error) {
+                const code = exitCodeForError(result.error)
+                if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
+                process.exitCode = code
+                await release()
+                await record("error", formatRunError(result.error), typeof code === "number" ? code : 1)
+                return
+              }
+              await finish()
+              return
+            }
+
+            const model = pick(args.model)
+            const result = await client.session.prompt({
               sessionID,
               agent,
-              model: args.model,
-              command: args.command,
-              arguments: message,
+              model,
               variant: args.variant,
+              parts: [...files, { type: "text", text: message }],
             })
             if (result.error) {
               const code = exitCodeForError(result.error)
@@ -1035,26 +1059,9 @@ export const RunCommand = effectCmd({
             }
             await finish()
             return
-          }
-
-          const model = pick(args.model)
-          const result = await client.session.prompt({
-            sessionID,
-            agent,
-            model,
-            variant: args.variant,
-            parts: [...files, { type: "text", text: message }],
-          })
-          if (result.error) {
-            const code = exitCodeForError(result.error)
-            if (!emit("error", { error: result.error, exitCode: code })) UI.error(formatRunError(result.error))
-            process.exitCode = code
+          } finally {
             await release()
-            await record("error", formatRunError(result.error), typeof code === "number" ? code : 1)
-            return
           }
-          await finish()
-          return
         }
 
         const model = pick(args.model)

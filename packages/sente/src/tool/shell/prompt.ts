@@ -75,7 +75,7 @@ function chainGuidance(name: string) {
   return "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
 }
 
-function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number) {
+function bashCommandSection(chain: string, limits: Limits, timeout: string) {
   return `Before executing the command, please follow these steps:
 
 1. Directory Verification:
@@ -94,7 +94,7 @@ function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: num
 
 Usage notes:
   - The command argument is required.
-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
+  - ${timeout}
   - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
 
   - Avoid using Bash with the \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
@@ -118,13 +118,7 @@ Usage notes:
     </bad-example>`
 }
 
-function powershellCommandSection(
-  name: string,
-  chain: string,
-  pathSep: string,
-  limits: Limits,
-  defaultTimeoutMs: number,
-) {
+function powershellCommandSection(name: string, chain: string, pathSep: string, limits: Limits, timeout: string) {
   return `${powershellNotes(name)}
 
 Before executing the command, please follow these steps:
@@ -145,7 +139,7 @@ Before executing the command, please follow these steps:
 
 Usage notes:
   - The command argument is required.
-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
+  - ${timeout}
   - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
 
   - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
@@ -169,7 +163,7 @@ Usage notes:
     </bad-example>`
 }
 
-function cmdCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number) {
+function cmdCommandSection(chain: string, limits: Limits, timeout: string) {
   return `# cmd.exe shell notes
 - Use double quotes for paths with spaces.
 - Use %VAR% for environment variables.
@@ -194,7 +188,7 @@ Before executing the command, please follow these steps:
 
 Usage notes:
   - The command argument is required.
-  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
+  - ${timeout}
   - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`more\` or other pagination commands to limit output; the full output will already be captured to a file for more precise searching.
 
   - Avoid using Shell with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
@@ -218,7 +212,7 @@ Usage notes:
     </bad-example>`
 }
 
-function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number) {
+function profile(name: string, platform: NodeJS.Platform, limits: Limits, timeout: string) {
   const isPowerShell = PS.has(name)
   const chain = chainGuidance(name)
   if (CMD.has(name)) {
@@ -226,7 +220,7 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
       intro: `Executes a given ${shellDisplayName(name)} command with optional timeout, ensuring proper handling and security measures.`,
       workdirSection:
         "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID changing directories inside the command - use `workdir` instead.",
-      commandSection: cmdCommandSection(chain, limits, defaultTimeoutMs),
+      commandSection: cmdCommandSection(chain, limits, timeout),
       gitCommands: "git commands",
       gitCommandRestriction: "git commands",
       createPrInstruction: "Create PR using a temporary body file so cmd.exe quoting stays simple.",
@@ -238,13 +232,7 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
       intro: `Executes a given ${shellDisplayName(name)} command with optional timeout, ensuring proper handling and security measures.`,
       workdirSection:
         "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID changing directories inside the command - use `workdir` instead.",
-      commandSection: powershellCommandSection(
-        name,
-        chain,
-        platform === "win32" ? "\\" : "/",
-        limits,
-        defaultTimeoutMs,
-      ),
+      commandSection: powershellCommandSection(name, chain, platform === "win32" ? "\\" : "/", limits, timeout),
       gitCommands: "git commands",
       gitCommandRestriction: "git commands",
       createPrInstruction: "Create PR using gh pr create with a PowerShell here-string to pass the body correctly.",
@@ -259,7 +247,7 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
       "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.",
     workdirSection:
       "All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID using `cd <directory> && <command>` patterns - use `workdir` instead.",
-    commandSection: bashCommandSection(chain, limits, defaultTimeoutMs),
+    commandSection: bashCommandSection(chain, limits, timeout),
     gitCommands: "bash commands",
     gitCommandRestriction: "git bash commands",
     createPrInstruction:
@@ -270,6 +258,13 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
   }
 }
 
+/** The timeout bullet of every shell profile. */
+export function timeoutNote(defaultTimeoutMs: number, background: boolean) {
+  if (!background)
+    return `You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.`
+  return `You can specify an optional timeout in milliseconds (default ${defaultTimeoutMs}ms). A command still running at its timeout is not stopped: it moves to the background as a job, and the result tells you how its outcome reaches you (a notification later, or the wait tool, which is offered once such a job exists). Do not start another copy while it runs.`
+}
+
 export function render(
   name: string,
   platform: NodeJS.Platform,
@@ -277,13 +272,7 @@ export function render(
   defaultTimeoutMs: number,
   background = false,
 ) {
-  const selected = profile(name, platform, limits, defaultTimeoutMs)
-  const commandSection = background
-    ? selected.commandSection.replace(
-        `commands will time out after ${defaultTimeoutMs}ms.`,
-        `commands time out after ${defaultTimeoutMs}ms. A command still running at its timeout is not killed: it moves to the background and you get a job ID. Get its result with the wait tool (kind "job"); do not start another copy while it runs.`,
-      )
-    : selected.commandSection
+  const selected = profile(name, platform, limits, timeoutNote(defaultTimeoutMs, background))
   return {
     description: renderPrompt(DESCRIPTION, {
       intro: selected.intro,
@@ -291,7 +280,7 @@ export function render(
       shell: name,
       tmp: Global.Path.tmp,
       workdirSection: selected.workdirSection,
-      commandSection,
+      commandSection: selected.commandSection,
       gitCommands: selected.gitCommands,
       toolName: ShellID.ToolID,
       gitCommandRestriction: selected.gitCommandRestriction,
