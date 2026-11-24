@@ -83,7 +83,8 @@ export async function holdOneShot(input: HoldInput) {
         { headers: { "cache-control": "no-store" } },
       )
       const held = id in ShellBackground.leases(current.data ?? undefined)
-      if (held === lease || attempt >= 4) return
+      if (held === lease) return
+      if (attempt >= 4) throw new Error(lease ? "the lease did not stick" : "the lease could not be removed")
     }
   }
   // Every write goes through one chain, so a renewal still in flight cannot land after the removal.
@@ -128,7 +129,7 @@ export async function holdOneShot(input: HoldInput) {
   }
 
   // Ctrl-C / kill: drop the lease before going, then let the signal take its normal course.
-  let released: Promise<void> | undefined
+  let released: Promise<{ unfinished: string[] }> | undefined
   const onSignal = (signal: NodeJS.Signals) => {
     void release().finally(() => {
       signals.off(signal, onSignal)
@@ -145,7 +146,12 @@ export async function holdOneShot(input: HoldInput) {
       clearInterval(timer)
       signals.off("SIGINT", onSignal)
       signals.off("SIGTERM", onSignal)
-      if (leasing) await queue(false).catch(() => undefined)
+      if (leasing)
+        await queue(false).catch((error: unknown) =>
+          input.warn(
+            `could not remove the one-shot lease (${error instanceof Error ? error.message : String(error)}); it expires within ${ShellBackground.LEASE_MS / 60_000} minutes`,
+          ),
+        )
       // In a session this run made every job is its own; in a joined one, only those of its own turn.
       const seen = await jobs(input.client, input.sessionID, input.owned ? undefined : input.message).catch(
         (error: unknown) => {
@@ -158,19 +164,21 @@ export async function holdOneShot(input: HoldInput) {
       // Unknown: in a session this run made, stopping is the safe side; elsewhere it is not ours to stop.
       if (!seen) {
         if (input.owned) await input.client.session.abort({ sessionID: input.sessionID }).catch(() => undefined)
-        return
+        return { unfinished: input.owned ? [] : ["unknown"] }
       }
       const running = seen.started.filter((job) => !seen.finished.includes(job))
-      if (running.length === 0) return
+      if (running.length === 0) return { unfinished: [] }
       // Only a session this run made is ours to interrupt; in someone else's session it would also stop
       // their turn, subagents and jobs. There the commands end on their own or at the lifetime limit.
       if (input.owned) {
         await input.client.session.abort({ sessionID: input.sessionID }).catch(() => undefined)
-        return
+        return { unfinished: [] }
       }
       input.warn(
         `${running.length} background command(s) started by this run may still be running on the server (${running.join(", ")}); they end on their own, at the background time limit, or when the session is interrupted`,
       )
+      // The caller exits non-zero: the run's work is not finished.
+      return { unfinished: running }
     })()
     return released
   }
@@ -196,14 +204,20 @@ function serverNow(response: Response | undefined, sent: number, warn: (message:
   return now
 }
 
-/** Background shell jobs of the session (only those of the turn answering `turn`, if given), and delivered ones. */
+/**
+ * Background shell jobs of the session (only those of the turn started by user message `turn`, if
+ * given; server-added continuations stay in the turn before them), and those whose result was delivered.
+ */
 async function jobs(client: Client, sessionID: string, turn?: string) {
   const response = await client.session.messages({ sessionID })
   if (!response.data) throw new Error(response.error ? String(response.error) : "no messages returned")
   const started: string[] = []
   const finished: string[] = []
+  let origin: string | undefined
   for (const message of response.data) {
-    const ours = turn === undefined || (message.info as { parentID?: string }).parentID === turn
+    const info = message.info as { id: string; role: string }
+    if (info.role === "user" && !ShellBackground.automatic({ info, parts: message.parts })) origin = info.id
+    const ours = turn === undefined || origin === turn
     for (const part of message.parts) {
       if (part.type === "text" && part.synthetic) {
         const match = /<background_shell job="([^"]+)"/.exec(part.text)

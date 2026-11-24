@@ -484,6 +484,36 @@ describe.skipIf(process.platform === "win32")("tool.shell timeout → background
   )
 
   it.live(
+    "after a server-added continuation the run's turn still waits in-turn",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped()
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const base = leasedTurn("run_cont")
+          const result = yield* execute(
+            { command: "sleep 0.3", timeout: 100 },
+            {
+              ...base,
+              messages: [
+                ...(base.messages as unknown as unknown[]),
+                { info: { id: "msg_a", role: "assistant" }, parts: [] },
+                {
+                  info: { id: "msg_cont", role: "user" },
+                  parts: [{ type: "text", text: "Continue", synthetic: true }],
+                },
+              ] as never,
+            },
+          )
+          expect(result.output).toContain("This session ends when you finish your reply")
+          expect((result.metadata as { run?: string }).run).toBe("run_cont")
+          yield* jobs.wait({ id: (result.metadata as { jobId?: string }).jobId!, timeout: 10_000 })
+        }).pipe(provideInstance(dir))
+      }),
+    20_000,
+  )
+
+  it.live(
     "wait on a one-shot job that is still running says to call it again",
     () =>
       Effect.gen(function* () {
@@ -650,6 +680,31 @@ describe("shell background: run stamp", () => {
 })
 
 describe("shell background: one-shot lease", () => {
+  it.effect("the turn is the latest user message the server did not add itself", () =>
+    Effect.sync(() => {
+      const sent = (id: string) => ({ info: { id, role: "user" }, parts: [{ type: "text", text: "do it" }] })
+      const auto = (id: string) => ({
+        info: { id, role: "user" },
+        parts: [{ type: "text", text: "Continue", synthetic: true }],
+      })
+      const compaction = (id: string) => ({ info: { id, role: "user" }, parts: [{ type: "compaction" }] })
+      const answer = { info: { id: "msg_a", role: "assistant" }, parts: [] }
+      // Output-limit continuation, todo follow-up, compaction marker + its continue prompt, notification.
+      expect(ShellBackground.turnOrigin([sent("msg_run"), answer, auto("msg_cont")])).toBe("msg_run")
+      expect(
+        ShellBackground.turnOrigin([sent("msg_run"), answer, compaction("msg_cmp"), auto("msg_cmp_cont"), answer]),
+      ).toBe("msg_run")
+      expect(ShellBackground.turnOrigin([sent("msg_run"), answer, sent("msg_tui")])).toBe("msg_tui")
+      // A user message with a real part next to a synthetic one was sent by someone.
+      expect(
+        ShellBackground.turnOrigin([
+          sent("msg_run"),
+          { info: { id: "msg_mixed", role: "user" }, parts: [{ type: "text", synthetic: true }, { type: "file" }] },
+        ]),
+      ).toBe("msg_mixed")
+    }),
+  )
+
   it.effect("a live lease means wait in-turn for its own turn only; expired or dead-run leases do not", () =>
     Effect.sync(() => {
       const now = Date.now()

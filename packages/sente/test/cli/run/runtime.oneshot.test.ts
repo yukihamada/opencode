@@ -19,6 +19,8 @@ function fakeServer(
     failMessages?: boolean
     /** Delay inside update(), so concurrent read-modify-writes interleave. */
     updateDelayMs?: number
+    /** Another writer keeps dropping our lease entry. */
+    dropLease?: boolean
   } = {},
 ) {
   const state = {
@@ -52,6 +54,7 @@ function fakeServer(
           return { error: "boom" }
         }
         state.metadata = { ...args.metadata }
+        if (input.dropLease) delete state.metadata[ShellBackground.ONE_SHOT]
         return { data: {} }
       },
       abort: async () => {
@@ -91,6 +94,20 @@ const hold = (server: ReturnType<typeof fakeServer>, extra: Partial<HoldInput> =
     ...extra,
   })
 
+/** A user message: sent by a person/run, or added by the server (all parts synthetic / compaction). */
+const user = (id: string, kind: "sent" | "continue" | "compaction" = "sent"): Message => ({
+  info: { id, role: "user" },
+  parts:
+    kind === "compaction"
+      ? [{ type: "compaction", auto: true }]
+      : [
+          {
+            type: "text",
+            text: kind === "sent" ? "do it" : "Continue",
+            ...(kind === "continue" ? { synthetic: true } : {}),
+          },
+        ],
+})
 /** An assistant reply in the turn answering `parent`, with the given parts. */
 const reply = (parent: string, ...parts: Part[]): Message => ({ info: { role: "assistant", parentID: parent }, parts })
 const bash = (jobId: string): Part => ({
@@ -176,12 +193,14 @@ describe("sente run --attach one-shot lease", () => {
     const server = fakeServer()
     const held = await hold(server, { renewMs: 20 })
     const first = lease(server).until
-    await Bun.sleep(80)
+    const writes = server.calls.update
+    // Wait for a renewal (polled, not a fixed sleep, so a loaded machine does not flake it).
+    for (let i = 0; i < 200 && server.calls.update <= writes; i++) await Bun.sleep(10)
+    expect(server.calls.update).toBeGreaterThan(writes)
     expect(lease(server).until).toBeGreaterThanOrEqual(first)
-    expect(server.calls.update).toBeGreaterThan(1)
     await held.release()
     const updates = server.calls.update
-    await Bun.sleep(60)
+    await Bun.sleep(100)
     expect(server.calls.update).toBe(updates)
     expect(entries(server)).toHaveLength(0)
   })
@@ -223,30 +242,77 @@ describe("sente run --attach one-shot lease", () => {
   })
 
   test("in a session it made, a background command never collected is stopped by aborting", async () => {
-    const server = fakeServer({ messages: [reply("msg_old", bash("job_b"), waited("job_b", "completed"))] })
+    const server = fakeServer({
+      messages: [user("msg_old"), reply("msg_old", bash("job_b"), waited("job_b", "completed"))],
+    })
     const held = await hold(server)
-    server.state.messages.push(reply(TURN, bash("job_a")))
+    server.state.messages.push(user(TURN), reply(TURN, bash("job_a")))
     await held.release()
     expect(server.calls.abort).toBe(1)
   })
 
   test("in a session it joined (-s/-c), it never aborts and names only its own turn's jobs", async () => {
     const warnings: string[] = []
-    const server = fakeServer({ messages: [reply("msg_old", bash("job_old"))] })
+    const server = fakeServer({ messages: [user("msg_old"), reply("msg_old", bash("job_old"))] })
     const held = await hold(server, { owned: false, warn: (text) => void warnings.push(text) })
     // A TUI turn starts jobs in the same session meanwhile.
-    server.state.messages.push(reply(TURN, bash("job_mine")), reply("msg_tui", bash("job_tui")))
-    await held.release()
+    server.state.messages.push(
+      user(TURN),
+      reply(TURN, bash("job_mine")),
+      user("msg_tui"),
+      reply("msg_tui", bash("job_tui")),
+    )
+    const result = await held.release()
+    expect(result.unfinished).toEqual(["job_mine"])
     expect(server.calls.abort).toBe(0)
     const text = warnings.join("\n")
     expect(text).toContain("job_mine")
     for (const other of ["job_old", "job_tui"]) expect(text).not.toContain(other)
   })
 
+  test.each(["continue", "compaction"] as const)(
+    "jobs after a server-added %s message still count as this run's turn",
+    async (kind) => {
+      const warnings: string[] = []
+      const server = fakeServer()
+      const held = await hold(server, { owned: false, warn: (text) => void warnings.push(text) })
+      server.state.messages.push(
+        user(TURN),
+        reply(TURN, bash("job_before")),
+        user("msg_auto", kind),
+        ...(kind === "compaction" ? [user("msg_auto_continue", "continue")] : []),
+        reply("msg_auto", bash("job_after")),
+        user("msg_tui"),
+        reply("msg_tui", bash("job_tui")),
+      )
+      const result = await held.release()
+      expect(result.unfinished.toSorted()).toEqual(["job_after", "job_before"])
+      expect(server.calls.abort).toBe(0)
+    },
+  )
+
+  test("in its own session nothing unfinished is reported (it aborts instead)", async () => {
+    const server = fakeServer()
+    const held = await hold(server)
+    server.state.messages.push(user(TURN), reply(TURN, bash("job_a")))
+    expect((await held.release()).unfinished).toEqual([])
+    expect(server.calls.abort).toBe(1)
+  })
+
+  test("a lease that never sticks (overwritten each time) stops the run with LeaseError", async () => {
+    const server = fakeServer({ dropLease: true })
+    const result = await hold(server).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(result).toBeInstanceOf(LeaseError)
+    expect(String(result)).toContain("did not stick")
+  })
+
   test("with nothing left running it does nothing", async () => {
     const server = fakeServer()
     const held = await hold(server)
-    server.state.messages.push(reply(TURN, bash("job_a"), waited("job_a", "completed")))
+    server.state.messages.push(user(TURN), reply(TURN, bash("job_a"), waited("job_a", "completed")))
     await held.release()
     await held.release()
     expect(server.calls.abort).toBe(0)
@@ -336,7 +402,7 @@ describe("sente run --attach one-shot lease", () => {
     expect(warnings.join("\n")).toContain("running without the one-shot lease")
     expect(sig.emitter.listenerCount("SIGINT")).toBe(0)
     // The server backgrounded a command for this turn and the model ended without it.
-    server.state.messages.push(reply(TURN, bash("job_left")))
+    server.state.messages.push(user(TURN), reply(TURN, bash("job_left")))
     await held.release()
     expect(server.calls.update).toBe(0)
     expect(server.calls.abort).toBe(1)

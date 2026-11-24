@@ -40,6 +40,25 @@ export function turnRun(session: SessionLike | undefined, message: string | unde
   )?.[0]
 }
 
+type MessageLike = { info: { id: string; role: string }; parts: { type: string; synthetic?: boolean }[] }
+
+/**
+ * A user message the server added on its own: a continuation after the output limit, a todo
+ * follow-up, a compaction marker or its "continue" prompt, a background notification. Its turn still
+ * belongs to the message a person (or `sente run`) sent before it.
+ */
+export function automatic(message: MessageLike) {
+  return (
+    message.parts.length > 0 &&
+    message.parts.every((part) => part.type === "compaction" || (part.type === "text" && part.synthetic === true))
+  )
+}
+
+/** The user message the current turn answers: the latest one that was not added by the server. */
+export function turnOrigin(messages: readonly MessageLike[]) {
+  return messages.findLast((message) => message.info.role === "user" && !automatic(message))?.info.id
+}
+
 /**
  * Nobody will read a follow-up turn: a one-shot `sente run` turn (it ends, and stops the command, when
  * the reply ends) or a subagent (its parent only sees its final reply). The model has to wait in-turn.
