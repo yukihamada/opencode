@@ -560,10 +560,11 @@ export function partKind(part: LedgerPart): MessageKind {
   return "human"
 }
 
-type Entry = { sessionID: string; role: string; cost: number; kind?: MessageKind; seenAt: number }
+type Entry = { sessionID: string; role: string; cost: number; kind?: MessageKind; seenAt: number; compaction?: boolean }
 
 // パーツの中身の印。自動要約のあとサーバーが元の依頼を複製して送り直す(compaction.ts の replay)とき、
-// ループのメッセージと同じ中身なら「ループの回の続き」と分かるようにする(コマンドは source 印を付けられないため)。
+// コマンドのループ(source 印を付けられない)と同じ中身なら「ループの回の続き」と分かるようにする。
+// 依頼文のループは source: "loop" の印が複製にも写るので、中身では判定しない。
 function signature(part: LedgerPart) {
   if (part.type === "text" && part.text) return `text:${part.text}`
   if (part.type === "subtask") return `subtask:${part.command ?? ""}:${part.prompt ?? ""}`
@@ -586,8 +587,8 @@ export function createLedger(clock: { now: () => number } = { now: () => Date.no
   const watched = new Map<string, Map<string, Entry>>()
   // パーツが先に届いた場合の種類(メッセージが届いたら反映する)。
   const early = new Map<string, MessageKind>()
-  // ループが送ったメッセージIDと、会話ごとのループのメッセージの中身の印。
-  const loops = new Set<string>()
+  // 会話ごとの、ループが送ったメッセージID(コマンドのループかどうか)と、コマンドのループのパーツの中身の印。
+  const loops = new Map<string, Map<string, { command: boolean }>>()
   const loopSignatures = new Map<string, Set<string>>()
   function rootOf(sessionID: string, sessions: Tree) {
     const seen = new Set<string>()
@@ -596,6 +597,15 @@ export function createLedger(clock: { now: () => number } = { now: () => Date.no
       seen.add(id)
     }
     return undefined
+  }
+  // 届いた順で、そのメッセージの直前のユーザーメッセージ(同じ会話)が compaction を持つか。
+  function afterCompaction(entries: Map<string, Entry>, messageID: string, sessionID: string) {
+    const list = [...entries.entries()]
+    const index = list.findIndex(([id]) => id === messageID)
+    const previous = list
+      .slice(0, index < 0 ? list.length : index)
+      .findLast(([, entry]) => entry.sessionID === sessionID && entry.role === "user")
+    return previous?.[1].compaction === true
   }
   const stronger = (a: MessageKind | undefined, b: MessageKind | undefined) =>
     a === undefined ? b : b === undefined ? a : RANK[a] >= RANK[b] ? a : b
@@ -606,13 +616,13 @@ export function createLedger(clock: { now: () => number } = { now: () => Date.no
     unwatch(sessionID: string) {
       watched.delete(sessionID)
       loopSignatures.delete(sessionID)
-      ;[...loops].forEach((id) => {
-        if (!watched.size) loops.delete(id)
-      })
+      loops.delete(sessionID)
     },
-    /** ループが送るメッセージのIDを覚える(そのパーツの中身を、複製再送の見分けに使う)。 */
-    markLoop(messageID: string) {
-      loops.add(messageID)
+    /** ループが送るメッセージのIDを覚える。コマンドのループならパーツの中身を複製再送の見分けに使う。 */
+    markLoop(sessionID: string, messageID: string, command: boolean) {
+      const session = loops.get(sessionID) ?? new Map<string, { command: boolean }>()
+      loops.set(sessionID, session)
+      session.set(messageID, { command })
     },
     /** 覚えているメッセージの件数(テスト・確認用)。 */
     size: () => [...watched.values()].reduce((sum, entries) => sum + entries.size, 0),
@@ -634,14 +644,22 @@ export function createLedger(clock: { now: () => number } = { now: () => Date.no
     recordPart(part: LedgerPart, sessions: Tree) {
       const root = rootOf(part.sessionID, sessions)
       if (!root) return
-      const entry = watched.get(root)!.get(part.messageID)
+      const entries = watched.get(root)!
+      const entry = entries.get(part.messageID)
       const mark = signature(part)
-      if (loops.has(part.messageID)) {
-        if (mark) loopSignatures.set(root, new Set([...(loopSignatures.get(root) ?? []), mark]))
+      const loop = loops.get(root)?.get(part.messageID)
+      if (loop) {
+        if (loop.command && mark) {
+          const marks = loopSignatures.get(root) ?? new Set<string>()
+          loopSignatures.set(root, marks)
+          marks.add(mark)
+        }
         return
       }
-      // ループのメッセージと同じ中身の複製(自動要約後の送り直し)は、ループの回の続き(自動)。
-      const replay = mark !== undefined && loopSignatures.get(root)?.has(mark) === true
+      if (part.type === "compaction" && entry) entry.compaction = true
+      // コマンドのループと同じ中身で、直前のユーザーメッセージが自動要約(compaction)のもの = サーバーの複製再送。
+      // それ以外の同じ文(別の端末から本人が同じコマンドを打った等)は本人扱い。
+      const replay = mark !== undefined && loopSignatures.get(root)?.has(mark) === true && afterCompaction(entries, part.messageID, root)
       const kind = replay ? "auto" : partKind(part)
       if (!entry) {
         early.set(part.messageID, stronger(early.get(part.messageID), kind)!)

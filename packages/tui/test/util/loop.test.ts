@@ -78,7 +78,8 @@ function world() {
   const ledger = Loop.createLedger({ now: () => clock.now })
   const loopIDs = new Set<string>()
   const humanIDs = new Set<string>()
-  const state = { busy: false, seq: 0, loopText: "Review the recent changes." }
+  // kind: command = コマンドのループ(サーバーがテンプレートから作る印なしの text) / prompt = 依頼文のループ(source: "loop" 付き)
+  const state = { busy: false, seq: 0, loopText: "Review the recent changes.", kind: "command" as "command" | "prompt" }
   const aborted: string[] = []
   const events: Loop.Event[] = []
   const pending: (() => void)[] = []
@@ -97,10 +98,18 @@ function world() {
     notify: (event) => events.push(event),
     send: (_item, messageID) => {
       loopIDs.add(messageID)
-      ledger.markLoop(messageID)
+      ledger.markLoop("s", messageID, state.kind === "command")
       record({ id: messageID, role: "user" })
-      // コマンドのループ(/review 等)と同じく、サーバーがテンプレートから作った印なしの text パーツ
-      ledger.recordPart({ messageID, sessionID: "s", type: "text", text: state.loopText }, sessions)
+      ledger.recordPart(
+        {
+          messageID,
+          sessionID: "s",
+          type: "text",
+          text: state.loopText,
+          ...(state.kind === "prompt" ? { metadata: { source: "loop" } } : {}),
+        },
+        sessions,
+      )
       state.busy = true
       return new Promise<void>((resolve) => pending.push(resolve))
     },
@@ -731,6 +740,7 @@ describe("util.loop TUI state", () => {
     const loop = w.lastLoop()
     w.ledger.recordPart({ messageID: loop, sessionID: "s", type: "subtask", command: "review", prompt: "Review it" }, w.sessions)
     w.step(loop, 0.1)
+    w.serverAdds("msg_compact_sub", "compaction")
     w.serverAdds("msg_replay_sub", "none")
     w.ledger.recordPart({ messageID: "msg_replay_sub", sessionID: "s", type: "subtask", command: "review", prompt: "Review it" }, w.sessions)
     w.step("msg_replay_sub", 1)
@@ -747,6 +757,54 @@ describe("util.loop TUI state", () => {
     w2.step("msg_other_cmd", 5)
     w2.tick(3000)
     expect(w2.aborted).toEqual([])
+  })
+
+  test("command loop: the same command typed from another device without a compaction just before is the user's", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "/review", interval: 60_000, budget: 0.1 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.05)
+    w.serverAdds("msg_same_cmd", "none")
+    w.ledger.recordPart({ messageID: "msg_same_cmd", sessionID: "s", type: "text", text: w.state.loopText }, w.sessions)
+    w.step("msg_same_cmd", 5)
+    w.tick(3000)
+    expect(w.aborted).toEqual([])
+    expect(w.manager.list()).toEqual([item])
+  })
+
+  test("prompt loop: identified by source: \"loop\" only — the same text from another device is the user's, the replay (mark copied) is the loop's", async () => {
+    const w = world()
+    w.state.kind = "prompt"
+    w.state.loopText = "今の時刻を一言で"
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "今の時刻を一言で", interval: 60_000, budget: 0.1 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.05)
+    // 自動要約の直後でも、印のない同じ文は本人(別の端末から本人が同じ文を送った)
+    w.serverAdds("msg_compact_p", "compaction")
+    w.serverAdds("msg_same_text", "none")
+    w.ledger.recordPart({ messageID: "msg_same_text", sessionID: "s", type: "text", text: "今の時刻を一言で" }, w.sessions)
+    w.step("msg_same_text", 5)
+    w.tick(3000)
+    expect(w.aborted).toEqual([])
+    expect(w.manager.list()).toEqual([item])
+    // 複製再送は印ごと写るのでループの回の続き
+    const w2 = world()
+    w2.state.kind = "prompt"
+    w2.ledger.watch("s")
+    w2.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 })
+    w2.tick(Loop.SETTLE_MS + 1000)
+    w2.step(w2.lastLoop(), 0.05)
+    w2.serverAdds("msg_compact_q", "compaction")
+    w2.serverAdds("msg_replay_q", "none")
+    w2.ledger.recordPart(
+      { messageID: "msg_replay_q", sessionID: "s", type: "text", text: w2.state.loopText, metadata: { source: "loop" } },
+      w2.sessions,
+    )
+    w2.step("msg_replay_q", 0.08)
+    w2.tick()
+    expect(w2.aborted).toEqual(["s"])
   })
 
   test("a user's own text that differs from the loop request is still the user's", async () => {

@@ -27,7 +27,7 @@ export function loopText(language: "ja" | "en") {
     return {
       title: "ループ(このセッション内の繰り返し)",
       usage: `使い方: /loop 5分 依頼文  /loop 5m 依頼文  (最短${limits.min}・--max 回数・--for 期間・--budget ドル)。/loop stop [id|all]・/loop resume`,
-      help: `/loop 5分 依頼 で同じ依頼を間隔ごとに送ります。生成中の回は飛ばし、既定${limits.expiry}時間・${limits.runs}回・1ループ${limits.budget}で終了(--for は最長${limits.maxDays}日)。上限は生成中も見ていて、超えたらその回を中断します(中断までの1ステップ分は超えることがあります。中断した回の操作は途中のままになることがあります。本人の依頼が会話に入っているときは会話を止めず、ループだけ終えます)。費用はループが送った依頼への応答だけで数えます。本文に --max 等を含めたいときは /loop 5m -- 依頼 のように -- の後に書きます。TUIを閉じると止まります。常時実行は /tasks。`,
+      help: `/loop 5分 依頼 で同じ依頼を間隔ごとに送ります。生成中の回は飛ばし、既定${limits.expiry}時間・${limits.runs}回・1ループ${limits.budget}で終了(--for は最長${limits.maxDays}日)。上限は生成中も見ていて、超えたらその回を中断します(中断までの1ステップ分は超えることがあります。中断した回の操作は途中のままになることがあります。本人の依頼が会話に入っているときは会話を止めず、ループだけ終えます)。費用はループが送った依頼への応答だけで数えます。既知の制約: コマンドのループ(/loop 1h /review 等)と全く同じコマンドを、自動要約の直後に別の端末から打つと、ループの回の続きとして数えられます。本文に --max 等を含めたいときは /loop 5m -- 依頼 のように -- の後に書きます。TUIを閉じると止まります。常時実行は /tasks。`,
       empty: "実行中のループはありません。",
       footer: (count: number, next: string | undefined, spent: number, paused?: "cost" | "error") =>
         `ループ ${count}件` +
@@ -98,7 +98,7 @@ export function loopText(language: "ja" | "en") {
   return {
     title: "Loops (repeat inside this session)",
     usage: `Usage: /loop 5m <prompt>  (min ${limits.min}, --max N, --for 2h, --budget USD). /loop stop [id|all], /loop resume`,
-    help: `/loop 5m <prompt> resends a prompt on an interval. Runs that would overlap a busy turn are skipped; loops end after ${limits.expiry}h, ${limits.runs} runs or ${limits.budget} per loop by default (--for up to ${limits.maxDays}d). The budget counts only replies to the loop's own prompts, is checked while a run is generating, and the run is interrupted once it is exceeded (it can overshoot by one step and leave that turn's work half-done; if your own request is in the conversation, only the loop ends). To keep --max etc. in the prompt, put it after --: /loop 5m -- <prompt>. Loops stop when the TUI closes; use /tasks for always-on jobs.`,
+    help: `/loop 5m <prompt> resends a prompt on an interval. Runs that would overlap a busy turn are skipped; loops end after ${limits.expiry}h, ${limits.runs} runs or ${limits.budget} per loop by default (--for up to ${limits.maxDays}d). The budget counts only replies to the loop's own prompts, is checked while a run is generating, and the run is interrupted once it is exceeded (it can overshoot by one step and leave that turn's work half-done; if your own request is in the conversation, only the loop ends). Known limitation: for a command loop (e.g. /loop 1h /review), the exact same command typed from another device right after an automatic compaction is counted as part of the loop. To keep --max etc. in the prompt, put it after --: /loop 5m -- <prompt>. Loops stop when the TUI closes; use /tasks for always-on jobs.`,
     empty: "No loops are running.",
     footer: (count: number, next: string | undefined, spent: number, paused?: "cost" | "error") =>
       `${count} loop${count === 1 ? "" : "s"}` +

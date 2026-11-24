@@ -65,7 +65,9 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
       lastTyped: () => typedAt,
       send: (item, messageID) => {
         loopMessages.get(item.target.sessionID)?.add(messageID)
-        ledger.markLoop(messageID)
+        // sendPrompt と同じ規則で、サーバーのコマンドとして送るか(印を付けられない)を決める。
+        const command = /^\/(\S+)/.exec(item.prompt)?.[1]
+        ledger.markLoop(item.target.sessionID, messageID, command !== undefined && sync.data.command.some((entry) => entry.name === command))
         return sendPrompt(sdk.client, {
           messageID,
           textMetadata: { source: Loop.LOOP_SOURCE },
