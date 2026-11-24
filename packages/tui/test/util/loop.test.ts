@@ -77,17 +77,18 @@ function world() {
   ]
   const ledger = Loop.createLedger()
   const loopIDs = new Set<string>()
+  const humanIDs = new Set<string>()
   const state = { busy: false, seq: 0 }
   const aborted: string[] = []
   const events: Loop.Event[] = []
   const pending: (() => void)[] = []
   const record = (message: { id: string; role: string; parentID?: string; cost?: number; sessionID?: string }) =>
-    ledger.record({ sessionID: "s", ...message, time: { created: clock.now } }, sessions)
+    ledger.record({ sessionID: "s", ...message }, sessions)
   const manager = Loop.create({
     now: () => clock.now,
     session: () => ({ busy: state.busy, costGate: false }),
     lastTyped: () => undefined,
-    runCost: (sessionID, run) => ledger.runCost(sessionID, run, loopIDs, sessions),
+    runCost: (sessionID, run) => ledger.runCost(sessionID, run, loopIDs, humanIDs),
     newMessageID: () => `msg_loop${++state.seq}`,
     abort: (sessionID) => {
       aborted.push(sessionID)
@@ -112,15 +113,24 @@ function world() {
   let reply = 0
   // ループの回(または本人の依頼)への応答ステップ
   const step = (parentID: string, cost: number, sessionID = "s") => record({ id: `msg_r${++reply}`, role: "assistant", parentID, cost, sessionID })
-  // 本人の依頼(応答も同じ会話で続く)
-  const userAsks = (id: string) => record({ id, role: "user" })
+  // 本人の依頼。via: input=この画面の入力欄から(IDで分かる) / other=別の端末から(synthetic でないパーツで分かる)
+  const userAsks = (id: string, via: "input" | "other" = "input") => {
+    if (via === "input") humanIDs.add(id)
+    record({ id, role: "user" })
+    if (via === "other") ledger.recordPart({ messageID: id, sessionID: "s", type: "text" }, sessions)
+  }
+  // サーバーが回の途中で自動で足すユーザーメッセージ(パーツは全部 synthetic)
+  const serverAdds = (id: string, partsKnown = true) => {
+    record({ id, role: "user" })
+    if (partsKnown) ledger.recordPart({ messageID: id, sessionID: "s", type: "text", synthetic: true }, sessions)
+  }
   const endRun = async () => {
     state.busy = false
     pending.splice(0).forEach((resolve) => resolve())
     await Promise.resolve()
     await Promise.resolve()
   }
-  return { clock, sessions, ledger, state, aborted, events, manager, tick, lastLoop, step, userAsks, endRun, loopIDs }
+  return { clock, sessions, ledger, state, aborted, events, manager, tick, lastLoop, step, userAsks, serverAdds, endRun, loopIDs, humanIDs }
 }
 
 describe("util.loop parse", () => {
@@ -511,23 +521,44 @@ describe("util.loop TUI state", () => {
     const item = w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 }).item!
     w.tick(Loop.SETTLE_MS + 1000)
     const run = w.lastLoop()
-    w.step(run, 0.02)
+    w.step(run, 0.09)
     w.tick()
-    w.userAsks("msg_user1") // 回の最中に本人が依頼
+    w.userAsks("msg_user1") // 回の最中に本人が依頼(入力欄から)
     w.tick()
     w.step("msg_user1", 0.3)
     w.step("msg_user1", 0.3)
     w.tick(3000)
     expect(w.aborted).toEqual([])
     expect(w.manager.list()).toEqual([item])
-    // ループ自身の応答が上限を超えても、本人の依頼が入っているので会話は止めずループだけ終える
-    w.step(run, 0.09)
+    expect(item.spent).toBe(0)
+    await w.endRun()
+    w.tick(2000)
+    // 回の費用はループの $0.09 だけ(本人の $0.6 は数えない)
+    expect(item.spent).toBeCloseTo(0.09)
+    expect(w.aborted).toEqual([])
+  })
+
+  test("case C': the loop's own cost crosses the budget after the user joined — only the loop ends, the conversation keeps going", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 })
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.05)
+    w.userAsks("msg_userX", "other") // 別の端末から(パーツで本人と分かる)
+    w.step(w.lastLoop(), 0.08) // 本人の依頼より前に届いていた扱いではない: 範囲外
     w.tick()
     expect(w.aborted).toEqual([])
-    expect(w.manager.list()).toEqual([])
-    const finished = w.events.find((event) => event.type === "finished")
+    const w2 = world()
+    w2.ledger.watch("s")
+    w2.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 })
+    w2.tick(Loop.SETTLE_MS + 1000)
+    w2.step(w2.lastLoop(), 0.05)
+    w2.step(w2.lastLoop(), 0.08)
+    w2.userAsks("msg_userY")
+    w2.tick()
+    expect(w2.aborted).toEqual([])
+    const finished = w2.events.find((event) => event.type === "finished")
     expect(finished && finished.type === "finished" && [finished.reason, finished.aborted, finished.interjected]).toEqual(["budget", false, true])
-    expect(item.spent).toBeCloseTo(0.11)
   })
 
   test("case B: the user asks within a second after a run — only the loop's own $0.02 is counted", async () => {
@@ -564,6 +595,72 @@ describe("util.loop TUI state", () => {
     await w.endRun()
     w.tick(2000)
     expect(item.spent).toBeCloseTo(0.35)
+  })
+
+  const autoScenarios = [
+    ["todo follow-up (prompt.ts todo 催促)", "msg_auto_todo"],
+    ["output-limit continuation (出力切れの続き)", "msg_auto_continue"],
+    ["subagent result summary (サブエージェント結果まとめ)", "msg_auto_summary"],
+    ["auto compaction (自動要約)", "msg_auto_compaction"],
+  ] as const
+  for (const [name, id] of autoScenarios)
+    test(`server-added message mid-run is part of the loop's run: ${name}`, async () => {
+      const w = world()
+      w.ledger.watch("s")
+      w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 1 })
+      w.tick(Loop.SETTLE_MS + 1000)
+      w.step(w.lastLoop(), 0.1)
+      w.serverAdds(id)
+      if (id === "msg_auto_summary") {
+        w.sessions.push({ id: "child_task", parentID: "s", time: { created: 0, updated: 0 } })
+        w.step("y", 0.2, "child_task")
+      }
+      w.step(id, 0.5)
+      w.tick()
+      w.step(id, 0.5) // ここで実費が上限を超える
+      w.tick()
+      // 自動の差し込みは本人扱いしない: 費用は数え、ループだけが動いているので中断、誤通知なし
+      expect(w.aborted).toEqual(["s"])
+      const finished = w.events.find((event) => event.type === "finished")
+      expect(finished && finished.type === "finished" && [finished.reason, finished.aborted, finished.interjected]).toEqual(["budget", true, false])
+      expect(finished && finished.item.spent).toBeCloseTo(id === "msg_auto_summary" ? 1.3 : 1.1)
+    })
+
+  test("a user message whose parts have not arrived yet blocks the interruption until it is classified", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 })
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.serverAdds("msg_unknown", false)
+    w.step(w.lastLoop(), 0.2)
+    w.tick(3000)
+    expect(w.aborted).toEqual([])
+    expect(w.manager.list().length).toBe(1)
+    // パーツが届いて自動と分かったら中断して終える
+    w.ledger.recordPart({ messageID: "msg_unknown", sessionID: "s", type: "text", synthetic: true }, w.sessions)
+    w.tick()
+    expect(w.aborted).toEqual(["s"])
+  })
+
+  test("the user's input right after the loop message (same millisecond) is recognised by ID, not by time", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.userAsks("msg_same_ms") // 時計は進めない(同一ミリ秒)
+    w.step("msg_same_ms", 5)
+    w.tick(2000)
+    expect(w.aborted).toEqual([])
+    expect(item.spent).toBe(0)
+    expect(w.manager.list()).toEqual([item])
+  })
+
+  test("nextMessageID sorts after the last message already seen even if the local clock is behind", () => {
+    const ahead = Loop.nextMessageID(undefined, Date.now() + 3_600_000) // 他の端末(時計が1時間進んでいる)が作ったID相当
+    const mine = Loop.nextMessageID(ahead, Date.now())
+    expect(mine > ahead).toBe(true)
+    expect(mine.startsWith("msg_")).toBe(true)
+    expect(Loop.nextMessageID(undefined, 0).startsWith("msg_")).toBe(true)
   })
 
   test("costLineExceeded follows the server rules (metadata, numeric strings, env, agent request_cost)", () => {

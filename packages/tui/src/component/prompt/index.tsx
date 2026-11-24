@@ -1847,6 +1847,8 @@ export function Prompt(props: PromptProps) {
         variant,
         commands: sync.data.command.map((command) => command.name),
         editorParts,
+        // ループのある会話では、入力欄からの依頼を本人の依頼として見分けられるよう ID を付けて送る。
+        messageID: loop?.list(sessionID).length ? loop.humanMessageID(sessionID) : undefined,
       },
       stash,
     ).then((result) => {

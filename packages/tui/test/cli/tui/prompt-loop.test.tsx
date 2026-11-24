@@ -301,6 +301,9 @@ test("/loop list opens the list (renders under the dialog layer) and resumes fro
   }
 })
 
+const user = (id: string) => ({ id, sessionID, role: "user", time: { created: Date.now() }, agent: "build", model: { providerID: "teai", modelID: "auto" } })
+const textPart = (messageID: string, text: string, synthetic: boolean) => ({ id: `prt_${messageID}`, sessionID, messageID, type: "text", text, synthetic })
+
 const assistant = (id: string, parentID: string, cost: number) => ({
   id,
   sessionID,
@@ -316,7 +319,7 @@ const assistant = (id: string, parentID: string, cost: number) => ({
   tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
 })
 
-test("loop budget counts only replies to the loop's own message (message.updated events)", async () => {
+test("loop budget counts the replies in the loop's own run (message.updated events)", async () => {
   const s = await setup()
   try {
     s.server.hold = true
@@ -325,9 +328,10 @@ test("loop budget counts only replies to the loop's own message (message.updated
     await wait(() => s.prompts.length > 0, 8000)
     const loopMessage = s.prompts[0].messageID!
     expect(loopMessage).toStartWith("msg_")
-    // 本人の別の依頼への高い応答は数えない
-    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_other_reply", "msg_someone_else", 3) } })
-    await Bun.sleep(1500)
+    // サーバーはループのメッセージを作成順に送る
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(loopMessage) } })
+    s.emit({ type: "message.part.updated", properties: { sessionID, time: Date.now(), part: textPart(loopMessage, "状況確認", false) } })
+    await Bun.sleep(1200)
     expect(s.ctx.loop.list().length).toBe(1)
     // ループの回への応答(費用 $0.08)で、生成中に上限を超える → ループの回だけなので会話を中断して終わる
     s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_loop_reply", loopMessage, 0.08) } })
@@ -349,19 +353,74 @@ test("a user request during a loop run is never interrupted: the loop ends alone
     await s.submit("/loop 1m --budget 0.05 状況確認")
     await wait(() => s.prompts.length > 0, 8000)
     const loopMessage = s.prompts[0].messageID!
-    // 回の最中に本人が同じ会話へ依頼(user メッセージが会話に入る)
-    s.emit({
-      type: "message.updated",
-      properties: { sessionID, info: { id: "msg_user_mid", sessionID, role: "user", time: { created: Date.now() + 1 }, agent: "build", model: { providerID: "teai", modelID: "auto" } } },
-    })
+    // 回の最中に本人が別の端末から同じ会話へ依頼(synthetic でないパーツで本人と分かる)
+    s.emit({ type: "message.updated", properties: { sessionID, info: user("msg_user_mid") } })
+    s.emit({ type: "message.part.updated", properties: { sessionID, time: Date.now(), part: textPart("msg_user_mid", "1+1は?", false) } })
     s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_user_reply", "msg_user_mid", 2) } })
     await Bun.sleep(1500)
     expect(s.ctx.loop.list().length).toBe(1)
+    // 本人の依頼より前に届いたループの応答で上限を超えた → 会話は止めずにループだけ終える
     s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_loop_reply2", loopMessage, 0.08) } })
-    await wait(() => s.ctx.loop.list().length === 0, 4000)
+    await Bun.sleep(1500)
+    expect(s.ctx.loop.list().length).toBe(1)
+    expect(s.aborts).toEqual([])
+    s.finishRun()
+    await wait(() => s.ctx.loop.list().length === 1, 2000)
     await Bun.sleep(500)
     expect(s.aborts).toEqual([])
-    expect(s.ctx.toast.currentToast?.message).toContain("会話は止めていません")
+    expect(s.ctx.loop.list()[0].spent).toBe(0)
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)
+
+test("a request typed into the input during a loop run is sent with an ID and never interrupted", async () => {
+  const s = await setup()
+  try {
+    s.server.hold = true
+    await s.submit("/loop 1m --budget 0.05 状況確認")
+    await wait(() => s.prompts.length > 0, 8000)
+    const loopMessage = s.prompts[0].messageID!
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(loopMessage) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_loop_step1", loopMessage, 0.01) } })
+    // 本人が入力欄から依頼を送る(この画面で ID を決めて送る)
+    await s.submit("1+1は?")
+    await wait(() => s.prompts.length === 2, 3000)
+    const mine = s.prompts[1].messageID!
+    expect(mine).toStartWith("msg_")
+    expect(mine > loopMessage).toBe(true)
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(mine) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_user_reply_x", mine, 3) } })
+    await Bun.sleep(1500)
+    expect(s.aborts).toEqual([])
+    expect(s.ctx.loop.list().length).toBe(1)
+    s.finishRun()
+    await Bun.sleep(1500)
+    expect(s.ctx.loop.list()[0].spent).toBeCloseTo(0.01)
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)
+
+test("a server-added synthetic message (todo follow-up) stays part of the loop's run: budget interrupts, no false notice", async () => {
+  const s = await setup()
+  try {
+    s.server.hold = true
+    await s.submit("/loop 1m --budget 0.05 状況確認")
+    await wait(() => s.prompts.length > 0, 8000)
+    const loopMessage = s.prompts[0].messageID!
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(loopMessage) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_l1", loopMessage, 0.01) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: user("msg_todo_followup") } })
+    s.emit({
+      type: "message.part.updated",
+      properties: { sessionID, time: Date.now(), part: textPart("msg_todo_followup", "Finish or close the open todos.", true) },
+    })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_l2", "msg_todo_followup", 0.06) } })
+    await wait(() => s.ctx.loop.list().length === 0, 4000)
+    await wait(() => s.aborts.length === 1, 2000)
+    expect(s.ctx.toast.currentToast?.message).toContain("中断して終了")
+    expect(s.ctx.toast.currentToast?.message).not.toContain("本人の依頼")
     s.finishRun()
   } finally {
     await s.teardown()

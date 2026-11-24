@@ -8,7 +8,6 @@ import { useLanguage } from "./language"
 import { Loop } from "../util/loop"
 import { loopText } from "../util/loop-text"
 import { sendPrompt } from "../prompt/send"
-import { Identifier } from "@sente-ai/core/id/id"
 
 const COST_LIMIT_METADATA_KEY = "cost_limit_usd"
 
@@ -30,12 +29,14 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     const costRequests = new Map<string, string>()
     // ループのある会話(と子セッション)のメッセージだけを台帳へ。ループが無くなったら消す。
     const ledger = Loop.createLedger()
-    // 会話ごとの、ループが送ったメッセージID(本人の依頼と見分ける)。
+    // 会話ごとの、ループが送ったメッセージIDと、この画面の入力欄から送ったメッセージID(本人の依頼)。
     const loopMessages = new Map<string, Set<string>>()
+    const humanMessages = new Map<string, Set<string>>()
     function release() {
       const active = new Set(manager.list().map((item) => item.target.sessionID))
       ;[...loopMessages.keys()].filter((sessionID) => !active.has(sessionID)).forEach((sessionID) => {
         loopMessages.delete(sessionID)
+        humanMessages.delete(sessionID)
         ledger.unwatch(sessionID)
       })
     }
@@ -43,8 +44,9 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     const manager = Loop.create({
       now: () => Date.now(),
       session: (sessionID) => Loop.sessionState(sync.data, sessionID),
-      runCost: (sessionID, run) => ledger.runCost(sessionID, run, loopMessages.get(sessionID) ?? new Set(), sync.data.session),
-      newMessageID: () => Identifier.ascending("message"),
+      runCost: (sessionID, run) =>
+        ledger.runCost(sessionID, run, loopMessages.get(sessionID) ?? new Set(), humanMessages.get(sessionID) ?? new Set()),
+      newMessageID: (sessionID) => Loop.nextMessageID(sync.data.message[sessionID]?.at(-1)?.id, Date.now()),
       abort: (sessionID) => void sdk.client.session.abort({ sessionID }).catch(() => {}),
       lastTyped: () => typedAt,
       send: (item, messageID) => {
@@ -104,6 +106,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
 
     const unsubscribe = [
       event.on("message.updated", (event) => ledger.record(event.properties.info, sync.data.session)),
+      event.on("message.part.updated", (event) => ledger.recordPart(event.properties.part, sync.data.session)),
       event.on("permission.asked", (event) => {
         if (event.properties.permission === Loop.COST_PERMISSION)
           costRequests.set(event.properties.id, event.properties.sessionID)
@@ -126,6 +129,15 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
       text,
       /** 毎秒更新される現在時刻(ループがある間だけ進む)。一覧の残り時間表示に使う。 */
       now,
+      /**
+       * 入力欄から送る依頼のメッセージID。ループのある会話では本人の依頼として覚える
+       * (その後の費用はループに数えず、上限で会話を中断しない)。
+       */
+      humanMessageID(sessionID: string) {
+        const id = Loop.nextMessageID(sync.data.message[sessionID]?.at(-1)?.id, Date.now())
+        humanMessages.get(sessionID)?.add(id)
+        return id
+      },
       /** 入力欄が変わったら呼ぶ。書きかけがある間は送信を控え、空になったら(送信・消去)すぐ解除する。 */
       typed(value: string) {
         typedAt = value.trim() ? Date.now() : undefined
@@ -161,6 +173,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
       start(input: Parameters<typeof manager.start>[0]) {
         ledger.watch(input.target.sessionID)
         if (!loopMessages.has(input.target.sessionID)) loopMessages.set(input.target.sessionID, new Set())
+        if (!humanMessages.has(input.target.sessionID)) humanMessages.set(input.target.sessionID, new Set())
         const result = manager.start(input)
         if (result.item) setNow(Date.now())
         return result
