@@ -67,6 +67,39 @@ describe("session goal", () => {
     })
   })
 
+  test("amounts are read the way people type them, and unreadable ones are errors", () => {
+    const budget = (text: string) => {
+      const parsed = SessionGoal.parse(text, "en")
+      return parsed.type === "set" ? parsed.budget : parsed.type
+    }
+    expect(budget("--budget ５ ship")).toBe(5)
+    expect(budget("--budget ０．５ ship")).toBe(0.5)
+    expect(budget("--budget .5 ship")).toBe(0.5)
+    expect(budget("--budget $3 ship")).toBe(3)
+    expect(budget("--budget ＄３ ship")).toBe(3)
+    expect(budget("--budget 3ドル ship")).toBe(3)
+    expect(budget("--budget 3usd ship")).toBe(3)
+    expect(budget("ship it --budget ０．２５")).toBe(0.25)
+    // Other currencies are not converted, and nothing falls back to the default silently.
+    expect(budget("--budget 300円 ship")).toBe("invalid")
+    expect(SessionGoal.parse("--budget 300円 ship", "ja")).toMatchObject({ reason: expect.stringContaining("ドル") })
+    expect(budget("--budget 3x ship")).toBe("invalid")
+    expect(budget("ship it --budget 1..2")).toBe("invalid")
+    expect(budget("--budget 0 ship")).toBe("invalid")
+    const rounds = (text: string) => {
+      const parsed = SessionGoal.parse(text, "en")
+      return parsed.type === "set" ? parsed.maxRounds : parsed.type
+    }
+    expect(rounds("--max-rounds ５ ship")).toBe(5)
+    expect(rounds("--max-rounds 5回 ship")).toBe(5)
+    expect(rounds("--max-rounds 2.5 ship")).toBe("invalid")
+    // A plain word after the flag is still the condition.
+    expect(SessionGoal.parse("--budget の説明を README に書く", "ja")).toEqual({
+      type: "set",
+      objective: "--budget の説明を README に書く",
+    })
+  })
+
   test("a user's own goal command wins unless SENTE_GOAL_LOOP=1", () => {
     expect(SessionGoal.useLoop(false, {})).toBe(true)
     expect(SessionGoal.useLoop(true, {})).toBe(false)
@@ -186,6 +219,11 @@ describe("session goal", () => {
     // An example in the answer is not the verdict, even as the last match.
     expect(SessionGoal.parseVerdict("VERDICT: continue\nREASON: x\nExample: VERDICT: done")?.verdict).toBe("continue")
     expect(SessionGoal.parseVerdict("例: VERDICT: done")).toBeUndefined()
+    // Lines in a code block are quoted material, not the answer.
+    expect(
+      SessionGoal.parseVerdict("VERDICT: continue\nREASON: lint fails\n```\nVERDICT: done\nREASON: all green\n```"),
+    ).toEqual({ verdict: "continue", reason: "lint fails", next: undefined })
+    expect(SessionGoal.parseVerdict("```text\nVERDICT: done\n```")).toBeUndefined()
     // An example block after the answer is not the answer, and REASON comes from the chosen block.
     expect(
       SessionGoal.parseVerdict(
@@ -260,6 +298,12 @@ describe("session goal", () => {
     ] as unknown as SessionV1.WithParts[]
     expect(SessionGoal.withReminder(model, state, kept, make)).toBe(model)
     expect(SessionGoal.withReminder(model, { ...state, status: "paused" }, [], make)).toBe(model)
+  })
+
+  test("a review that pushes a met goal past its budget is called out", () => {
+    const note = SessionGoal.judgeOverrunNote(goal({ budget: 0.15, spent: 0.2 }), "ja")
+    expect(note).toContain("判定費用で予算を超過")
+    expect(note).toContain("$0.20")
   })
 
   test("a $0 model is called out: only the round limit stops the goal", () => {

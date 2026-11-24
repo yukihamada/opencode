@@ -116,6 +116,8 @@ export interface Interface {
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
+  /** Sizes of the goal runner's in-memory state (tests check that a finished goal leaves none). */
+  readonly goalState: () => Record<string, number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@sente/SessionPrompt") {}
@@ -179,6 +181,7 @@ const layer = Layer.effect(
       scope,
       toast: (message, variant = "info") =>
         events.publish(TuiEvent.ToastShow, { message, variant, duration: 8000 }).pipe(Effect.ignore),
+      isBusy: (sessionID) => status.get(sessionID).pipe(Effect.map((current) => current.type !== "idle")),
       cancelRun: (sessionID) => state.cancel(sessionID),
       prompt: (input) => prompt(input as PromptInput),
       currentModel: (sessionID) => currentModel(sessionID),
@@ -1729,6 +1732,7 @@ const layer = Layer.effect(
       shell,
       command,
       resolvePromptParts,
+      goalState: goals.snapshot,
     })
   }),
 )

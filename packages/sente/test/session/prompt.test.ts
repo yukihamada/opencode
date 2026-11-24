@@ -3377,16 +3377,18 @@ const spend = Effect.fn("test.spend")(function* (sessionID: SessionID, cost: num
 // Starts a goal on `sessionID` whose first request hangs, so the root is running under an
 // active goal while a test drives its subagents. Interrupt it with prompt.cancel.
 const runningGoal = Effect.fn("test.runningGoal")(function* (
-  llm: { hang: Effect.Effect<void>; wait: (count: number) => Effect.Effect<void> },
+  llm: { hang: Effect.Effect<void>; wait: (count: number) => Effect.Effect<void>; hits: Effect.Effect<unknown[]> },
   sessionID: SessionID,
   args: string,
 ) {
   const prompt = yield* SessionPrompt.Service
   yield* llm.hang
+  const before = (yield* llm.hits).length
   const fiber = yield* prompt
     .command({ sessionID, command: "goal", arguments: args, agent: "build" })
     .pipe(Effect.forkChild)
-  yield* llm.wait(1)
+  yield* llm.wait(before + 1)
+  yield* waitForBusy(sessionID)
   return fiber
 })
 
@@ -3604,5 +3606,116 @@ it.instance("a built-in goal next to a user's own goal command is still cleared,
 
     // None of these went to the user's template.
     expect((yield* llm.hits).some((hit) => bodyOf(hit).includes("House rule"))).toBe(false)
+  }),
+)
+
+it.instance("a budget stop leaves work that began before the goal running", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const background = yield* BackgroundJob.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const started = (sessionID: SessionID) =>
+      prompt.prompt({
+        sessionID,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "work on your part", synthetic: true }],
+      })
+    // Before the goal: a background job and a subagent session that is still working.
+    const earlyJob = yield* background.start({ type: "task", metadata: { parentSessionId: chat.id }, run: Effect.never })
+    const early = yield* sessions.create({ title: "Earlier subagent", parentID: chat.id })
+    yield* started(early.id)
+    yield* llm.hang
+    const fe = yield* prompt.loop({ sessionID: early.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* Effect.sleep("5 millis")
+
+    const root = yield* runningGoal(llm, chat.id, "--budget 0.1 big task")
+    // After the goal: a sibling at work and a background job, then a subagent that overspends.
+    const late = yield* sessions.create({ title: "Goal subagent", parentID: chat.id })
+    yield* started(late.id)
+    yield* llm.hang
+    const fl = yield* prompt.loop({ sessionID: late.id }).pipe(Effect.forkChild)
+    yield* llm.wait(3)
+    const lateJob = yield* background.start({ type: "task", metadata: { parentSessionId: chat.id }, run: Effect.never })
+    const over = yield* sessions.create({ title: "Overspending subagent", parentID: chat.id })
+    yield* spend(over.id, 0.2)
+    yield* started(over.id)
+
+    yield* prompt.loop({ sessionID: over.id })
+
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+    yield* Fiber.await(fl).pipe(Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.fail(new Error("goal subagent kept running")) }))
+    expect((yield* background.get(lateJob.id))?.status).not.toBe("running")
+    // The earlier work is untouched.
+    expect((yield* background.get(earlyJob.id))?.status).toBe("running")
+    expect(fe.pollUnsafe()).toBeUndefined()
+
+    yield* prompt.cancel(early.id)
+    yield* Fiber.await(fe)
+    yield* background.cancel(earlyJob.id)
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(root)
+  }),
+)
+
+it.instance("a met goal whose review crossed the budget says so in its closing line", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => goalCfg(url, { input: 1, output: 1 }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* work(llm, "did it", { input: 100_000, output: 0 })
+    yield* review(llm, "VERDICT: done\nREASON: verified\nNEXT: -", { input: 100_000, output: 0 })
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "--budget 0.15 task", agent: "build" })
+
+    const goal = yield* goalOf(chat.id)
+    expect(goal?.status).toBe("complete")
+    expect(goal?.reason).toMatch(/判定費用で予算を超過|review pushed spend past the budget/)
+    expect(settledNotes(yield* sessions.messages({ sessionID: chat.id }))[0]).toMatch(/\$0\.20/)
+  }),
+)
+
+it.instance("the goal runner keeps no state once goals have ended", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const empty = { userCancelled: 0, budgetStopped: 0, stoppedRoots: 0, liveGoals: 0, rootOfRun: 0, spendWritten: 0 }
+
+    // A goal that completes.
+    const done = yield* sessions.create({ title: "Done" })
+    yield* work(llm, "ok")
+    yield* review(llm, "VERDICT: done\nREASON: ok\nNEXT: -")
+    yield* prompt.command({ sessionID: done.id, command: "goal", arguments: "task", agent: "build" })
+    expect(prompt.goalState()).toEqual(empty)
+
+    // A goal a subagent stops at its budget while the root runs, then the root is interrupted.
+    const chat = yield* sessions.create({ title: "Budget" })
+    const root = yield* runningGoal(llm, chat.id, "--budget 0.1 big task")
+    const child = yield* sessions.create({ title: "Subagent", parentID: chat.id })
+    yield* spend(child.id, 0.2)
+    yield* prompt.prompt({
+      sessionID: child.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "go", synthetic: true }],
+    })
+    yield* prompt.loop({ sessionID: child.id })
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(root)
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+    expect(settledNotes(yield* sessions.messages({ sessionID: chat.id }))).toHaveLength(1)
+    expect(prompt.goalState()).toEqual(empty)
+
+    // A goal the user interrupts.
+    const cut = yield* sessions.create({ title: "Interrupted" })
+    const running = yield* runningGoal(llm, cut.id, "long task")
+    yield* prompt.cancel(cut.id)
+    yield* Fiber.await(running)
+    expect(prompt.goalState()).toEqual(empty)
   }),
 )

@@ -53,6 +53,8 @@ export type State = {
   /** How many judgments in a row returned the current `reason`. */
   repeats: number
   updatedAt: number
+  /** When the goal (or its latest resume) started; work begun before it is not the goal's. */
+  startedAt?: number
   /** USD this goal may spend on turns and reviews together. */
   budget: number
   /** The session's recorded turn cost when the goal started; turns after it count. */
@@ -97,9 +99,17 @@ export function maxRounds(env: Env = process.env): number {
   return rounds(env.SENTE_GOAL_MAX_ROUNDS) ?? DEFAULT_MAX_ROUNDS
 }
 
+/** Full-width digits, period and dollar sign, as typed with a Japanese IME, read as ASCII. */
+export function halfWidth(text: string) {
+  return text.replace(/[０-９．＄]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+}
+
 function rounds(value: string | undefined) {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed < 1) return undefined
+  if (value === undefined) return undefined
+  const text = halfWidth(value.trim()).replace(/回$/, "")
+  if (!/^\d+$/.test(text)) return undefined
+  const parsed = Number(text)
+  if (parsed < 1) return undefined
   return Math.min(parsed, MAX_ROUNDS_CEILING)
 }
 
@@ -108,10 +118,24 @@ export function budget(env: Env = process.env): number {
   return dollars(env.SENTE_GOAL_BUDGET_USD) ?? DEFAULT_BUDGET_USD
 }
 
+/**
+ * A USD amount: `3`, `0.5`, `.5`, `$3`, `3ドル`, `3usd`, full-width `５` or `０．５`.
+ * Other currencies are not converted: `3円` is rejected, not read as $3.
+ */
 function dollars(value: string | undefined) {
-  const parsed = Number(value?.trim().replace(/^\$/, ""))
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+  if (value === undefined) return undefined
+  const text = halfWidth(value.trim())
+    .toLowerCase()
+    .replace(/^\$/, "")
+    .replace(/\s*(?:ドル|usd|dollars?)$/, "")
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) return undefined
+  const parsed = Number(text)
+  return parsed > 0 ? parsed : undefined
 }
+
+// A flag value that is meant as a number (digits, a currency mark or unit), as opposed to
+// the next word of a condition such as "--budget の説明を書く".
+const amountLike = (value: string) => /[0-9０-９$＄.．]|円|ドル|yen|jpy|usd|回/i.test(value)
 
 export function waitLimit(env: Env = process.env): number {
   const value = Number(env.SENTE_GOAL_WAIT_LIMIT_MS)
@@ -137,6 +161,7 @@ export function read(metadata: Record<string, unknown> | undefined): State | und
     reason: typeof goal.reason === "string" ? goal.reason : undefined,
     repeats: num(goal.repeats, 0),
     updatedAt: num(goal.updatedAt, 0),
+    ...(typeof goal.startedAt === "number" ? { startedAt: goal.startedAt } : {}),
     budget: num(goal.budget, 0) > 0 ? num(goal.budget, 0) : DEFAULT_BUDGET_USD,
     baseCost: num(goal.baseCost, 0),
     judgeCost: num(goal.judgeCost, 0),
@@ -170,6 +195,7 @@ export function create(
     maxRounds: input.maxRounds ?? maxRounds(env),
     repeats: 0,
     updatedAt: now,
+    startedAt: now,
     budget: input.budget ?? budget(env),
     baseCost: input.baseCost ?? 0,
     judgeCost: 0,
@@ -213,16 +239,20 @@ export type Command =
 export function parse(text: string, lang: Lang = ProviderQuota.language()): Command {
   let rest = text.trim()
   const options: { budget?: number; maxRounds?: number; loop?: boolean } = {}
-  const invalid = (flag: string): Command => ({
+  const invalid = (flag: string, value: string): Command => ({
     type: "invalid",
     reason:
       flag === "budget"
-        ? lang === "ja"
-          ? "--budget は正の金額です（例 --budget 3）。"
-          : "--budget must be a positive amount (e.g. --budget 3)."
+        ? /円|yen|jpy/i.test(value)
+          ? lang === "ja"
+            ? `--budget はドル（USD）で指定してください（「${value}」は使えません。例 --budget 3）。`
+            : `--budget is in US dollars ("${value}" is not accepted; e.g. --budget 3).`
+          : lang === "ja"
+            ? `--budget は正の金額です（「${value}」は読めません。例 --budget 3、--budget 0.5）。`
+            : `--budget must be a positive amount ("${value}" is not readable; e.g. --budget 3 or --budget 0.5).`
         : lang === "ja"
-          ? "--max-rounds は正の整数です。"
-          : "--max-rounds must be a positive integer.",
+          ? `--max-rounds は正の整数です（「${value}」は読めません）。`
+          : `--max-rounds must be a positive integer ("${value}" is not readable).`,
   })
   // `--loop` (no value) asks for the built-in loop even when a user's own goal command exists.
   // Only at the start or the end: "add a --loop option to sente run" keeps its words.
@@ -232,22 +262,20 @@ export function parse(text: string, lang: Lang = ProviderQuota.language()): Comm
     rest = (loopFlag.index === 0 ? rest.slice(loopFlag[0].length) : rest.slice(0, loopFlag.index)).trim()
   }
   // Limits go before or after the condition: `/goal --budget 5 ship it` or `/goal ship it --budget 5`.
-  // Only with a number as its value: "--budget の説明を README に書く" or "explain the --budget
-  // flag" stay the condition.
-  const patterns = [
-    /^--(budget|max-rounds)(?:=|\s+)(\$?\d+(?:\.\d+)?)(?:\s+|$)/,
-    /\s+--(budget|max-rounds)(?:=|\s+)(\$?\d+(?:\.\d+)?)$/,
-  ]
+  // A value meant as a number must read as one: `--budget 3円` or `--budget abc3` is an error,
+  // never silently the default. A plain word after the flag ("--budget の説明を README に書く",
+  // "explain the --budget flag") is the condition, and so is a flag in the middle.
+  const patterns = [/^--(budget|max-rounds)(?:=|\s+)(\S+)(?:\s+|$)/, /\s+--(budget|max-rounds)(?:=|\s+)(\S+)$/]
   while (true) {
     const flag = patterns.map((pattern) => pattern.exec(rest)).find((match) => match !== null)
-    if (!flag) break
+    if (!flag || !amountLike(flag[2])) break
     if (flag[1] === "budget") {
       const value = dollars(flag[2])
-      if (value === undefined) return invalid("budget")
+      if (value === undefined) return invalid("budget", flag[2])
       options.budget = value
     } else {
       const value = rounds(flag[2])
-      if (value === undefined) return invalid("max-rounds")
+      if (value === undefined) return invalid("max-rounds", flag[2])
       options.maxRounds = value
     }
     rest = (flag.index === 0 ? rest.slice(flag[0].length) : rest.slice(0, flag.index)).trim()
@@ -366,6 +394,17 @@ export function budgetReason(goal: State, lang: Lang = ProviderQuota.language())
     : `Stopped: the goal budget of ${money(goal.budget)} is spent (${money(goal.spent)}). Set the goal again with a larger --budget to go on.`
 }
 
+export function startedAt(goal: State) {
+  return goal.startedAt ?? goal.updatedAt
+}
+
+/** Appended to the closing line when the review that found the goal met pushed spend past the budget. */
+export function judgeOverrunNote(goal: State, lang: Lang = ProviderQuota.language()) {
+  return lang === "ja"
+    ? `（判定費用で予算を超過: ${money(goal.spent)} / 予算 ${money(goal.budget)}）`
+    : `(the review pushed spend past the budget: ${money(goal.spent)} of ${money(goal.budget)})`
+}
+
 export function overBudget(goal: State) {
   return goal.spent >= goal.budget
 }
@@ -449,8 +488,10 @@ export function sameReason(previous: string, next: string): boolean {
 export function parseVerdict(text: string): Verdict | undefined {
   // Markdown and list decoration around the label are dropped: `**VERDICT:** done`,
   // `VERDICT:** done`, `1. VERDICT: done`, `- VERDICT: done`.
+  // Lines inside ``` code blocks are quoted material (an example, a log), never the answer.
   const lines = text
     .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1\s*$|(?![\s\S]))/gm, "")
     .split("\n")
     .map((line) =>
       line
