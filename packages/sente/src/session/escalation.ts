@@ -62,7 +62,9 @@ export function sessionCostLimit(metadata: Record<string, unknown> | undefined):
 // 依頼そのものではなく、その裏で走る内部補助エージェント。タイトル付け・要約・
 // 自動圧縮は利用者が起動した処理ではないため、費用確認プロンプトの対象外にする
 // （既定 $1 では自動タイトルだけで毎回止まってしまうため）。
-export const AUXILIARY_AGENTS = new Set(["title", "summary", "compaction"])
+// The /goal reviewer is the same kind of overhead: the continuation it starts is an
+// ordinary turn and goes through the cost check like any other.
+export const AUXILIARY_AGENTS = new Set(["title", "summary", "compaction", "goal"])
 export function isAuxiliaryAgent(name: string): boolean {
   return AUXILIARY_AGENTS.has(name)
 }
