@@ -50,7 +50,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
         // 種類が分からないユーザーメッセージ(パーツ未着)は、会話のメッセージ一覧を取り直して判定する(1件につき1回)。
         const fresh = result.unknown.filter((id) => !refetched.has(id))
         if (fresh.length) {
-          fresh.forEach((id) => refetched.add(id))
+          fresh.forEach((id) => Loop.remember(refetched, id, 1000))
           void sdk.client.session
             .messages({ sessionID, limit: 30 })
             .then((response) =>
@@ -65,6 +65,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
       lastTyped: () => typedAt,
       send: (item, messageID) => {
         loopMessages.get(item.target.sessionID)?.add(messageID)
+        ledger.markLoop(messageID)
         return sendPrompt(sdk.client, {
           messageID,
           textMetadata: { source: Loop.LOOP_SOURCE },

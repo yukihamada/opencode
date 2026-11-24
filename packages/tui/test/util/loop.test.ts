@@ -78,7 +78,7 @@ function world() {
   const ledger = Loop.createLedger({ now: () => clock.now })
   const loopIDs = new Set<string>()
   const humanIDs = new Set<string>()
-  const state = { busy: false, seq: 0 }
+  const state = { busy: false, seq: 0, loopText: "Review the recent changes." }
   const aborted: string[] = []
   const events: Loop.Event[] = []
   const pending: (() => void)[] = []
@@ -97,7 +97,10 @@ function world() {
     notify: (event) => events.push(event),
     send: (_item, messageID) => {
       loopIDs.add(messageID)
+      ledger.markLoop(messageID)
       record({ id: messageID, role: "user" })
+      // コマンドのループ(/review 等)と同じく、サーバーがテンプレートから作った印なしの text パーツ
+      ledger.recordPart({ messageID, sessionID: "s", type: "text", text: state.loopText }, sessions)
       state.busy = true
       return new Promise<void>((resolve) => pending.push(resolve))
     },
@@ -699,6 +702,76 @@ describe("util.loop TUI state", () => {
     ])
   })
 
+  test("a command loop's request replayed after auto compaction (same text, no metadata) stays part of the loop's run", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    w.manager.start({ target: target("s"), prompt: "/review", interval: 60_000, budget: 1 })
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.1)
+    w.serverAdds("msg_compact", "compaction")
+    w.step("msg_compact", 0.2, "s")
+    // サーバーが元の依頼を複製して送り直す: 印のない text パーツ(中身はループの依頼と同じ)
+    w.serverAdds("msg_replay", "none")
+    w.ledger.recordPart({ messageID: "msg_replay", sessionID: "s", type: "text", text: w.state.loopText }, w.sessions)
+    w.step("msg_replay", 0.5)
+    w.tick()
+    w.step("msg_replay", 0.5)
+    w.tick()
+    expect(w.aborted).toEqual(["s"])
+    const finished = w.events.find((event) => event.type === "finished")
+    expect(finished && finished.type === "finished" && [finished.aborted, finished.interjected, finished.third]).toEqual([true, false, false])
+    expect(finished && finished.item.spent).toBeCloseTo(1.3)
+  })
+
+  test("a subtask command loop replayed after compaction is recognised by its subtask content", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    w.manager.start({ target: target("s"), prompt: "/review", interval: 60_000, budget: 1 })
+    w.tick(Loop.SETTLE_MS + 1000)
+    const loop = w.lastLoop()
+    w.ledger.recordPart({ messageID: loop, sessionID: "s", type: "subtask", command: "review", prompt: "Review it" }, w.sessions)
+    w.step(loop, 0.1)
+    w.serverAdds("msg_replay_sub", "none")
+    w.ledger.recordPart({ messageID: "msg_replay_sub", sessionID: "s", type: "subtask", command: "review", prompt: "Review it" }, w.sessions)
+    w.step("msg_replay_sub", 1)
+    w.tick()
+    expect(w.aborted).toEqual(["s"])
+    // 中身が違う subtask(別端末から本人がコマンド)は本人
+    const w2 = world()
+    w2.ledger.watch("s")
+    w2.manager.start({ target: target("s"), prompt: "/review", interval: 60_000, budget: 1 })
+    w2.tick(Loop.SETTLE_MS + 1000)
+    w2.step(w2.lastLoop(), 0.1)
+    w2.serverAdds("msg_other_cmd", "none")
+    w2.ledger.recordPart({ messageID: "msg_other_cmd", sessionID: "s", type: "subtask", command: "plan", prompt: "Plan it" }, w2.sessions)
+    w2.step("msg_other_cmd", 5)
+    w2.tick(3000)
+    expect(w2.aborted).toEqual([])
+  })
+
+  test("a user's own text that differs from the loop request is still the user's", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "/review", interval: 60_000, budget: 0.1 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.05)
+    w.serverAdds("msg_other_device", "none")
+    w.ledger.recordPart({ messageID: "msg_other_device", sessionID: "s", type: "text", text: "1+1は?" }, w.sessions)
+    w.step("msg_other_device", 5)
+    w.tick(3000)
+    expect(w.aborted).toEqual([])
+    expect(w.manager.list()).toEqual([item])
+  })
+
+  test("remember keeps only the newest entries", () => {
+    const set = new Set<string>()
+    Array.from({ length: 1005 }, (_, i) => Loop.remember(set, `m${i}`, 1000))
+    expect(set.size).toBe(1000)
+    expect(set.has("m4")).toBe(false)
+    expect(set.has("m5")).toBe(true)
+    expect(set.has("m1004")).toBe(true)
+  })
+
   test("partKind: text without synthetic / file / agent = human, goal・hook source = third, others = automatic", () => {
     const part = (extra: Record<string, unknown>) => ({ messageID: "m", sessionID: "s", type: "text", ...extra })
     expect(Loop.partKind(part({}))).toBe("human")
@@ -707,7 +780,12 @@ describe("util.loop TUI state", () => {
     expect(Loop.partKind(part({ synthetic: true }))).toBe("auto")
     expect(Loop.partKind(part({ ignored: true }))).toBe("auto")
     expect(Loop.partKind(part({ type: "compaction" }))).toBe("auto")
-    expect(Loop.partKind(part({ type: "subtask" }))).toBe("auto")
+    expect(Loop.partKind(part({ type: "compaction", auto: true }))).toBe("auto")
+    // 手動の /compact は本人の操作
+    expect(Loop.partKind(part({ type: "compaction", auto: false }))).toBe("human")
+    // subtask はコマンドを打った時にサーバーが作る(別端末からの本人のコマンド)。ループ自身の分は ID / 中身で見分ける
+    expect(Loop.partKind(part({ type: "subtask", prompt: "p", command: "review" }))).toBe("human")
+    expect(Loop.partKind(part({ type: "step-start" }))).toBe("auto")
     expect(Loop.partKind(part({ metadata: { source: "loop" } }))).toBe("auto")
     expect(Loop.partKind(part({ synthetic: true, metadata: { source: "goal" } }))).toBe("third")
     expect(Loop.partKind(part({ metadata: { source: "hook" } }))).toBe("third")

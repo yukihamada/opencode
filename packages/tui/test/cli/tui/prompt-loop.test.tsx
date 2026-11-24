@@ -96,6 +96,13 @@ async function setup() {
       if (server.hold) await new Promise<void>((resolve) => server.release.push(resolve))
       return json({})
     }
+    if (method === "POST" && url.pathname === `/session/${sessionID}/command`) {
+      const body = request ? await request.clone().json() : JSON.parse(String(init?.body))
+      prompts.push({ at: Date.now(), text: `/${body.command} ${body.arguments ?? ""}`.trim(), messageID: body.messageID })
+      server.bodies.push(body)
+      if (server.hold) await new Promise<void>((resolve) => server.release.push(resolve))
+      return json({})
+    }
     if ((method ?? "GET") === "GET" && url.pathname === `/session/${sessionID}/message`) {
       server.historyRequests++
       return json(server.history)
@@ -501,6 +508,37 @@ test("a user message whose parts never arrive is re-fetched from the server and 
     // パーツのイベントは来ない → 取り直しで自動と分かり、待ち時間(10秒)を待たずに中断
     await wait(() => s.aborts.length === 1, 5000)
     expect(s.server.historyRequests).toBeGreaterThanOrEqual(1)
+    s.finishRun()
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)
+
+test("a command loop (/review) is sent with its ID, and its replay after auto compaction is not mistaken for the user", async () => {
+  const s = await setup()
+  try {
+    s.server.hold = true
+    await s.submit("/loop 1m --budget 0.05 /review")
+    await wait(() => s.prompts.length > 0, 8000)
+    expect(s.prompts[0].text).toBe("/review")
+    const loopMessage = s.prompts[0].messageID!
+    expect(loopMessage).toStartWith("msg_")
+    // サーバーがテンプレートから作ったパーツ(印なし)
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(loopMessage) } })
+    s.emit({ type: "message.part.updated", properties: { sessionID, time: Date.now(), part: textPart(loopMessage, "Review the recent changes.", false) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_r1", loopMessage, 0.01) } })
+    // 自動要約 → 元の依頼の複製再送(同じ中身・印なし)
+    s.emit({ type: "message.updated", properties: { sessionID, info: user("msg_comp") } })
+    s.emit({
+      type: "message.part.updated",
+      properties: { sessionID, time: Date.now(), part: { id: "prt_comp", sessionID, messageID: "msg_comp", type: "compaction", auto: true } },
+    })
+    s.emit({ type: "message.updated", properties: { sessionID, info: user("msg_replay") } })
+    s.emit({ type: "message.part.updated", properties: { sessionID, time: Date.now(), part: { ...textPart("msg_replay", "Review the recent changes.", false), id: "prt_replay" } } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_r2", "msg_replay", 0.06) } })
+    await wait(() => s.aborts.length === 1, 4000)
+    expect(s.ctx.toast.currentToast?.message).toContain("中断して終了")
+    expect(s.ctx.toast.currentToast?.message).not.toContain("本人の依頼")
     s.finishRun()
   } finally {
     await s.teardown()
