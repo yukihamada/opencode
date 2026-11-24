@@ -38,7 +38,8 @@ import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@sente-ai/core/global"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Effect, Layer, Option, Context, Schema, Semaphore, Types } from "effect"
+import { SideSpend } from "./side-spend"
 import { NonNegativeInt, optional } from "@sente-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@sente-ai/core/provider"
@@ -428,6 +429,30 @@ export interface Interface {
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
+  /**
+   * Adds one /btw side answer's cost to the session metadata, atomically with
+   * other metadata writes. Does not touch `time.updated`, so a side question
+   * does not reorder the session list.
+   */
+  readonly addSideSpend: (input: { sessionID: SessionID; usd: number; time: number }) => Effect.Effect<void, NotFound>
+  /**
+   * /btw cost recorded since `since` across every session of the project,
+   * including sessions too old for the client's session list.
+   */
+  readonly sideSpendSince: (input: { projectID: string; since: number }) => Effect.Effect<{ usd: number; partial: boolean }>
+  /**
+   * Text and tool parts created before `before` whose stored data contains any
+   * of `terms`, newest first, at most `limit`. Matching runs in SQL (LIKE on
+   * the session's parts) so a long session is never loaded into memory.
+   */
+  readonly searchParts: (input: {
+    sessionID: SessionID
+    before: number
+    /** Subagent sessions below this one; each contributes only its newest 1,000 parts. */
+    others?: readonly SessionID[]
+    terms: readonly string[]
+    limit: number
+  }) => Effect.Effect<{ time: number; sessionID: SessionID; part: SessionV1.Part }[]>
   readonly setAgentModel: (input: {
     sessionID: SessionID
     agent: string
@@ -697,7 +722,7 @@ const layer: Layer.Layer<
         path: sessionPath(ctx.worktree, ctx.directory),
         workspaceID: original.workspaceID,
         title,
-        metadata: structuredClone(original.metadata),
+        metadata: structuredClone(SideSpend.drop(original.metadata)),
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
@@ -731,7 +756,12 @@ const layer: Layer.Layer<
       return session
     })
 
-    const patch = (sessionID: SessionID, info: Patch) =>
+    // Every row write that goes through `patch` (read the row, publish the whole
+    // row) and every /btw cost write share this lock, so neither can drop the
+    // other's change to the metadata.
+    const metadataLock = Semaphore.makeUnsafe(1)
+
+    const patchUnlocked = (sessionID: SessionID, info: Patch) =>
       Effect.gen(function* () {
         const current = yield* get(sessionID)
         const next = {
@@ -746,6 +776,8 @@ const layer: Layer.Layer<
         yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
       })
 
+    const patch = (sessionID: SessionID, info: Patch) => metadataLock.withPermits(1)(patchUnlocked(sessionID, info))
+
     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
       yield* patch(sessionID, { time: { updated: Date.now() } }).pipe(Effect.orDie)
     })
@@ -759,7 +791,120 @@ const layer: Layer.Layer<
     })
 
     const setMetadata = Effect.fn("Session.setMetadata")(function* (input: typeof SetMetadataInput.Type) {
-      yield* patch(input.sessionID, { metadata: input.metadata, time: { updated: Date.now() } }).pipe(Effect.orDie)
+      yield* metadataLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* get(input.sessionID)
+          yield* patchUnlocked(input.sessionID, {
+            metadata: SideSpend.keep(input.metadata, current.metadata),
+            time: { updated: Date.now() },
+          })
+        }),
+      ).pipe(Effect.orDie)
+    })
+
+    // A durable `session.side_spent` event: its projector updates only
+    // metadata.btw_spend (json_set) and keeps time_updated, so it replays and
+    // syncs with the session and reaches other clients, without rewriting
+    // cost/tokens. Serialized with `patch` so neither drops the other's change.
+    const addSideSpend = Effect.fn("Session.addSideSpend")(function* (input: {
+      sessionID: SessionID
+      usd: number
+      time: number
+    }) {
+      if (!(Number.isFinite(input.usd) && input.usd > 0)) return
+      yield* metadataLock.withPermits(1)(
+        Effect.gen(function* () {
+          yield* get(input.sessionID)
+          yield* events.publish(SessionV1.Event.SideSpent, {
+            sessionID: input.sessionID,
+            usd: input.usd,
+            time: Math.max(0, Math.floor(input.time)),
+          })
+        }),
+      )
+    })
+
+    const sideSpendSince = Effect.fn("Session.sideSpendSince")(function* (input: { projectID: string; since: number }) {
+      const rows = yield* db
+        .select({ metadata: SessionTable.metadata })
+        .from(SessionTable)
+        .where(
+          and(
+            eq(SessionTable.project_id, input.projectID as SessionRow["project_id"]),
+            sql`json_extract(${SessionTable.metadata}, ${"$." + SideSpend.KEY + ".total"}) > 0`,
+          ),
+        )
+        .all()
+        .pipe(Effect.orDie)
+      return rows.reduce(
+        (acc, row) => {
+          const part = SideSpend.since(row.metadata ?? undefined, input.since)
+          return { usd: acc.usd + part.usd, partial: acc.partial || part.partial }
+        },
+        { usd: 0, partial: false },
+      )
+    })
+
+    /** Newest parts per subagent session considered by `searchParts`. */
+    const OTHER_PARTS = 1_000
+
+    const searchParts = Effect.fn("Session.searchParts")(function* (input: {
+      sessionID: SessionID
+      before: number
+      others?: readonly SessionID[]
+      terms: readonly string[]
+      limit: number
+    }) {
+      if (input.terms.length === 0 || input.limit <= 0) return []
+      const escape = (term: string) => "%" + term.replace(/[\\%_]/g, (char) => "\\" + char) + "%"
+      // Only what was said or returned: visible text (not synthetic/ignored) and
+      // tool output/error. Never JSON keys, ids or tool input.
+      const haystack = sql`(case json_extract(${PartTable.data}, '$.type')
+        when 'text' then case when coalesce(json_extract(${PartTable.data}, '$.synthetic'), 0) = 0
+          and coalesce(json_extract(${PartTable.data}, '$.ignored'), 0) = 0
+          then json_extract(${PartTable.data}, '$.text') end
+        when 'tool' then coalesce(json_extract(${PartTable.data}, '$.state.output'), json_extract(${PartTable.data}, '$.state.error'))
+        end)`
+      // Ranked in SQL before the limit: parts matching more of the words first, then newest.
+      const score = sql.join(
+        input.terms.map((term) => sql`(case when ${haystack} like ${escape(term)} escape '\\' then 1 else 0 end)`),
+        sql` + `,
+      )
+      const rows = yield* db
+        .select({ id: PartTable.id, message_id: PartTable.message_id, session_id: PartTable.session_id, time: PartTable.time_created, data: PartTable.data })
+        .from(PartTable)
+        .where(
+          and(
+            input.others?.length
+              ? or(
+                  and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before)),
+                  // Each subagent session contributes at most its newest OTHER_PARTS parts,
+                  // so the scan stays bounded however long those sessions are.
+                  ...input.others.map((other) =>
+                    inArray(
+                      PartTable.id,
+                      db
+                        .select({ id: PartTable.id })
+                        .from(PartTable)
+                        .where(eq(PartTable.session_id, other))
+                        .orderBy(desc(PartTable.time_created))
+                        .limit(OTHER_PARTS),
+                    ),
+                  ),
+                )
+              : and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before)),
+            sql`(${score}) > 0`,
+          ),
+        )
+        .orderBy(sql`(${score}) desc`, desc(PartTable.time_created))
+        .limit(input.limit)
+        .all()
+        .pipe(Effect.orDie)
+      return rows.map((row) => ({
+        time: row.time,
+        sessionID: row.session_id,
+        part: { ...row.data, id: row.id, messageID: row.message_id, sessionID: row.session_id } as SessionV1.Part,
+      }))
     })
 
     const setAgentModel = Effect.fn("Session.setAgentModel")(function* (input: {
@@ -913,6 +1058,9 @@ const layer: Layer.Layer<
       setTitle,
       setArchived,
       setMetadata,
+      addSideSpend,
+      sideSpendSince,
+      searchParts,
       setAgentModel,
       setPermission,
       setRevert,

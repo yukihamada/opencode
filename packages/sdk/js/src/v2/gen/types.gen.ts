@@ -11,6 +11,7 @@ export type Event =
   | EventCatalogUpdated
   | EventSessionCreated
   | EventSessionUpdated
+  | EventSessionSideSpent
   | EventSessionDeleted
   | EventMessageUpdated
   | EventMessageRemoved
@@ -774,6 +775,15 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           info: Session
+        }
+      }
+    | {
+        id: string
+        type: "session.side_spent"
+        properties: {
+          sessionID: string
+          usd: number
+          time: number
         }
       }
     | {
@@ -1603,6 +1613,7 @@ export type GlobalEvent = {
     | EventServerInstanceDisposed
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
+    | SyncEventSessionSideSpent
     | SyncEventSessionDeleted
     | SyncEventMessageUpdated
     | SyncEventMessageRemoved
@@ -1936,6 +1947,15 @@ export type Config = {
   small_model?: string
   default_agent?: string
   subagent_depth?: number
+  resources?: {
+    max_concurrent_subagents?: number
+    disable_auto_throttle?: boolean
+    low_memory_mb?: number
+    /**
+     * Load average (1 min) per CPU core above which subagent admission shrinks. At 1.5x this value only one subagent runs. Default: 1.0.
+     */
+    load_factor?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
   username?: string
   mode?: {
     build?: AgentConfig
@@ -2545,11 +2565,34 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type SessionBtwSpend = {
+  usd: number
+  partial: boolean
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
     message: string
   }
+}
+
+export type SessionBtwAnswer = {
+  text: string
+  providerID: string
+  modelID: string
+  cost: number
+  tokens: {
+    input: number
+    output: number
+  }
+  fallback?: boolean
+  approval?: {
+    spent: number
+    estimate?: number
+    limit: number
+  }
+  error?: string
 }
 
 export type TextPartInput = {
@@ -2864,6 +2907,7 @@ export type V2Event =
   | CatalogUpdated
   | SessionCreated
   | SessionUpdated
+  | SessionSideSpent
   | SessionDeleted
   | MessageUpdated
   | MessageRemoved
@@ -3222,6 +3266,22 @@ export type SyncEventSessionUpdated = {
     data: {
       sessionID: string
       info: Session
+    }
+  }
+}
+
+export type SyncEventSessionSideSpent = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.side_spent.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      usd: number
+      time: number
     }
   }
 }
@@ -5130,6 +5190,25 @@ export type SessionUpdated = {
   }
 }
 
+export type SessionSideSpent = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.side_spent"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    usd: number
+    time: number
+  }
+}
+
 export type SessionDeleted = {
   id: string
   metadata?: {
@@ -6203,6 +6282,16 @@ export type EventSessionUpdated = {
   properties: {
     sessionID: string
     info: Session
+  }
+}
+
+export type EventSessionSideSpent = {
+  id: string
+  type: "session.side_spent"
+  properties: {
+    sessionID: string
+    usd: number
+    time: number
   }
 }
 
@@ -9547,6 +9636,35 @@ export type SessionStatusResponses = {
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
 
+export type SessionBtwSpendData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    since: string
+  }
+  url: "/session/btw-spend"
+}
+
+export type SessionBtwSpendErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionBtwSpendError = SessionBtwSpendErrors[keyof SessionBtwSpendErrors]
+
+export type SessionBtwSpendResponses = {
+  /**
+   * Side question spend
+   */
+  200: SessionBtwSpend
+}
+
+export type SessionBtwSpendResponse = SessionBtwSpendResponses[keyof SessionBtwSpendResponses]
+
 export type SessionDeleteData = {
   body?: never
   path: {
@@ -10142,6 +10260,51 @@ export type SessionSummarizeResponses = {
 }
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
+
+export type SessionBtwData = {
+  body?: {
+    question: string
+    model?: {
+      providerID: string
+      modelID: string
+    }
+    main?: {
+      providerID: string
+      modelID: string
+    }
+    approve?: boolean
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/btw"
+}
+
+export type SessionBtwErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionBtwError = SessionBtwErrors[keyof SessionBtwErrors]
+
+export type SessionBtwResponses = {
+  /**
+   * Side answer
+   */
+  200: SessionBtwAnswer
+}
+
+export type SessionBtwResponse = SessionBtwResponses[keyof SessionBtwResponses]
 
 export type SessionPromptAsyncData = {
   body?: {

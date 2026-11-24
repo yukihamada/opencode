@@ -11,6 +11,7 @@ import {
   turnCost,
   turnCostWithSubagents,
   yen,
+  applySideSpent,
 } from "../../src/util/spend"
 
 const NOW = new Date(2026, 9, 6, 15, 0, 0).getTime()
@@ -184,5 +185,60 @@ describe("util.spend", () => {
     ]
     expect(sessionCostWithSubagents({ sessionID: "root", sessions })).toBeCloseTo(1.25)
     expect(sessionCostWithSubagents({ sessionID: "missing", sessions })).toBe(0)
+  })
+})
+
+describe("util.spend /btw side cost (session metadata btw_spend)", () => {
+  const side = (entries: { usd: number; time: number }[]) => ({
+    btw_spend: { total: entries.reduce((sum, item) => sum + item.usd, 0), recent: entries },
+  })
+
+  test("session total includes /btw cost of the session and its subagents", () => {
+    const sessions = [
+      { id: "root", cost: 1, time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.5, time: NOW }]) },
+      { id: "child", parentID: "root", cost: 2, time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.25, time: NOW }]) },
+    ]
+    expect(sessionCostWithSubagents({ sessionID: "root", sessions })).toBeCloseTo(3.75)
+  })
+
+  test("today leaves /btw out (the server totals it for the whole project)", () => {
+    const sessions = [{ id: "s", cost: 1, time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.2, time: NOW }]) }]
+    expect(todayCost({ sessions, messages: {}, now: NOW }).usd).toBeCloseTo(1)
+  })
+
+  test("this turn counts /btw entries since the latest user message", () => {
+    const sessions = [
+      { id: "s", time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.4, time: NOW - 5000 }, { usd: 0.1, time: NOW }]) },
+    ]
+    const turn = turnCostWithSubagents({
+      sessionID: "s",
+      sessions,
+      messages: { s: [user(NOW - 2000), assistant(NOW - 1000, 0.01)] },
+    })
+    expect(turn).toBeCloseTo(0.11)
+  })
+})
+
+describe("applySideSpent", () => {
+  const add = (metadata: Record<string, unknown> | undefined, usd: number, time: number) => {
+    const current = (metadata?.btw_spend as { total: number; recent: { usd: number; time: number }[] } | undefined) ?? { total: 0, recent: [] }
+    return { ...metadata, btw_spend: { total: current.total + usd, recent: [...current.recent, { usd, time }] } }
+  }
+
+  test("counts an event once even if it is delivered twice", () => {
+    const seen = new Set<string>()
+    const event = { id: "evt_1", properties: { usd: 0.2, time: 1 } }
+    const first = applySideSpent(undefined, event, seen, add)
+    expect(first).toBeDefined()
+    expect(applySideSpent(first, event, seen, add)).toBeUndefined()
+    const second = applySideSpent(first, { id: "evt_2", properties: { usd: 0.3, time: 2 } }, seen, add)
+    expect((second?.btw_spend as { total: number }).total).toBeCloseTo(0.5)
+  })
+
+  test("ignores non-positive or non-finite costs", () => {
+    const seen = new Set<string>()
+    expect(applySideSpent(undefined, { id: "a", properties: { usd: 0, time: 1 } }, seen, add)).toBeUndefined()
+    expect(applySideSpent(undefined, { id: "b", properties: { usd: -1, time: 1 } }, seen, add)).toBeUndefined()
+    expect(applySideSpent(undefined, { id: "c", properties: { usd: Number.NaN, time: 1 } }, seen, add)).toBeUndefined()
   })
 })

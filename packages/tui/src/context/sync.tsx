@@ -26,6 +26,8 @@ import { useEvent } from "./event"
 import { useSDK } from "./sdk"
 import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
+import { SideSpend } from "@sente-ai/core/session/side-spend"
+import { applySideSpent } from "../util/spend"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
@@ -173,6 +175,8 @@ export const {
         .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
     }
 
+    // Event ids already added to a session's /btw cost (a re-delivered event must not count twice).
+    const sideSpentSeen = new Set<string>()
     event.subscribe((event, { directory, workspace }) => {
       switch (event.type) {
         case "server.instance.disposed":
@@ -280,6 +284,14 @@ export const {
               }),
             )
           }
+          break
+        }
+        case "session.side_spent": {
+          // A /btw cost: the server only changes metadata.btw_spend, the same way here.
+          const result = search(store.session, event.properties.sessionID, (s) => s.id)
+          if (!result.found) break
+          const next = applySideSpent(store.session[result.index]!.metadata, event, sideSpentSeen, SideSpend.add)
+          if (next) setStore("session", result.index, "metadata", next)
           break
         }
         case "session.updated": {

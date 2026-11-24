@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Schema } from "effect"
 import { LegacyEvent } from "../src/legacy-event"
 import { PermissionV1 } from "../src/permission-v1"
 import { QuestionV1 } from "../src/question-v1"
@@ -10,6 +11,7 @@ describe("legacy public event schemas", () => {
     expect(SessionV1.Event.Definitions.map((event) => event.type)).toEqual([
       "session.created",
       "session.updated",
+      "session.side_spent",
       "session.deleted",
       "message.updated",
       "message.removed",
@@ -20,7 +22,7 @@ describe("legacy public event schemas", () => {
       "session.error",
     ])
     const durable = SessionV1.Event.Definitions.filter((event) => event.durable !== undefined)
-    expect(durable).toHaveLength(7)
+    expect(durable).toHaveLength(8)
     expect(durable.every((event) => event.durable?.aggregate === "sessionID")).toBe(true)
     expect(durable.every((event) => event.durable?.version === 1)).toBe(true)
   })
@@ -49,5 +51,14 @@ describe("legacy public event schemas", () => {
       "project.updated",
       "command.executed",
     ])
+  })
+})
+
+describe("session.side_spent", () => {
+  test("accepts only a positive cost", () => {
+    const decode = Schema.decodeUnknownSync(SessionV1.Event.SideSpent.data)
+    expect(decode({ sessionID: "ses_1", usd: 0.01, time: 1 }).usd).toBe(0.01)
+    expect(() => decode({ sessionID: "ses_1", usd: 0, time: 1 })).toThrow()
+    expect(() => decode({ sessionID: "ses_1", usd: -1, time: 1 })).toThrow()
   })
 })

@@ -680,20 +680,97 @@ describe("EventV2", () => {
     }),
   )
 
-  it.effect("replay defects on unknown event type", () =>
+  it.effect("replay skips an unknown durable event type from a newer version and keeps the aggregate going", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const received = new Array<EventV2.Payload>()
+      yield* events.project(DurableMessage, (event) => Effect.sync(() => void received.push(event)))
+      const aggregateID = Session.ID.create()
+      const unknown = {
+        id: EventV2.ID.create(),
+        type: "session.from_the_future.1",
+        seq: 0,
+        aggregateID,
+        data: { sessionID: aggregateID, anything: 1 },
+      }
+
+      yield* events.replay(unknown)
+      // The same event again (repeated sync) is a no-op.
+      yield* events.replay(unknown)
+      // Later known events of the same aggregate still apply.
+      yield* events.replay({
+        id: EventV2.ID.create(),
+        type: EventV2.versionedType(DurableMessage.type, 1),
+        seq: 1,
+        aggregateID,
+        data: durableData(aggregateID, "after"),
+      })
+
+      expect(received).toHaveLength(1)
+      const sequence = yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).get()
+      expect(sequence?.seq).toBe(1)
+      const rows = yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()
+      expect(rows.map((row) => row.type).toSorted()).toEqual(["session.from_the_future.1", EventV2.versionedType(DurableMessage.type, 1)].toSorted())
+    }),
+  )
+
+  it.effect("replay stops on a known type in an unknown version, and on a malformed type", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = Session.ID.create()
+      const newer = yield* events
+        .replay({
+          id: EventV2.ID.create(),
+          type: EventV2.versionedType(DurableMessage.type, 99),
+          seq: 0,
+          aggregateID,
+          data: durableData(aggregateID, "v99"),
+        })
+        .pipe(Effect.exit)
+      expect(String(newer)).toContain("Unsupported version of durable event type")
+      const malformed = yield* events
+        .replay({ id: EventV2.ID.create(), type: "NotAType", seq: 0, aggregateID, data: {} })
+        .pipe(Effect.exit)
+      expect(String(malformed)).toContain("Malformed durable event type")
+      expect(EventV2.unversionedType("session.side_spent.1")).toBe("session.side_spent")
+      expect(EventV2.unversionedType("session.updated")).toBeUndefined()
+    }),
+  )
+
+  it.effect("an unknown event for an aggregate owned by someone else does not advance its sequence", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      yield* events.replay({
+        id: EventV2.ID.create(),
+        type: EventV2.versionedType(DurableMessage.type, 1),
+        seq: 0,
+        aggregateID,
+        data: durableData(aggregateID, "owned"),
+      })
+      yield* events.claim(aggregateID, "owner-a")
+      const before = yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).get()
+      yield* events.replay(
+        { id: EventV2.ID.create(), type: "session.from_the_future.1", seq: (before?.seq ?? -1) + 1, aggregateID, data: {} },
+        { ownerID: "owner-b" },
+      )
+      const after = yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).get()
+      expect(before?.seq).toBe(0)
+      expect(after?.seq).toBe(0)
+      const rows = yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()
+      expect(rows.map((row) => row.type)).toEqual([EventV2.versionedType(DurableMessage.type, 1)])
+    }),
+  )
+
+  it.effect("replay still rejects an unknown event type out of sequence", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const exit = yield* events
-        .replay({
-          id: EventV2.ID.create(),
-          type: "unknown.event.1",
-          seq: 0,
-          aggregateID: EventV2.ID.create(),
-          data: {},
-        })
+        .replay({ id: EventV2.ID.create(), type: "unknown.event.1", seq: 3, aggregateID: EventV2.ID.create(), data: {} })
         .pipe(Effect.exit)
-
-      expect(String(exit)).toContain("Unknown durable event type")
+      expect(String(exit)).toContain("Sequence mismatch")
     }),
   )
 

@@ -177,6 +177,10 @@ import type {
   QuestionV2Reply,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionBtwErrors,
+  SessionBtwResponses,
+  SessionBtwSpendErrors,
+  SessionBtwSpendResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -3488,6 +3492,38 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Side question spend
+   *
+   * Total /btw side-question cost recorded since a time, across all sessions of the project (old sessions included).
+   */
+  public btwSpend<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      since: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "since" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionBtwSpendResponses, SessionBtwSpendErrors, ThrowOnError>({
+      url: "/session/btw-spend",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Delete session
    *
    * Delete a session and permanently remove all associated data, including messages and history.
@@ -4077,6 +4113,57 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionSummarizeResponses, SessionSummarizeErrors, ThrowOnError>({
       url: "/session/{sessionID}/summarize",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Ask a side question
+   *
+   * Answer a quick side question (/btw) from the session's recent context with a separate, tool-less model request. The answer is not added to the session and a running prompt is not interrupted.
+   */
+  public btw<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      question?: string
+      model?: {
+        providerID: string
+        modelID: string
+      }
+      main?: {
+        providerID: string
+        modelID: string
+      }
+      approve?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "question" },
+            { in: "body", key: "model" },
+            { in: "body", key: "main" },
+            { in: "body", key: "approve" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionBtwResponses, SessionBtwErrors, ThrowOnError>({
+      url: "/session/{sessionID}/btw",
       ...options,
       ...params,
       headers: {

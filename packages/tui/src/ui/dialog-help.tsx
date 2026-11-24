@@ -1,6 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import { createMemo, For, Show } from "solid-js"
 import { useTheme } from "../context/theme"
+import { useLanguage } from "../context/language"
 import { useDialog } from "./dialog"
 import { useBindings, useCommandShortcut } from "../keymap"
 import { voiceState } from "../util/voice"
@@ -47,6 +48,7 @@ function Row(props: { command: string; label: string; state: () => string }) {
 
 export function DialogHelp() {
   const dialog = useDialog()
+  const language = useLanguage()
   const { theme } = useTheme()
   const commandShortcut = useCommandShortcut("command.palette.show")
 
@@ -69,6 +71,21 @@ export function DialogHelp() {
       </box>
       <box flexDirection="column" gap={0}>
         <For each={rows}>{(row) => <Row command={row.command} label={row.label} state={row.state} />}</For>
+      </box>
+      <box flexDirection="row" gap={2}>
+        <box width={14} flexShrink={0}>
+          <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+            {language.text("/btw 質問", "/btw <q>")}
+          </text>
+        </box>
+        <box flexGrow={1}>
+          <text fg={theme.text}>
+            {language.text(
+              "作業を止めずに横から質問(履歴に残らない・/side も可)",
+              "Ask a side question without stopping the task (not saved to history; /side works too)",
+            )}
+          </text>
+        </box>
       </box>
       <box paddingTop={1}>
         <text fg={theme.textMuted} wrapMode="word">
