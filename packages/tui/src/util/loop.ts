@@ -48,16 +48,16 @@ const UNITS: Record<string, number> = {
   日: 86_400_000,
 }
 
-const DURATION = String.raw`(?:\d+(?:\.\d+)?\s*(?:時間|秒|分|日|[a-z]+))+`
+const DURATION = String.raw`(?:\d+(?:\.\d+)?\s*(?:時間|秒|分|日|[a-z]+)半?)+`
 const SUFFIX = "(?:ごとに|ごと|毎に|毎|おきに|おき|間隔で)"
 
-/** `30s` `5m` `1h30m` `90秒` `2時間` を ms に。解釈できなければ undefined。 */
+/** `30s` `5m` `1h30m` `90秒` `2時間` `1時間半` を ms に。解釈できなければ undefined。 */
 export function parseDuration(value: string): number | undefined {
   const text = value.trim().toLowerCase()
   if (!new RegExp(`^${DURATION}$`).test(text)) return undefined
-  const total = [...text.matchAll(/(\d+(?:\.\d+)?)\s*(時間|秒|分|日|[a-z]+)/g)].reduce((sum, part) => {
+  const total = [...text.matchAll(/(\d+(?:\.\d+)?)\s*(時間|秒|分|日|[a-z]+)(半)?/g)].reduce((sum, part) => {
     const unit = UNITS[part[2]]
-    return unit === undefined ? NaN : sum + Number(part[1]) * unit
+    return unit === undefined ? NaN : sum + (Number(part[1]) + (part[3] ? 0.5 : 0)) * unit
   }, 0)
   return Number.isFinite(total) && total > 0 ? Math.round(total) : undefined
 }
@@ -91,10 +91,12 @@ export type Command =
       expiresIn: number
       budget: number
       capped: Capped[]
+      /** 本文の末尾から読んだオプション(開始通知で明示する)。 */
+      tail: Capped[]
     }
   | { type: "invalid"; reason: "interval" | "prompt" | "max" | "for" | "budget" | "nested" }
 
-type Options = { maxRuns: number; expiresIn: number; budget: number; capped: Capped[] }
+type Options = { maxRuns: number; expiresIn: number; budget: number; capped: Capped[]; tail: Capped[] }
 
 // `--max 3` などを1つ読む。成功なら残り、失敗ならエラー理由。
 function applyOption(options: Options, name: string, value: string): Command | undefined {
@@ -129,14 +131,16 @@ export function parseCommand(input: string): Command | undefined {
     const target = control[2]?.toLowerCase()
     return control[1].toLowerCase() === "resume" ? { type: "resume", target } : { type: "stop", target }
   }
-  // 間隔: `5m` `5分` `5分ごとに` `every 5m`。日本語は区切りなしで本文が続いてもよい。
+  // 間隔: `5m` `5分` `5分ごとに` `1時間半ごとに` `every 5m`。間隔の直後は空白か「ごとに」等で区切る
+  // (`2日間` `5分デプロイ` のように読めない語が続くときは黙って読み替えずエラーにする)。
   const head = new RegExp(`^(?:every\\s+)?(${DURATION})(?:\\s*(${SUFFIX}))?`, "i").exec(rest)
   const after = head ? rest.slice(head[0].length) : ""
-  const joined = head && (head[2] !== undefined || /[秒分間日]$/.test(head[1]))
-  const interval = head && (joined || after === "" || /^\s/.test(after)) ? parseInterval(head[1]) : undefined
+  const separated = head && (head[2] !== undefined || after === "" || /^\s/.test(after))
+  const interval = separated ? parseInterval(head[1]) : undefined
   if (!interval) return { type: "invalid", reason: "interval" }
   // `--max N` `--for 2h` `--budget 1` は本文の前後どちらに置いてもよい(本文の改行は保つ)。
-  const options: Options = { maxRuns: DEFAULT_MAX_RUNS, expiresIn: DEFAULT_EXPIRY_MS, budget: DEFAULT_BUDGET_USD, capped: [] }
+  // `--` の後ろは全て依頼文として扱う(例: `/loop 5m -- git log --max 5`)。
+  const options: Options = { maxRuns: DEFAULT_MAX_RUNS, expiresIn: DEFAULT_EXPIRY_MS, budget: DEFAULT_BUDGET_USD, capped: [], tail: [] }
   const leading = /^\s*--(max|times|for|budget)(?:\s+|=)(\S+)/
   const trailing = /\s+--(max|times|for|budget)(?:\s+|=)(\S+)\s*$/
   let prompt = after
@@ -145,11 +149,15 @@ export function parseCommand(input: string): Command | undefined {
     if (error) return error
     prompt = prompt.slice(option[0].length)
   }
-  for (let option = trailing.exec(prompt); option; option = trailing.exec(prompt)) {
-    const error = applyOption(options, option[1], option[2])
-    if (error) return error
-    prompt = prompt.slice(0, option.index)
-  }
+  const verbatim = /^\s*--(?:\s+|$)/.exec(prompt)
+  if (verbatim) prompt = prompt.slice(verbatim[0].length)
+  else
+    for (let option = trailing.exec(prompt); option; option = trailing.exec(prompt)) {
+      const error = applyOption(options, option[1], option[2])
+      if (error) return error
+      options.tail.unshift(option[1] === "times" ? "max" : (option[1] as Capped))
+      prompt = prompt.slice(0, option.index)
+    }
   prompt = prompt.trim()
   if (!prompt) return { type: "invalid", reason: "prompt" }
   if (/^\/loop(\s|$)/i.test(prompt)) return { type: "invalid", reason: "nested" }
@@ -193,7 +201,7 @@ export type Event =
   | { type: "skipped"; item: Item }
   | { type: "paused"; sessionID: string; items: Item[]; reason: PauseReason; repeat: boolean }
   | { type: "resumed"; items: Item[]; auto: boolean }
-  | { type: "finished"; item: Item; reason: FinishReason }
+  | { type: "finished"; item: Item; reason: FinishReason; aborted?: boolean }
 
 export type Session = { busy: boolean; costGate: boolean }
 
@@ -206,6 +214,8 @@ export type ManagerOptions = {
   /** 書きかけのある入力欄を最後に触った時刻(書きかけがなければ undefined)。 */
   lastTyped: () => number | undefined
   send: (item: Item) => Promise<unknown>
+  /** 上限超えでループの回を中断する(セッションの生成を止める)。 */
+  abort?: (sessionID: string) => void
   notify?: (event: Event) => void
   change?: () => void
 }
@@ -266,10 +276,25 @@ export function create(options: ManagerOptions) {
     if (item.spent >= item.budget) finish(item, "budget")
   }
 
+  // 生成中もループの回の累計を見て、上限を超えたらその回を中断して終える(1ステップ分は超えうる)。
+  function watchRun(session: SessionState, sessionID: string) {
+    const owner = session.owner
+    const item = owner && items.get(owner.id)
+    if (!owner || !item) return
+    const running = item.spent + Math.max(0, cost(sessionID) - owner.start)
+    if (running < item.budget) return
+    item.spent = running
+    session.owner = undefined
+    options.abort?.(sessionID)
+    if (items.delete(item.id)) emit({ type: "finished", item, reason: "budget", aborted: true })
+  }
+
   function observe(sessionID: string, now: number, status: Session) {
     const session = state(sessionID)
-    if (status.busy || session.inflight) session.idle = undefined
-    else {
+    if (status.busy || session.inflight) {
+      session.idle = undefined
+      watchRun(session, sessionID)
+    } else {
       settleRun(session, sessionID)
       session.idle ??= now
     }
@@ -462,24 +487,58 @@ export function sessionState(data: StatusData, sessionID: string): Session {
   }
 }
 
-type SpendData = {
-  sessions: readonly { id: string; parentID?: string; cost?: number; time: { created: number; updated: number } }[]
-  messages: Readonly<Record<string, readonly { role: string; cost?: number }[] | undefined>>
+type Tree = readonly { id: string; parentID?: string; time: { created: number; updated: number } }[]
+
+/**
+ * 会話ごとの費用台帳。assistant メッセージの費用をメッセージIDごとに覚え、会話(+子セッション)の合計を返す。
+ * 画面の同期データは会話あたり直近100件しか持たない(古いものは捨てる)ので、その合計の差分では
+ * 長い会話でループの費用が数えられない。台帳は捨てないので、送信前後の差分が正しく出る。
+ */
+export function createLedger() {
+  const costs = new Map<string, Map<string, number>>()
+  function record(message: { id: string; sessionID: string; role: string; cost?: number }) {
+    if (message.role !== "assistant") return
+    const session = costs.get(message.sessionID) ?? new Map<string, number>()
+    costs.set(message.sessionID, session)
+    session.set(message.id, positive(message.cost))
+  }
+  const one = (sessionID: string) => [...(costs.get(sessionID)?.values() ?? [])].reduce((sum, value) => sum + value, 0)
+  return {
+    record,
+    /** 読み込み済みのメッセージをまとめて覚える(同じIDは上書きなので何度呼んでもよい)。 */
+    seed(messages: Readonly<Record<string, readonly { id: string; sessionID: string; role: string; cost?: number }[] | undefined>>) {
+      Object.values(messages).forEach((list) => list?.forEach(record))
+    },
+    total(sessionID: string, sessions: Tree) {
+      return descendantIDs(sessions, sessionID).reduce((sum, id) => sum + one(id), one(sessionID))
+    },
+  }
 }
 
-/** 会話のここまでの費用(USD)。読み込み済みのメッセージを優先し、子セッション(サブエージェント)も含める。 */
-export function sessionSpend(data: SpendData, sessionID: string) {
-  const one = (id: string) => {
-    const messages = data.messages[id]
-    if (!messages) return positive(data.sessions.find((session) => session.id === id)?.cost)
-    return messages.reduce((sum, message) => sum + (message.role === "assistant" ? positive(message.cost) : 0), 0)
-  }
-  return descendantIDs(data.sessions, sessionID).reduce((sum, id) => sum + one(id), one(sessionID))
-}
+export type Ledger = ReturnType<typeof createLedger>
 
 function positive(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0
 }
+
+/**
+ * 会話の累計が費用確認ライン(/cost・既定 $1)を既に超えているなら、そのラインを返す。
+ * 超えていると、ループの毎回(のモデル呼び出しごと)に承認が必要になる。request_cost: allow なら確認は出ないので undefined。
+ */
+export function costLineExceeded(input: { own: unknown; root: unknown; spent: number; allow: boolean }) {
+  if (input.allow) return undefined
+  const raw = input.own === undefined ? input.root : input.own
+  const limit =
+    typeof raw === "number" && Number.isFinite(raw) && raw > 0
+      ? raw
+      : typeof raw === "string" && raw.trim().toLowerCase() === "none"
+        ? Infinity
+        : DEFAULT_COST_LINE_USD
+  return Number.isFinite(limit) && input.spent >= limit ? limit : undefined
+}
+
+// サーバーの依頼ごとの費用確認ラインの既定(session/escalation.ts の DEFAULT_COST_LIMIT_USD と同じ)。
+export const DEFAULT_COST_LINE_USD = 1
 
 export type StartError = "needSession" | "needModel" | "localCommand"
 

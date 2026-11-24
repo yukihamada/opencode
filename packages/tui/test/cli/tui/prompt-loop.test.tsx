@@ -212,8 +212,18 @@ test("/loop rejects local screen commands but accepts other '/' prompts; stop wi
     await s.submit("/loop 1m --max 1000000 /review")
     expect(s.ctx.toast.currentToast?.message).toContain("回数は最大1000回")
     expect(s.ctx.loop.list().map((item) => item.prompt)).toEqual(["/usr を確認", "/review"])
+    s.ctx.loop.stop("all")
+    await s.submit("/loop 5m git log --max 5")
+    expect(s.ctx.toast.currentToast?.message).toContain("回数5回(--max)")
+    expect(s.ctx.toast.currentToast?.message).toContain("-- の後に書いて")
+    expect(s.ctx.toast.currentToast?.message).toContain("上限$1.00(約¥150)")
+    s.ctx.loop.stop("all")
+    await s.submit("/loop 2日間 毎日の確認")
+    expect(s.ctx.toast.currentToast?.message).toContain("間隔を読み取れませんでした")
     await s.submit("/loop 5m")
     expect(s.ctx.toast.currentToast?.message).toContain("5分")
+    await s.submit("/loop 1m 確認")
+    expect(s.ctx.loop.list().length).toBe(1)
     await s.submit("/loop stop")
     expect(s.ctx.loop.list()).toEqual([])
   } finally {
@@ -281,3 +291,25 @@ test("/loop list opens the list (renders under the dialog layer) and resumes fro
     await s.teardown()
   }
 })
+
+test("loop budget counts cost from message.updated events (not the trimmed screen list)", async () => {
+  const s = await setup()
+  try {
+    await s.submit("/loop 1m --budget 0.05 状況確認")
+    const item = s.ctx.loop.list()[0]
+    await wait(() => s.prompts.length > 0, 8000)
+    // ループの回の応答(費用 $0.08)が届く
+    s.emit({
+      type: "message.updated",
+      properties: {
+        sessionID,
+        info: { id: "msg_loop_reply", sessionID, role: "assistant", cost: 0.08, time: { created: Date.now() }, parentID: "x", modelID: "auto", providerID: "teai", mode: "build", agent: "build", path: { cwd: "/", root: "/" }, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } },
+      },
+    })
+    await wait(() => s.ctx.loop.list().length === 0, 4000)
+    expect(item.spent).toBeCloseTo(0.08)
+    expect(s.ctx.toast.currentToast?.message).toContain("上限に達したため")
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)

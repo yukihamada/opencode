@@ -8,6 +8,9 @@ import { useLanguage } from "./language"
 import { Loop } from "../util/loop"
 import { loopText } from "../util/loop-text"
 import { sendPrompt } from "../prompt/send"
+import { sessionCostWithSubagents } from "../util/spend"
+
+const COST_LIMIT_METADATA_KEY = "cost_limit_usd"
 
 // /loop の実体。TUI のプロセス内だけで動き、閉じれば止まる(保存しない)。
 export const { use: useLoop, provider: LoopProvider, context: LoopContext } = createSimpleContext({
@@ -25,11 +28,15 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     let timer: ReturnType<typeof setInterval> | undefined
     // 費用確認(request_cost)の依頼ID → 会話。回答が来たら承認/拒否をループへ伝える。
     const costRequests = new Map<string, string>()
+    // 会話の費用はメッセージIDごとに台帳へ。同期データの「直近100件」とは別に、捨てずに覚える。
+    const ledger = Loop.createLedger()
+    ledger.seed(sync.data.message)
 
     const manager = Loop.create({
       now: () => Date.now(),
       session: (sessionID) => Loop.sessionState(sync.data, sessionID),
-      cost: (sessionID) => Loop.sessionSpend({ sessions: sync.data.session, messages: sync.data.message }, sessionID),
+      cost: (sessionID) => ledger.total(sessionID, sync.data.session),
+      abort: (sessionID) => void sdk.client.session.abort({ sessionID }).catch(() => {}),
       lastTyped: () => typedAt,
       send: (item) =>
         sendPrompt(sdk.client, {
@@ -53,7 +60,11 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
         if (event.type === "resumed" && event.auto)
           toast.show({ variant: "info", message: t.autoResumed(event.items.map((item) => item.id)) })
         if (event.type === "finished" && event.reason !== "stopped")
-          toast.show({ variant: "info", message: t.finished(event.item.id, event.reason, event.item.spent), duration: 8000 })
+          toast.show({
+            variant: "info",
+            message: event.aborted ? t.abortedBudget(event.item.id, event.item.spent) : t.finished(event.item.id, event.reason, event.item.spent),
+            duration: 10_000,
+          })
       },
       change: () => {
         setVersion((value) => value + 1)
@@ -75,6 +86,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     }
 
     const unsubscribe = [
+      event.on("message.updated", (event) => ledger.record(event.properties.info)),
       event.on("permission.asked", (event) => {
         if (event.properties.permission === Loop.COST_PERMISSION)
           costRequests.set(event.properties.id, event.properties.sessionID)
@@ -115,7 +127,24 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
         const paused = items.find((item) => item.pauseReason)?.pauseReason
         return text().footer(items.length, next === undefined ? undefined : Loop.countdown(next - now()), spent, paused)
       },
+      /** 会話の累計が費用確認ラインを超えていれば、そのライン(USD)。開始時の注意に使う。 */
+      costLine(sessionID: string) {
+        const info = sync.session.get(sessionID)
+        const root = info?.parentID ? sync.session.get(info.parentID) : info
+        const permission = sync.data.config.permission
+        const rootID = root?.id ?? sessionID
+        return Loop.costLineExceeded({
+          own: info?.metadata?.[COST_LIMIT_METADATA_KEY],
+          root: root?.metadata?.[COST_LIMIT_METADATA_KEY],
+          spent: Math.max(
+            sessionCostWithSubagents({ sessionID: rootID, sessions: sync.data.session }),
+            ledger.total(rootID, sync.data.session),
+          ),
+          allow: typeof permission === "object" && permission !== null && "request_cost" in permission && permission.request_cost === "allow",
+        })
+      },
       start(input: Parameters<typeof manager.start>[0]) {
+        ledger.seed(sync.data.message)
         const result = manager.start(input)
         if (result.item) setNow(Date.now())
         return result

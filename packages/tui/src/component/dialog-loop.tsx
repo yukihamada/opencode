@@ -23,7 +23,7 @@ export function DialogLoop() {
             : t.pausedErrorShort
           : `${t.next} ${Loop.countdown(item.nextAt - now)}`,
         `${item.runs}/${item.maxRuns}${t.runs}`,
-        `${Loop.formatUsd(item.spent)}/${Loop.formatUsd(item.budget)}`,
+        `${t.money(item.spent)}/${Loop.formatUsd(item.budget)}`,
         item.skipped ? `${item.skipped} ${t.skipped}` : "",
       ]
         .filter(Boolean)

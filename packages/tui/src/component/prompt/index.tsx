@@ -1637,11 +1637,22 @@ export function Prompt(props: PromptProps) {
       hour: "2-digit",
       minute: "2-digit",
     })
+    // 会話の累計が費用確認ラインを超えていると、毎回承認が必要になるので先に知らせる。
+    const line = loop.costLine(prepared.input.target.sessionID)
     toast.show({
-      variant: "info",
+      variant: line === undefined ? "info" : "warning",
       message: [
+        line === undefined ? "" : t.costLine(line),
         command.rounded ? t.rounded : "",
         command.capped.length ? t.capped(command.capped) : "",
+        command.tail.length
+          ? t.tail({
+              keys: command.tail,
+              maxRuns: result.item.maxRuns,
+              expiresIn: Loop.formatInterval(command.expiresIn),
+              budget: result.item.budget,
+            })
+          : "",
         t.started({
           id: result.item.id,
           every: Loop.formatInterval(result.item.interval),
@@ -1653,7 +1664,7 @@ export function Prompt(props: PromptProps) {
       ]
         .filter(Boolean)
         .join("\n"),
-      duration: 10_000,
+      duration: 12_000,
     })
     return true
   }
