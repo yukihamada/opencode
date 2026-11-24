@@ -3846,6 +3846,10 @@ it.instance("a background subagent of the goal that starts only after the root's
     // The root's run is over and nothing of the goal runs: the in-memory stop is gone.
     expect(prompt._goalStateForTest().stoppedRoots).toBe(0)
     expect((yield* goalOf(chat.id))?.stoppedBy).toBe("budget")
+    // The window a late subagent inherits from ends at the goal's own end time.
+    const ended = yield* goalOf(chat.id)
+    expect(ended?.endedAt).toBeNumber()
+    expect(pending.time.created).toBeLessThanOrEqual(ended!.endedAt!)
     const calls = yield* llm.calls
 
     // The queued subagent starts now: it belongs to the stopped goal, so it stops at once.

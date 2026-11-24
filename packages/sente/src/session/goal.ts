@@ -57,6 +57,8 @@ export type State = {
   startedAt?: number
   /** Set when the goal stopped at its budget: subagents it launched stop too, even late ones. */
   stoppedBy?: "budget"
+  /** When the goal ended (completed or stopped); `updatedAt` also moves with spend writes. */
+  endedAt?: number
   /** USD this goal may spend on turns and reviews together. */
   budget: number
   /** The session's recorded turn cost when the goal started; turns after it count. */
@@ -165,6 +167,7 @@ export function read(metadata: Record<string, unknown> | undefined): State | und
     updatedAt: num(goal.updatedAt, 0),
     ...(typeof goal.startedAt === "number" ? { startedAt: goal.startedAt } : {}),
     ...(goal.stoppedBy === "budget" ? { stoppedBy: "budget" as const } : {}),
+    ...(typeof goal.endedAt === "number" ? { endedAt: goal.endedAt } : {}),
     budget: num(goal.budget, 0) > 0 ? num(goal.budget, 0) : DEFAULT_BUDGET_USD,
     baseCost: num(goal.baseCost, 0),
     judgeCost: num(goal.judgeCost, 0),
@@ -503,25 +506,26 @@ export function sameReason(previous: string, next: string): boolean {
  * "not done yet, continue" or an echoed instruction cannot read as done.
  */
 /**
- * Text outside the code blocks that contradicts or competes with a verdict inside them: the
- * word "verdict" itself, or a statement that the work is not finished.
+ * Text outside the code blocks that says the work is not finished. It only ever cancels a
+ * "done" read from inside a block; continue and blocked never contradict it.
  */
-const OUTSIDE_DISSENT =
-  /verdict|判定結果|not\s+(?:yet\s+)?(?:finished|done|complete|completed|met)|incomplete|unfinished|unclear|cannot\s+tell|can't\s+tell|まだ|未達|未完了|未完成|終わっていない|完了していない|達成していない|不明|判断できない/i
+const OUTSIDE_NOT_DONE =
+  /not\s+(?:yet\s+)?(?:finished|done|complete|completed|met)|\bincomplete\b|\bunfinished\b|cannot\s+tell|can't\s+tell|未達|未完了|未完成|終わっていない|完了していない|達成していない|判断できない|まだ[^。．.!！?？\n]{0,24}?(?:ない|ません|失敗|残)/i
+/** Double negatives and reassurances that look like "not done" but mean the opposite. */
+const OUTSIDE_REASSURING =
+  /\b(?:nothing|no)\s+(?:\w+\s+)?(?:incomplete|unfinished)\b|まだ?[^。．.!！?？\n]{0,8}?問題(?:は|が|も)?(?:ない|無い|ありません)/gi
 
 export function parseVerdict(text: string): Verdict | undefined {
-  // Lines inside ``` code blocks are quoted material (an example, a log) when the answer is
-  // also outside them. A reviewer that wraps its whole answer in a code block is still read.
-  // A verdict outside the blocks wins and the blocks are quoted material. With none outside,
-  // the block is read unless the surrounding text disagrees (see OUTSIDE_DISSENT).
+  // A verdict outside code blocks wins; the blocks are then quoted material (an example, a
+  // log). With none outside, a reviewer that wrapped its answer in a block is read, except
+  // that a "done" inside is dropped when the text around it says the work is not finished.
   const visible = text.replace(/<think>[\s\S]*?<\/think>/g, "")
   const outside = visible.replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1\s*$|(?![\s\S]))/gm, "")
   const found = readVerdict(outside)
   if (found) return found
-  // No verdict outside: the block holds the answer, unless the text around it says the work is
-  // not finished (or names a verdict of its own), in which case there is no verdict.
-  if (OUTSIDE_DISSENT.test(outside)) return undefined
-  return readVerdict(visible.replace(/^\s*(```|~~~).*$/gm, ""))
+  const inside = readVerdict(visible.replace(/^\s*(```|~~~).*$/gm, ""))
+  if (inside?.verdict !== "done") return inside
+  return OUTSIDE_NOT_DONE.test(outside.replace(OUTSIDE_REASSURING, "")) ? undefined : inside
 }
 
 function readVerdict(text: string): Verdict | undefined {

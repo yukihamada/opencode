@@ -113,7 +113,7 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
   const stoppedRoots = new Map<string, { goal: string; since: number }>()
   const liveGoals = new Set<string>()
   const runGoal = new Map<string, string>()
-  const rootOfRun = new Map<string, { root: string; goal?: string }>()
+  const rootOfRun = new Map<string, { root: string; goal?: string; settled?: boolean }>()
   const spendWritten = new Map<string, number>()
 
   /** Sizes of the in-memory state, for tests that check nothing is left behind. */
@@ -264,9 +264,11 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
     if (latest && latest.id !== goal.id) return
     const base = latest ?? goal
     const { waitingSince: _, stoppedBy: __, ...rest } = base
+    const now = Date.now()
     const next: SessionGoal.State = {
       ...rest,
       ...(end.budget ? { stoppedBy: "budget" as const } : {}),
+      endedAt: now,
       status: end.status,
       reason: end.reason,
       spent: yield* spentOf(sessionID, base),
@@ -390,32 +392,19 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
    */
   const onStart = Effect.fn("SessionGoalRunner.onStart")(function* (session: Session.Info) {
     if (session.parentID) {
-      // The root: known from the parent's own run, or the parent itself when it is the root
-      // (one read). Only a deeper chain with some goal in this runner walks further up.
-      const known = rootOfRun.get(session.parentID)?.root
-      const parent = known ? undefined : yield* sessions.get(session.parentID).pipe(Effect.option)
-      const root = known
-        ? yield* sessions.get(SessionID.make(known)).pipe(Effect.orElseSucceed(() => undefined))
-        : Option.isNone(parent!)
-          ? undefined
-          : !parent!.value.parentID
-            ? parent!.value
-            : liveGoals.size > 0 || stoppedRoots.size > 0
-              ? yield* rootOf(parent!.value)
-              : undefined
+      const root = yield* findRoot(session.parentID)
       if (!root) return
       const goal = SessionGoal.read(root.metadata)
       // The goal this run works for: the root's active goal; else the goal of the root run that
       // launched it; else, for a run that starts only now (a background subagent launched
       // before the root's run ended), the root's goal if this session was created while that
       // goal was running.
+      const createdDuring =
+        goal !== undefined &&
+        session.time.created >= SessionGoal.startedAt(goal) &&
+        session.time.created <= (goal.endedAt ?? goal.updatedAt)
       const inherited =
-        goal?.status === "active"
-          ? goal.id
-          : (runGoal.get(root.id) ??
-            (goal && session.time.created >= SessionGoal.startedAt(goal) && session.time.created <= goal.updatedAt
-              ? goal.id
-              : undefined))
+        goal?.status === "active" ? goal.id : (runGoal.get(root.id) ?? (createdDuring ? goal.id : undefined))
       if (!inherited && liveGoals.size === 0 && stoppedRoots.size === 0) return
       rootOfRun.set(session.id, { root: root.id, goal: inherited })
       if (goal?.status === "active") liveGoals.add(root.id)
@@ -439,6 +428,19 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
       liveGoals.add(session.id)
       runGoal.set(session.id, goal.id)
     }
+  })
+
+  // The root above a subagent whose parent is `parentID`: from the parent's own run when it is
+  // known, else the parent itself when it is the root (one read). A deeper chain is walked
+  // only while some goal exists in this runner.
+  const findRoot = Effect.fn("SessionGoalRunner.findRoot")(function* (parentID: SessionID) {
+    const known = rootOfRun.get(parentID)?.root
+    if (known) return yield* sessions.get(SessionID.make(known)).pipe(Effect.orElseSucceed(() => undefined))
+    const parent = yield* sessions.get(parentID).pipe(Effect.orElseSucceed(() => undefined))
+    if (!parent) return undefined
+    if (!parent.parentID) return parent
+    if (liveGoals.size === 0 && stoppedRoots.size === 0) return undefined
+    return yield* rootOf(parent)
   })
 
   const rootOf = Effect.fn("SessionGoalRunner.rootOf")(function* (session: Session.Info) {
@@ -471,9 +473,13 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
     const stopped = stoppedRoots.get(rootID)
     if (run?.goal && stopped && run.goal === stopped.goal) return true
     if (!liveGoals.has(rootID)) {
-      if (!run?.goal) return false
+      if (!run?.goal || run.settled) return false
       const recorded = yield* readGoal(SessionID.make(rootID))
-      return recorded?.id === run.goal && recorded.status !== "active" && recorded.stoppedBy === "budget"
+      if (recorded?.id === run.goal && recorded.status !== "active" && recorded.stoppedBy === "budget") return true
+      // A goal that ended another way, or was replaced, never turns into a budget stop: no need
+      // to read it again on later steps of this run.
+      if (recorded?.status !== "active") run.settled = true
+      return false
     }
     const root = SessionID.make(rootID)
     const goal = yield* readGoal(root)

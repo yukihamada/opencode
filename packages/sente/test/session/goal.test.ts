@@ -270,7 +270,18 @@ describe("session goal", () => {
     expect(
       SessionGoal.parseVerdict("ログを貼ります。\n```\nVERDICT: done\n```\nただしテストはまだ通っていません。"),
     ).toBeUndefined()
-    expect(SessionGoal.parseVerdict("The README shows this verdict format:\n```\nVERDICT: done\n```")).toBeUndefined()
+    // Ordinary lead-ins and text that agrees with the block keep its verdict; only a "done"
+    // inside is dropped when the text around says the work is not finished.
+    const fenced = (outside: string, verdict: string) =>
+      SessionGoal.parseVerdict(`${outside}\n\`\`\`\nVERDICT: ${verdict}\nREASON: r\n\`\`\``)?.verdict
+    expect(fenced("Here is my verdict:", "done")).toBe("done")
+    expect(fenced("判定結果は以下の通りです。", "done")).toBe("done")
+    expect(fenced("テストはまだ2件失敗しています。", "continue")).toBe("continue")
+    expect(fenced("The goal is not finished yet.", "continue")).toBe("continue")
+    expect(fenced("まだ問題はありません。全件通過です。", "done")).toBe("done")
+    expect(fenced("All tests pass, nothing incomplete remains.", "done")).toBe("done")
+    expect(fenced("テストはまだ2件失敗しています。", "done")).toBeUndefined()
+    expect(fenced("The goal is not finished yet.", "blocked")).toBe("blocked")
     // An example block after the answer is not the answer, and REASON comes from the chosen block.
     expect(
       SessionGoal.parseVerdict(
