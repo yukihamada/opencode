@@ -286,7 +286,9 @@ const layer = Layer.effect(
             const timer = setTimeout(notify, 3000)
             yield* Effect.addFinalizer(() => Effect.sync(() => clearTimeout(timer)))
           }
-          const allowed = new Set(statuses.filter((item) => item.trusted).map((item) => item.source))
+          // A source that was trusted and has changed since (a `git pull` before starting Sente) is kept: `verify`
+          // refuses its hooks, so its guards block instead of disappearing. Never-trusted sources are simply not run.
+          const allowed = new Set(statuses.filter((item) => item.trusted || item.lapsed).map((item) => item.source))
           const plugin = ConfigHooksPlugin(
             ConfigHooks.deduplicate(cfg.hook_origins.filter((hook) => allowed.has(hook.source))),
             {

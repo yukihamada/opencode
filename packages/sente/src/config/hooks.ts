@@ -105,7 +105,7 @@ export function unresolved(command: string, scope: Scope) {
 
 // File hashes are cached by inode, size, mtime and ctime, so checking trust before every hook run stays cheap. ctime
 // cannot be set back by `touch -t` (any write or metadata change moves it), so a same-size rewrite with a restored
-// mtime is still seen.
+// mtime is still seen. On Windows nothing is cached.
 const hashes = new Map<string, { key: string; hash: string }>()
 
 function hashFile(file: string) {
@@ -113,7 +113,8 @@ function hashFile(file: string) {
     const stat = statSync(file)
     const cached = hashes.get(file)
     const key = [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":")
-    if (cached?.key === key) return cached.hash
+    // Windows does not reliably move ctime on a rewrite, so files are hashed every time there.
+    if (process.platform !== "win32" && cached?.key === key) return cached.hash
     const hash = createHash("sha256").update(readFileSync(file)).digest("hex")
     hashes.set(file, { key, hash })
     return hash
@@ -157,7 +158,7 @@ export function readTrustSync(): Record<string, string> {
   try {
     const stat = statSync(trustFile())
     const key = [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":")
-    if (key === trustCache.key) return trustCache.value
+    if (process.platform !== "win32" && key === trustCache.key) return trustCache.value
     const data: unknown = JSON.parse(readFileSync(trustFile(), "utf8"))
     const value =
       data && typeof data === "object" && !Array.isArray(data)
@@ -185,6 +186,8 @@ export type Status = {
   files: string[]
   fingerprint: string
   trusted: boolean
+  // Trusted once, changed since: its PreToolUse / UserPromptSubmit hooks still take part, and block until trusted again.
+  lapsed?: boolean
   reason: string
 }
 
@@ -214,6 +217,7 @@ export function status(
     return {
       ...base,
       trusted: false,
+      lapsed: !!trust[source],
       reason: trust[source]
         ? `${kind} hooks or their scripts changed since they were trusted`
         : `${kind} hooks not trusted yet`,

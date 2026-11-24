@@ -126,6 +126,27 @@ describe.skipIf(process.platform === "win32")("project hooks trust", () => {
     },
   )
 
+  // Trusted, then changed before Sente starts (a `git pull`): the guard does not silently disappear, it blocks.
+  it.instance(
+    "a PreToolUse hook changed since it was trusted blocks from startup until trusted again",
+    () =>
+      runShell().pipe(
+        Effect.map((result) => {
+          expect(result).toContain("must be trusted again: run `sente hooks trust`")
+          expect(result).not.toContain("pulled")
+        }),
+      ),
+    {
+      init: (directory) =>
+        Effect.promise(async () => {
+          await Bun.write(path.join(directory, "check.sh"), "exit 0\n")
+          await Bun.write(path.join(directory, "sente.json"), JSON.stringify({ hooks: scripted }))
+          await trustScripted(directory)
+          await Bun.write(path.join(directory, "check.sh"), "echo pulled >&2; exit 2\n")
+        }),
+    },
+  )
+
   pure.instance(
     "--pure runs no config hooks, even trusted ones",
     () => withEnv("SENTE_TRUST_PROJECT_HOOKS", runShell().pipe(Effect.map((result) => expect(result).toBe("ran")))),
