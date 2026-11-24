@@ -5,7 +5,6 @@ import { useLanguage } from "../context/language"
 import { useDialog } from "./dialog"
 import { useBindings, useCommandShortcut } from "../keymap"
 import { voiceState } from "../util/voice"
-import { useLanguage } from "../context/language"
 import { loopText } from "../util/loop-text"
 
 // 主要なキーを「今の状態つき」で一覧する。キーバインドは設定で変えられるので、
@@ -53,7 +52,6 @@ export function DialogHelp() {
   const language = useLanguage()
   const { theme } = useTheme()
   const commandShortcut = useCommandShortcut("command.palette.show")
-  const language = useLanguage()
 
   useBindings(() => ({
     bindings: [
