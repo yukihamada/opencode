@@ -162,9 +162,32 @@ describe("session goal", () => {
     expect(SessionGoal.orphaned(goal({ owner }), probe(undefined))).toBe(false)
     // New goals record this process's start time, and this process is never its own orphan.
     const mine = SessionGoal.create({ objective: "x" })
-    expect(mine.owner?.started).toBeNumber()
-    expect(Math.abs(mine.owner!.started! - (Date.now() - process.uptime() * 1000))).toBeLessThan(2_000)
+    if (process.platform !== "win32") expect(mine.owner?.started).toBeNumber()
     expect(SessionGoal.orphaned(mine)).toBe(false)
+  })
+
+  test("the owner's start time comes from the same clock as the check, so sleep cannot skew it", () => {
+    // A Mac that slept for an hour: an uptime-based start time would be an hour off from what
+    // ps reports. The owner's start time is read through the same function as the check, so a
+    // live owner still matches.
+    const uptimeBased = 1_000_000
+    const psView = uptimeBased + 3_600_000
+    const owner = { ...SessionGoal.ownerNow(() => psView), pid: 999_999 }
+    expect(owner.started).toBe(psView)
+    const probe = { alive: () => true, started: () => psView + 1_000 }
+    expect(SessionGoal.orphaned(goal({ owner }), probe)).toBe(false)
+    // Recording the uptime-based value instead would have looked like a reused pid.
+    expect(SessionGoal.orphaned(goal({ owner: { ...owner, started: uptimeBased } }), probe)).toBe(true)
+    // Where ps cannot be read, no start time is recorded and only liveness counts.
+    const unread = { ...SessionGoal.ownerNow(() => undefined), pid: 999_999 }
+    expect(unread.started).toBeUndefined()
+    expect(SessionGoal.orphaned(goal({ owner: unread }), { alive: () => true, started: () => 5 })).toBe(false)
+  })
+
+  test("this process's own recorded start time matches ps", () => {
+    if (process.platform === "win32") return
+    const mine = SessionGoal.ownerNow()
+    expect(Math.abs(mine.started! - SessionGoal.pidStarted(process.pid)!)).toBeLessThan(2_000)
   })
 
   test("ps elapsed times are read in seconds", () => {

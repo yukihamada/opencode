@@ -234,12 +234,16 @@ export function create(
  * (a TUI next to a `sente run`) is left alone.
  */
 /** This process as the owner of a goal. */
-export function ownerNow() {
-  return { pid: process.pid, boot: boot(), started: processStarted() }
+/**
+ * This process as the owner of a goal. Its start time is read the same way as any other
+ * process's (`ps`), never from `process.uptime()`: uptime clocks can stop while a Mac sleeps,
+ * and two different clocks would make a live owner look like a reused pid. Where `ps` cannot
+ * be read, no start time is recorded and only the pid's liveness counts.
+ */
+export function ownerNow(startedOf: (pid: number) => number | undefined = pidStarted) {
+  const started = startedOf(process.pid)
+  return { pid: process.pid, boot: boot(), ...(started === undefined ? {} : { started }) }
 }
-
-// When this process started, in epoch milliseconds (to the second).
-const processStarted = () => Math.round(Date.now() - process.uptime() * 1000)
 
 /** Start times of two processes this close are the same process (ps reports whole seconds). */
 const START_TOLERANCE_MS = 5_000
@@ -276,9 +280,22 @@ function pidAlive(pid: number) {
   }
 }
 
-// Start time of another process from `ps -o etime=` ([[dd-]hh:]mm:ss, on macOS and Linux).
-// Undefined where ps is unavailable (Windows) or the output cannot be read.
-function pidStarted(pid: number): number | undefined {
+// Start time of a process from `ps -o etime=` ([[dd-]hh:]mm:ss, on macOS and Linux), as wall
+// clock time now minus the elapsed time ps reports. Undefined where ps is unavailable
+// (Windows) or the output cannot be read. Cached briefly per pid: a scan of many goals with
+// the same owner, or a run that creates and resumes goals, runs ps once.
+const startedCache = new Map<number, { value: number | undefined; at: number }>()
+const STARTED_CACHE_MS = 30_000
+
+export function pidStarted(pid: number): number | undefined {
+  const cached = startedCache.get(pid)
+  if (cached && Date.now() - cached.at < STARTED_CACHE_MS) return cached.value
+  const value = readStarted(pid)
+  startedCache.set(pid, { value, at: Date.now() })
+  return value
+}
+
+function readStarted(pid: number): number | undefined {
   if (process.platform === "win32") return undefined
   const result = Bun.spawnSync(["ps", "-o", "etime=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" })
   if (result.exitCode !== 0) return undefined
