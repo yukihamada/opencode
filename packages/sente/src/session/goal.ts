@@ -225,13 +225,19 @@ export function parse(text: string, lang: Lang = ProviderQuota.language()): Comm
           : "--max-rounds must be a positive integer.",
   })
   // `--loop` (no value) asks for the built-in loop even when a user's own goal command exists.
-  if (/(^|\s)--loop(?=\s|$)/.test(rest)) {
+  // Only at the start or the end: "add a --loop option to sente run" keeps its words.
+  const loopFlag = /^--loop(?:\s+|$)|\s+--loop$/.exec(rest)
+  if (loopFlag) {
     options.loop = true
-    rest = rest.replace(/(^|\s)--loop(?=\s|$)/g, " ").trim()
+    rest = (loopFlag.index === 0 ? rest.slice(loopFlag[0].length) : rest.slice(0, loopFlag.index)).trim()
   }
   // Limits go before or after the condition: `/goal --budget 5 ship it` or `/goal ship it --budget 5`.
-  // At the end only a number counts, so "explain the --budget flag" stays the condition.
-  const patterns = [/^--(budget|max-rounds)(?:=|\s+)(\S+)\s*/, /\s+--(budget|max-rounds)(?:=|\s+)(\$?\d+(?:\.\d+)?)$/]
+  // Only with a number as its value: "--budget の説明を README に書く" or "explain the --budget
+  // flag" stay the condition.
+  const patterns = [
+    /^--(budget|max-rounds)(?:=|\s+)(\$?\d+(?:\.\d+)?)(?:\s+|$)/,
+    /\s+--(budget|max-rounds)(?:=|\s+)(\$?\d+(?:\.\d+)?)$/,
+  ]
   while (true) {
     const flag = patterns.map((pattern) => pattern.exec(rest)).find((match) => match !== null)
     if (!flag) break
@@ -461,19 +467,33 @@ export function parseVerdict(text: string): Verdict | undefined {
         return match ? [match[1].trim()] : []
       })
       .at(-1)
-  // Anchored at the start of the line, so "Example: VERDICT: done" or "例: VERDICT: done" never counts.
-  const verdict = lines
-    .flatMap((line) => {
-      const value = label("verdict").exec(line)?.[1]
-      const word = value && /^[*_`"']*(done|continue|blocked)[*_`"'.]*$/i.exec(value.trim())
-      return word ? [word[1].toLowerCase() as Verdict["verdict"]] : []
-    })
-    .at(-1)
-  if (!verdict) return undefined
+  // Anchored at the start of the line, so "Example: VERDICT: done" or "例: VERDICT: done" never
+  // counts. A VERDICT line right after an example heading ("Example:", "例:") is an example
+  // too. The last remaining VERDICT wins, and REASON / NEXT come from the lines after it.
+  const example = /^(?:examples?|e\.g\.|for example|sample|例えば|記入例|例)[^a-z]*$/i
+  const previous = (index: number) => lines.slice(0, index).findLast((line) => line !== "")
+  const at = lines.findLastIndex((line, index) => {
+    const value = label("verdict").exec(line)?.[1]
+    if (!value || !/^[*_`"']*(done|continue|blocked)[*_`"'.]*$/i.test(value.trim())) return false
+    const before = previous(index)
+    return !(before !== undefined && example.test(before))
+  })
+  if (at === -1) return undefined
+  const verdict = /(done|continue|blocked)/i
+    .exec(label("verdict").exec(lines[at])![1])![1]
+    .toLowerCase() as Verdict["verdict"]
+  const after = (name: string) =>
+    lines
+      .slice(at + 1)
+      .flatMap((line) => {
+        const match = label(name).exec(line)
+        return match ? [match[1].trim()] : []
+      })
+      .at(0)
   return {
     verdict,
-    reason: strip(field("reason")) ?? "",
-    next: verdict === "continue" ? strip(field("next")) : undefined,
+    reason: strip(after("reason") ?? field("reason")) ?? "",
+    next: verdict === "continue" ? strip(after("next") ?? field("next")) : undefined,
   }
 }
 

@@ -3373,6 +3373,23 @@ const spend = Effect.fn("test.spend")(function* (sessionID: SessionID, cost: num
   } satisfies SessionV1.Assistant)
 })
 
+
+// Starts a goal on `sessionID` whose first request hangs, so the root is running under an
+// active goal while a test drives its subagents. Interrupt it with prompt.cancel.
+const runningGoal = Effect.fn("test.runningGoal")(function* (
+  llm: { hang: Effect.Effect<void>; wait: (count: number) => Effect.Effect<void> },
+  sessionID: SessionID,
+  args: string,
+) {
+  const prompt = yield* SessionPrompt.Service
+  yield* llm.hang
+  const fiber = yield* prompt
+    .command({ sessionID, command: "goal", arguments: args, agent: "build" })
+    .pipe(Effect.forkChild)
+  yield* llm.wait(1)
+  return fiber
+})
+
 it.instance("a subagent's cost during the turn counts against the goal's budget", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(goalCfg)
@@ -3408,10 +3425,7 @@ it.instance("a subagent below a goal stops at the goal's budget, before its next
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
-    yield* sessions.setMetadata({
-      sessionID: chat.id,
-      metadata: SessionGoal.withGoal(undefined, SessionGoal.create({ objective: "big task", budget: 0.1 })),
-    })
+    const root = yield* runningGoal(llm, chat.id, "--budget 0.1 big task")
     const child = yield* sessions.create({ title: "Background subagent", parentID: chat.id })
     yield* spend(child.id, 0.2)
     yield* prompt.prompt({
@@ -3424,10 +3438,12 @@ it.instance("a subagent below a goal stops at the goal's budget, before its next
 
     yield* prompt.loop({ sessionID: child.id })
 
-    expect(yield* llm.calls).toBe(0)
+    expect(yield* llm.calls).toBe(1)
     const goal = yield* goalOf(chat.id)
     expect(goal?.status).toBe("paused")
     expect(goal?.reason).toContain("$0.10")
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(root)
   }),
 )
 
@@ -3492,10 +3508,7 @@ it.instance("a subagent below a goal with budget left works normally and updates
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
-    yield* sessions.setMetadata({
-      sessionID: chat.id,
-      metadata: SessionGoal.withGoal(undefined, SessionGoal.create({ objective: "big task", budget: 5 })),
-    })
+    const root = yield* runningGoal(llm, chat.id, "--budget 5 big task")
     const child = yield* sessions.create({ title: "Subagent", parentID: chat.id })
     yield* spend(child.id, 0.3)
     yield* prompt.prompt({
@@ -3508,10 +3521,88 @@ it.instance("a subagent below a goal with budget left works normally and updates
 
     const result = yield* prompt.loop({ sessionID: child.id })
 
-    expect(yield* llm.calls).toBe(1)
+    expect(yield* llm.calls).toBe(2)
     expect(result.parts.some((part) => part.type === "text" && part.text === "found it")).toBe(true)
     const goal = yield* goalOf(chat.id)
     expect(goal?.status).toBe("active")
     expect(goal?.spent).toBeCloseTo(0.3, 5)
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(root)
+  }),
+)
+
+it.instance("a budget stop stops parallel subagents and background jobs below the goal", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const background = yield* BackgroundJob.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const root = yield* runningGoal(llm, chat.id, "--budget 0.1 big task")
+    const started = (sessionID: SessionID) =>
+      prompt.prompt({
+        sessionID,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "work on your part", synthetic: true }],
+      })
+    // Two siblings working in parallel (their requests hang) and a background job of the root.
+    const a = yield* sessions.create({ title: "Sibling A", parentID: chat.id })
+    const b = yield* sessions.create({ title: "Sibling B", parentID: chat.id })
+    yield* started(a.id)
+    yield* started(b.id)
+    yield* llm.hang
+    yield* llm.hang
+    const fa = yield* prompt.loop({ sessionID: a.id }).pipe(Effect.forkChild)
+    const fb = yield* prompt.loop({ sessionID: b.id }).pipe(Effect.forkChild)
+    yield* llm.wait(3)
+    const job = yield* background.start({ type: "task", metadata: { parentSessionId: chat.id }, run: Effect.never })
+    // A third subagent's spend crosses the budget.
+    const c = yield* sessions.create({ title: "Sibling C", parentID: chat.id })
+    yield* spend(c.id, 0.2)
+    yield* started(c.id)
+
+    yield* prompt.loop({ sessionID: c.id })
+
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+    const [ea, eb] = yield* Effect.all([Fiber.await(fa), Fiber.await(fb)]).pipe(
+      Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.fail(new Error("siblings kept running")) }),
+    )
+    expect(Exit.isSuccess(ea) || Exit.isFailure(ea)).toBe(true)
+    expect(Exit.isSuccess(eb) || Exit.isFailure(eb)).toBe(true)
+    expect((yield* background.get(job.id))?.status).not.toBe("running")
+    expect(yield* llm.calls).toBe(3)
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(root)
+  }),
+)
+
+it.instance("a built-in goal next to a user's own goal command is still cleared, shown and resumed", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...goalCfg(url),
+      command: { goal: { template: "House rule: $ARGUMENTS" } },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* work(llm, "partial")
+    yield* review(llm, "VERDICT: blocked\nREASON: needs a key\nNEXT: -")
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "--loop deploy it", agent: "build" })
+    expect((yield* goalOf(chat.id))?.status).toBe("paused")
+
+    const shown = yield* prompt
+      .command({ sessionID: chat.id, command: "goal", arguments: "", agent: "build" })
+      .pipe(Effect.exit)
+    expect(Exit.isSuccess(shown)).toBe(true)
+    yield* work(llm, "deployed")
+    yield* review(llm, "VERDICT: done\nREASON: deploy log ok\nNEXT: -")
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "resume", agent: "build" })
+    expect((yield* goalOf(chat.id))?.status).toBe("complete")
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "clear", agent: "build" })
+    expect(yield* goalOf(chat.id)).toBeUndefined()
+
+    // None of these went to the user's template.
+    expect((yield* llm.hits).some((hit) => bodyOf(hit).includes("House rule"))).toBe(false)
   }),
 )

@@ -27,7 +27,7 @@ describe("session goal", () => {
       maxRounds: 4,
     })
     expect(SessionGoal.parse("--budget=0.5 ship", "en")).toEqual({ type: "set", objective: "ship", budget: 0.5 })
-    expect(SessionGoal.parse("--budget nope ship", "en").type).toBe("invalid")
+    expect(SessionGoal.parse("--budget 0 ship", "en").type).toBe("invalid")
     expect(SessionGoal.parse("x".repeat(SessionGoal.MAX_OBJECTIVE + 1), "en").type).toBe("invalid")
   })
 
@@ -46,6 +46,20 @@ describe("session goal", () => {
       loop: true,
     })
     expect(SessionGoal.parse("--loop resume", "en")).toEqual({ type: "resume", loop: true })
+    expect(SessionGoal.parse("ship it --loop", "en")).toEqual({ type: "set", objective: "ship it", loop: true })
+    // In the middle, flags are words of the condition.
+    expect(SessionGoal.parse("sente run に --loop オプションを追加する", "ja")).toEqual({
+      type: "set",
+      objective: "sente run に --loop オプションを追加する",
+    })
+    expect(SessionGoal.parse("--budget の説明を README に書く", "ja")).toEqual({
+      type: "set",
+      objective: "--budget の説明を README に書く",
+    })
+    expect(SessionGoal.parse("README に --budget の説明を書く", "ja")).toEqual({
+      type: "set",
+      objective: "README に --budget の説明を書く",
+    })
     // A word that only looks like a flag inside the condition stays.
     expect(SessionGoal.parse("explain the --budget flag", "en")).toEqual({
       type: "set",
@@ -172,6 +186,15 @@ describe("session goal", () => {
     // An example in the answer is not the verdict, even as the last match.
     expect(SessionGoal.parseVerdict("VERDICT: continue\nREASON: x\nExample: VERDICT: done")?.verdict).toBe("continue")
     expect(SessionGoal.parseVerdict("例: VERDICT: done")).toBeUndefined()
+    // An example block after the answer is not the answer, and REASON comes from the chosen block.
+    expect(
+      SessionGoal.parseVerdict(
+        "VERDICT: continue\nREASON: lint fails\nNEXT: fix lint\n\nExample:\nVERDICT: done\nREASON: all green",
+      ),
+    ).toEqual({ verdict: "continue", reason: "lint fails", next: "fix lint" })
+    expect(SessionGoal.parseVerdict("VERDICT: blocked\nREASON: needs a key\n例:\n**VERDICT:** done")?.verdict).toBe(
+      "blocked",
+    )
     // Prose and echoed instructions never read as done.
     expect(SessionGoal.parseVerdict("VERDICT: not done yet, continue")).toBeUndefined()
     expect(SessionGoal.parseVerdict("VERDICT: done | continue | blocked")).toBeUndefined()
