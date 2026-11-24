@@ -23,7 +23,7 @@ export const WaitTool = Tool.define(
     const jobs = yield* BackgroundJob.Service
     return {
       description:
-        "Wait for a bash command of this session that moved to the background and get its exit code and output, or stop it.",
+        "Wait for a bash command of this session that moved to the background and get its exit code and output, or stop it. stop needs only this tool's permission, even where bash may not run kill.",
       parameters: Parameters,
       execute: (
         params: Schema.Schema.Type<typeof Parameters>,

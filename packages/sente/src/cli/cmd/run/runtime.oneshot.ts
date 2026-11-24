@@ -16,42 +16,49 @@ export type HoldInput = {
   /** This run created (or forked) the session, so nobody else's work lives in it. */
   owned: boolean
   warn: (message: string) => void
-  startedAt?: number
   signals?: Signals
   renewMs?: number
 }
 
+/** Leasing failed (twice); the caller stops the run rather than leave background commands unawaited. */
+export class LeaseError extends Error {}
+
 export async function holdOneShot(input: HoldInput) {
-  const startedAt = input.startedAt ?? Date.now()
   const signals = input.signals ?? process
   // Change only our key, on a fresh read right before the write: the server replaces metadata
   // wholesale and has no partial update, so this keeps the window for clobbering others minimal.
-  const write = async (value: ShellBackground.Lease | undefined) => {
+  // The lease expiry is put on the server's clock (from its Date header), since the server judges it.
+  const write = async (lease: boolean) => {
+    const sent = Date.now()
     const current = await input.client.session.get({ sessionID: input.sessionID })
     if (!current.data) throw new Error("session not found")
     const metadata: Record<string, unknown> = { ...current.data.metadata }
-    if (value) metadata[ShellBackground.ONE_SHOT] = value
+    if (lease) metadata[ShellBackground.ONE_SHOT] = ShellBackground.lease(serverNow(current.response, sent))
     else delete metadata[ShellBackground.ONE_SHOT]
     const updated = await input.client.session.update({ sessionID: input.sessionID, metadata })
     if (updated.error) throw new Error(String(updated.error))
   }
+  // Every write goes through one chain, so a renewal still in flight cannot land after the removal.
+  let chain = Promise.resolve()
+  const queue = (lease: boolean) => {
+    const next = chain.then(() => write(lease))
+    chain = next.catch(() => undefined)
+    return next
+  }
 
-  const marked = await write(ShellBackground.lease()).then(
-    () => true,
-    (error: unknown) => {
-      input.warn(
-        `could not mark the session as a one-shot run (${error instanceof Error ? error.message : String(error)}); a shell command that outlives its timeout may not be waited for`,
+  // Jobs already in a joined session before this run are not ours (no clocks involved).
+  const before = new Set(input.owned ? [] : (await jobs(input.client, input.sessionID)).started)
+  // One retry, then give up: without the lease the server would tell the model a notification will
+  // come, and this run would end (stopping the command) before it does.
+  await queue(true)
+    .catch(() => queue(true))
+    .catch((error: unknown) => {
+      throw new LeaseError(
+        `could not mark the session as a one-shot run (${error instanceof Error ? error.message : String(error)})`,
       )
-      return false
-    },
-  )
-  const timer = marked
-    ? setInterval(
-        () => void write(ShellBackground.lease()).catch(() => undefined),
-        input.renewMs ?? ShellBackground.RENEW_MS,
-      )
-    : undefined
-  timer?.unref?.()
+    })
+  const timer = setInterval(() => void queue(true).catch(() => undefined), input.renewMs ?? ShellBackground.RENEW_MS)
+  timer.unref?.()
 
   // Ctrl-C / kill: drop the lease before going, then let the signal take its normal course.
   let released: Promise<void> | undefined
@@ -61,18 +68,17 @@ export async function holdOneShot(input: HoldInput) {
       signals.kill(signals.pid, signal)
     })
   }
-  if (marked) {
-    signals.on("SIGINT", onSignal)
-    signals.on("SIGTERM", onSignal)
-  }
+  signals.on("SIGINT", onSignal)
+  signals.on("SIGTERM", onSignal)
 
   function release() {
     released ??= (async () => {
-      if (timer) clearInterval(timer)
+      clearInterval(timer)
       signals.off("SIGINT", onSignal)
       signals.off("SIGTERM", onSignal)
-      if (marked) await write(undefined).catch(() => undefined)
-      const running = await leftover(input.client, input.sessionID, startedAt)
+      await queue(false).catch(() => undefined)
+      const seen = await jobs(input.client, input.sessionID)
+      const running = seen.started.filter((id) => !before.has(id) && !seen.finished.includes(id))
       if (running.length === 0) return
       // Only a session this run made is ours to interrupt; in someone else's session it would also stop
       // their turn, subagents and jobs. There the commands end on their own or at the lifetime limit.
@@ -87,27 +93,34 @@ export async function holdOneShot(input: HoldInput) {
     return released
   }
 
-  return { marked, release }
+  return { release }
 }
 
-/** Background shell jobs this run started whose result it never saw. */
-async function leftover(client: Client, sessionID: string, since: number) {
+/** The server's current time, from the Date header of a response to a request sent at `sent`. */
+function serverNow(response: Response | undefined, sent: number) {
+  const date = Date.parse(response?.headers.get("date") ?? "")
+  if (Number.isNaN(date)) return Date.now()
+  // The header is the server time when it answered; add what has passed since (and its 1s rounding).
+  return date + Math.max(0, Date.now() - sent)
+}
+
+/** Background shell jobs of the session, and those whose result was delivered. */
+async function jobs(client: Client, sessionID: string) {
   const response = await client.session.messages({ sessionID }).catch(() => undefined)
   const parts = (response?.data ?? []).flatMap((message) => message.parts)
-  const started = new Set<string>()
-  const finished = new Set<string>()
+  const started: string[] = []
+  const finished: string[] = []
   for (const part of parts) {
     if (part.type === "text" && part.synthetic) {
       const match = /<background_shell job="([^"]+)"/.exec(part.text)
-      if (match) finished.add(match[1])
+      if (match) finished.push(match[1])
     }
     if (part.type !== "tool" || part.state.status !== "completed") continue
     const metadata = part.state.metadata as Record<string, unknown> | undefined
-    if (part.tool === "bash" && metadata?.background === true && typeof metadata.jobId === "string") {
-      if (part.state.time.start >= since) started.add(metadata.jobId)
-    }
+    if (part.tool === "bash" && metadata?.background === true && typeof metadata.jobId === "string")
+      started.push(metadata.jobId)
     if (part.tool === "wait" && typeof metadata?.jobId === "string" && metadata.status !== "pending")
-      finished.add(metadata.jobId)
+      finished.push(metadata.jobId)
   }
-  return [...started].filter((id) => !finished.has(id))
+  return { started, finished }
 }
