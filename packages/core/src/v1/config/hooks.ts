@@ -11,7 +11,8 @@ export const Command = Schema.Struct({
       "Shell command to run. It receives the event as JSON on stdin and controls Sente with its exit code (2 blocks) or a JSON object on stdout.",
   }),
   timeout: Schema.optional(Schema.Finite.check(Schema.isGreaterThan(0))).annotate({
-    description: "Seconds before the command is killed (default: 60). A timed out hook never blocks.",
+    description:
+      "Seconds before the command is killed (default: 60). A PreToolUse or UserPromptSubmit hook that times out blocks (fail closed); other events continue.",
   }),
 })
 export type Command = Schema.Schema.Type<typeof Command>

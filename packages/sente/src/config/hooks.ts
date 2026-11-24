@@ -103,16 +103,19 @@ export function unresolved(command: string, scope: Scope) {
   return [...new Set(tokens(command, scope).filter((token) => token.includes("$")))]
 }
 
-// File hashes are cached by size and mtime, so checking trust before every hook run stays cheap.
-const hashes = new Map<string, { size: number; mtimeMs: number; hash: string }>()
+// File hashes are cached by inode, size, mtime and ctime, so checking trust before every hook run stays cheap. ctime
+// cannot be set back by `touch -t` (any write or metadata change moves it), so a same-size rewrite with a restored
+// mtime is still seen.
+const hashes = new Map<string, { key: string; hash: string }>()
 
 function hashFile(file: string) {
   try {
     const stat = statSync(file)
     const cached = hashes.get(file)
-    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.hash
+    const key = [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":")
+    if (cached?.key === key) return cached.hash
     const hash = createHash("sha256").update(readFileSync(file)).digest("hex")
-    hashes.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, hash })
+    hashes.set(file, { key, hash })
     return hash
   } catch {
     return "unreadable"
@@ -146,14 +149,15 @@ export async function readTrust(): Promise<Record<string, string>> {
   )
 }
 
-const trustCache = { mtimeMs: -1, size: -1, value: {} as Record<string, string> }
+const trustCache = { key: "", value: {} as Record<string, string> }
 
 // Synchronous, mtime-cached read of the trust file for the check right before each project/remote hook runs, so an
 // `untrust` in another terminal takes effect without restarting.
 export function readTrustSync(): Record<string, string> {
   try {
     const stat = statSync(trustFile())
-    if (stat.mtimeMs === trustCache.mtimeMs && stat.size === trustCache.size) return trustCache.value
+    const key = [stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":")
+    if (key === trustCache.key) return trustCache.value
     const data: unknown = JSON.parse(readFileSync(trustFile(), "utf8"))
     const value =
       data && typeof data === "object" && !Array.isArray(data)
@@ -161,7 +165,7 @@ export function readTrustSync(): Record<string, string> {
             Object.entries(data).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
           )
         : {}
-    Object.assign(trustCache, { mtimeMs: stat.mtimeMs, size: stat.size, value })
+    Object.assign(trustCache, { key, value })
     return value
   } catch {
     return {}

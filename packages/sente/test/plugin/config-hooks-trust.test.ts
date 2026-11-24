@@ -102,13 +102,16 @@ describe.skipIf(process.platform === "win32")("project hooks trust", () => {
   // Trust is checked again right before each run: editing the hook's script while Sente runs stops the hook at once,
   // without a restart (the startup check alone would keep running the edited script).
   it.instance(
-    "a trusted project hook stops running when its script changes mid-session",
+    "a trusted PreToolUse hook whose script changes mid-session blocks until trusted again",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         expect(yield* runShell()).toContain("blocked by script")
         yield* Effect.promise(() => Bun.write(path.join(test.directory, "check.sh"), "echo edited >&2; exit 2\n"))
-        expect(yield* runShell()).toBe("ran")
+        // PreToolUse fails closed: the changed guard blocks and says how to allow it again; the edited script did not run.
+        const lapsed = yield* runShell()
+        expect(lapsed).toContain("must be trusted again: run `sente hooks trust`")
+        expect(lapsed).not.toContain("edited")
         // Trusting the new content again (here: rewriting the trust entry) makes it run again.
         yield* Effect.promise(() => trustScripted(test.directory))
         expect(yield* runShell()).toContain("edited")

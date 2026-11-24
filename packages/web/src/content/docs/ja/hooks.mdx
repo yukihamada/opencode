@@ -57,7 +57,7 @@ description: ツールの実行前後・入力時・ターン終了時に、自�
 | `hookSpecificOutput.updatedInput` | `PreToolUse` の引数を変更(マージ。snake_case は元の名前に戻します) |
 | `hookSpecificOutput.additionalContext` | 文脈を追加 |
 
-該当するフックは並列に動きます。タイムアウトしたフックは、起動したプロセスごと止めます。Esc(ターンの中断)で実行中のフックもすぐ止まり、ツールは実行されません。macOS/Linux ではフックを専用のプロセスグループで動かし、パイプで Sente とつないでいます。フックが終わると裏に残したプロセスも止まり、Sente がどんな形で終わっても(終了・`SIGTERM`・`SIGHUP`・`SIGKILL`・TUI を閉じる)フックのプロセスは止まります。そのために Sente はシグナルの扱いを変えないので、`nohup sente serve` は `SIGHUP` を無視したままです。Windows では、タイムアウト・中断・Sente の通常終了の時に止めます。モデルに渡る理由・文脈は、ツール出力と同じ秘密マスクを通ります。
+該当するフックは並列に動きます。タイムアウトしたフックは、起動したプロセスごと止めます。Esc(ターンの中断)で実行中のフックもすぐ止まり、ツールは実行されません。macOS/Linux ではフックを専用のプロセスグループで動かし、パイプで Sente とつないでいます。正常に終わったフックが意図して裏で起動したもの(`terminal-notifier … &`・`nohup … &` など)は、Claude Code と同じく動き続けます。タイムアウト・中断の時や、Sente がどんな形で終わった時(終了・`SIGTERM`・`SIGHUP`・`SIGKILL`・TUI を閉じる)に実行中だったフックは、起動したものごと止めます。そのために Sente はシグナルの扱いを変えないので、`nohup sente serve` は `SIGHUP` を無視したままです。Windows では、タイムアウト・中断・Sente の通常終了の時に止めます。モデルに渡る理由・文脈は、ツール出力と同じ秘密マスクを通ります。
 
 ## フックの出どころと信頼
 
@@ -77,7 +77,7 @@ sente hooks trust --yes        # 確認なしで信頼(何を信頼したかは�
 sente hooks untrust            # このプロジェクト(とリモート)の許可を取り消す
 ```
 
-信頼は出どころごとに、フックの内容と**コマンドが直接名指しするスクリプトの中身**(`./hooks/check.sh`・`node scripts/lint.js`・`"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py` など)の指紋とあわせて `~/.local/state/sente/hooks-trust.json` に保存します。どちらかが変わると(`git pull` の後や、Sente の起動中の編集など)、もう一度信頼するまで止まります。プロジェクトとリモートのフックは**実行の直前に毎回**信頼を照合し(スクリプトのハッシュはサイズと更新時刻で再計算)、合わなければ実行せずに警告します。`$CLAUDE_PROJECT_DIR`・`$SENTE_PROJECT_DIR`・`$PWD` は解決しますが、それ以外の変数やコマンド置換は解決できないので、`sente hooks list` で警告します。そのスクリプトがさらに読み込むファイル(source するスクリプト・npm スクリプト・import)は対象外で、`sente hooks list` に対象が表示されます。`sente hooks trust` が対象にするのは今のプロジェクト内(git の作業ツリー、git でなければ今のディレクトリ)のファイルだけで、親ディレクトリの設定は信頼しません。
+信頼は出どころごとに、フックの内容と**コマンドが直接名指しするスクリプトの中身**(`./hooks/check.sh`・`node scripts/lint.js`・`"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py` など)の指紋とあわせて `~/.local/state/sente/hooks-trust.json` に保存します。どちらかが変わると(`git pull` の後や、Sente の起動中の編集など)、もう一度信頼するまで止まります。プロジェクトとリモートのフックは**実行の直前に毎回**信頼を照合し(スクリプトのハッシュは inode・サイズ・更新時刻・変更時刻(ctime)で再計算するので、mtime を戻しても書き換えは見逃しません)。合わなくなった `PreToolUse`/`UserPromptSubmit` は「hooks の内容が変わったため再信頼が必要: `sente hooks trust`」としてブロックします(`git pull` で安全確認用のフックが変わっても素通りさせません)。他のイベントは実行しません。どちらの場合も TUI に警告を出します(`sente run`/`serve` では標準エラー)。`$CLAUDE_PROJECT_DIR`・`$SENTE_PROJECT_DIR`・`$PWD` は解決しますが、それ以外の変数やコマンド置換は解決できないので、`sente hooks list` で警告します。そのスクリプトがさらに読み込むファイル(source するスクリプト・npm スクリプト・import)は対象外で、`sente hooks list` に対象が表示されます。`sente hooks trust` が対象にするのは今のプロジェクト内(git の作業ツリー、git でなければ今のディレクトリ)のファイルだけで、親ディレクトリの設定は信頼しません。
 
 信頼したフックは、あなたの権限と環境変数(上記)で動きます。
 

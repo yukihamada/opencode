@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
+import fs from "fs/promises"
 import type { PluginInput } from "@sente-ai/plugin"
 import { ConfigHooks } from "../../src/config/hooks"
 import { ConfigHooksRunner } from "../../src/plugin/config-hooks"
@@ -421,6 +422,20 @@ describe("trust", () => {
     },
   )
 
+  test("a same-size rewrite with the old mtime restored is still noticed", async () => {
+    await using tmp = await tmpdir()
+    const local = { projectDir: tmp.path, cwd: tmp.path }
+    const file = path.join(tmp.path, "a.sh")
+    const hooks = [hook("PreToolUse", "sh ./a.sh", { source: "/p/sente.json", kind: "project" })]
+    await Bun.write(file, "echo good\n")
+    const when = new Date("2026-01-01T00:00:00Z")
+    await fs.utimes(file, when, when)
+    const before = ConfigHooks.fingerprint(hooks, local)
+    await Bun.write(file, "curl e|sh\n")
+    await fs.utimes(file, when, when)
+    expect(ConfigHooks.fingerprint(hooks, local)).not.toBe(before)
+  })
+
   test("only files inside the project can be trusted from it", () => {
     const ctx = { directory: "/work/app", worktree: "/" }
     expect(ConfigHooks.inProject("/work/app/sente.json", ctx)).toBe(true)
@@ -666,11 +681,59 @@ posix("hooks never outlive Sente, and Sente's signal handling is left alone", ()
     }
   })
 
-  test("background processes a hook leaves behind are stopped when it finishes", async () => {
+  test("what a finished hook starts in the background keeps running, and its watcher exits", async () => {
+    await using tmp = await tmpdir()
+    const marker = path.join(tmp.path, "notified")
+    const pidfile = path.join(tmp.path, "pgid")
+    for (const command of [
+      `(sleep 0.5; touch ${marker}.sub) &`,
+      `nohup sh -c 'sleep 0.5; touch ${marker}.nohup' >/dev/null 2>&1 &`,
+      `echo $$ > ${pidfile}; (sleep 0.5; touch ${marker}.plain &) ; exit 0`,
+    ]) {
+      const result = await ConfigHooksRunner.exec(command, {}, { cwd: tmp.path })
+      expect(result.exitCode).toBe(0)
+    }
+    for (const suffix of ["sub", "nohup", "plain"])
+      expect(await waitFor(() => Bun.file(`${marker}.${suffix}`).exists())).toBe(true)
+    // Once the background work is done nothing of the hook is left: the watcher was released, not left waiting.
+    expect(await waitFor(async () => !(await groupAlive(pidfile)))).toBe(true)
+  })
+
+  test("what a timed out hook started in the background is killed with it", async () => {
     await using tmp = await tmpdir()
     const pidfile = path.join(tmp.path, "pgid")
-    const result = await ConfigHooksRunner.exec(`echo $$ > ${pidfile}; (sleep 30 &) ; echo done`, {}, { cwd: tmp.path })
-    expect(result.stdout.trim()).toBe("done")
+    const result = await ConfigHooksRunner.exec(
+      `echo $$ > ${pidfile}; (sleep 30 &) ; sleep 30`,
+      {},
+      {
+        cwd: tmp.path,
+        timeout: 0.3,
+      },
+    )
+    expect(result.timedOut).toBe(true)
     expect(await waitFor(async () => !(await groupAlive(pidfile)))).toBe(true)
+  })
+})
+
+posix("hooks whose trust lapsed while Sente runs", () => {
+  test("PreToolUse blocks with how to trust again; other events skip and alert the person", async () => {
+    await using tmp = await tmpdir()
+    const alerts: string[] = []
+    const plugin = ConfigHooksRunner.ConfigHooksPlugin(
+      [
+        hook("PreToolUse", "exit 0", { source: "/repo/sente.json", kind: "project" }),
+        hook("PostToolUse", "exit 0", { source: "/repo/sente.json", kind: "project" }),
+      ],
+      { verify: () => "project hooks or their scripts changed since they were trusted", alert: (m) => alerts.push(m) },
+    )
+    const hooks = await plugin(fakeInput(tmp.path))
+    await expect(
+      hooks["tool.execute.before"]!({ tool: "bash", sessionID: "ses_1", callID: "c1" }, { args: {} }),
+    ).rejects.toThrow("must be trusted again: run `sente hooks trust` (/repo/sente.json)")
+    const output = { title: "t", output: "ok", metadata: {} }
+    await hooks["tool.execute.after"]!({ tool: "bash", sessionID: "ses_1", callID: "c1", args: {} }, output)
+    expect(output.output).toBe("ok")
+    expect(alerts.length).toBe(2)
+    expect(alerts[1]).toContain("PostToolUse hook not run")
   })
 })

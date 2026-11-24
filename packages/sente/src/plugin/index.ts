@@ -295,6 +295,20 @@ const layer = Layer.effect(
                 if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
               },
               mcpServers: Object.keys(cfg.mcp ?? {}),
+              alert: (message) => {
+                bridge.fork(Effect.logWarning(message))
+                if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
+                bridge.fork(
+                  events
+                    .publish(TuiEvent.ToastShow, {
+                      title: "Hook not run",
+                      message,
+                      variant: "warning",
+                      duration: 15000,
+                    })
+                    .pipe(Effect.ignore),
+                )
+              },
               // Trust given at startup is re-checked before every project/remote hook run, so editing a hook script
               // (or `sente hooks untrust`) while Sente runs stops it at once.
               verify: (hook) =>

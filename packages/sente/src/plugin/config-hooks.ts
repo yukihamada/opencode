@@ -139,14 +139,17 @@ function killTree(child: ChildProcess, sync = false) {
 }
 
 // POSIX wrapper around the hook command. The hook runs in its own process group (detached) so a timeout can kill
-// everything it started. Fd 3 is a pipe whose other end only Sente holds: a background watcher in the group blocks
-// reading it, and when it reaches end-of-file (Sente closed it after the hook finished, or Sente died in any way,
-// SIGKILL and a terminated TUI worker included) it kills the whole group. So hook processes never outlive the hook run
-// or Sente, without Sente touching its own signal handling.
+// everything it started. Fd 3 is a pipe whose other end only Sente holds, watched by a background process in the group:
+// - the hook finished normally: Sente writes a line, the watcher exits, and whatever the hook started in the background
+//   on purpose (`terminal-notifier … &`, `nohup … &`) keeps running, as in Claude Code;
+// - Sente died in any way (SIGKILL and a terminated TUI worker included) or gave up on the hook (timeout, cancel): the
+//   pipe reaches end-of-file without that line and the watcher kills the whole group.
+// So an unfinished hook never outlives Sente, without Sente touching its own signal handling. The command arrives as
+// `$1` rather than through the environment.
 const LIFELINE = [
-  "( read _ <&3; kill -s KILL 0 ) </dev/null >/dev/null 2>&1 &",
+  "( if read _ <&3; then exit 0; fi; kill -s KILL 0 ) </dev/null >/dev/null 2>&1 &",
   "exec 3<&-",
-  'sente_hook_command=$SENTE_HOOK_COMMAND; unset SENTE_HOOK_COMMAND; eval "$sente_hook_command"',
+  'eval "$1"',
 ].join("\n")
 
 // node:child_process rather than the Effect CrossSpawnSpawner: plugin hooks are plain promises with no Effect services
@@ -167,7 +170,7 @@ export function exec(
     }
     let grace: ReturnType<typeof setTimeout> | undefined
     const posix = process.platform !== "win32"
-    const finish = (result: Omit<Result, "command" | "stdout" | "stderr">) => {
+    const finish = (result: Omit<Result, "command" | "stdout" | "stderr">, completed = false) => {
       if (state.done) return
       state.done = true
       clearTimeout(timer)
@@ -175,8 +178,14 @@ export function exec(
       options.signal?.removeEventListener("abort", abort)
       if (!(child instanceof Error)) {
         live.delete(child)
-        // Closing the lifeline also stops anything the hook left running in the background.
-        child.stdio[3]?.destroy()
+        // A normal finish releases the watcher (background processes live on); otherwise end-of-file makes it kill the
+        // group.
+        const lifeline = child.stdio[3]
+        if (lifeline && completed && "end" in lifeline) {
+          lifeline.on("error", () => {})
+          lifeline.end("done\n")
+        }
+        if (lifeline && !completed) lifeline.destroy()
       }
       resolve({ command, stdout: out.stdout, stderr: out.stderr, ...result })
     }
@@ -191,9 +200,9 @@ export function exec(
             stdio: ["pipe", "pipe", "pipe"],
             windowsHide: true,
           })
-        return spawn("/bin/sh", ["-c", LIFELINE], {
+        return spawn("/bin/sh", ["-c", LIFELINE, "sente-hook", command], {
           cwd: options.cwd,
-          env: { ...env, SENTE_HOOK_COMMAND: command },
+          env,
           stdio: ["pipe", "pipe", "pipe", "pipe"],
           detached: true,
         })
@@ -225,7 +234,10 @@ export function exec(
     if (lifeline && "unref" in lifeline && typeof lifeline.unref === "function") lifeline.unref()
     const settle = () => {
       if (!state.exit || state.ended < 2) return
-      finish({ exitCode: state.exit.code, timedOut: false, signal: state.exit.signal ?? undefined })
+      finish(
+        { exitCode: state.exit.code, timedOut: false, signal: state.exit.signal ?? undefined },
+        state.exit.code !== null,
+      )
     }
     // Decode as UTF-8 per stream so a multi-byte character split across chunks is not mangled.
     child.stdout?.setEncoding("utf8")
@@ -246,7 +258,10 @@ export function exec(
       settle()
       // A command that leaves a background process holding stdout open never ends the stream; stop waiting shortly
       // after the command itself exits.
-      grace = setTimeout(() => finish({ exitCode: code, timedOut: false, signal: signal ?? undefined }), 200)
+      grace = setTimeout(
+        () => finish({ exitCode: code, timedOut: false, signal: signal ?? undefined }, code !== null),
+        200,
+      )
     })
     // Hooks are free to ignore stdin; a closed pipe must not surface as an uncaught EPIPE.
     child.stdin?.on("error", () => {})
@@ -332,16 +347,36 @@ export async function run(input: {
   env?: Record<string, string | undefined>
   signal?: AbortSignal
   warn?: (message: string) => void
-  // Returns why a hook must not run right now (project/remote trust no longer matches); it is then skipped.
+  // Returns why a hook must not run right now (project/remote trust no longer matches); it is then not run.
   verify?: (hook: ConfigHooks.Origin) => string | undefined
+  // Shown to the person (TUI toast / stderr) rather than only logged.
+  alert?: (message: string) => void
 }): Promise<Outcome> {
-  const selected = input.hooks.filter((hook) => {
-    if (hook.event !== input.event || (input.names && !matches(hook.matcher, input.names))) return false
-    const refused = input.verify?.(hook)
-    if (refused) input.warn?.(`${input.event} hook not run (${refused}): ${hook.command}`)
-    return !refused
+  const matching = input.hooks.filter(
+    (hook) => hook.event === input.event && (!input.names || matches(hook.matcher, input.names)),
+  )
+  const refused = matching.flatMap((hook) => {
+    const why = input.verify?.(hook)
+    return why ? [{ hook, why }] : []
   })
-  if (!selected.length) return { block: false, reasons: [], context: [], results: [] }
+  const selected = matching.filter((hook) => !refused.some((item) => item.hook === hook))
+  for (const item of refused)
+    (input.alert ?? input.warn)?.(
+      `${input.event} hook not run: ${item.why}. Run \`sente hooks trust\` to allow it again (${item.hook.command})`,
+    )
+  // A guard whose trust lapsed while Sente runs (a `git pull` changed the safety check) must not wave the action
+  // through: PreToolUse / UserPromptSubmit fail closed, like a guard that did not finish.
+  const guard = input.event === "PreToolUse" || input.event === "UserPromptSubmit"
+  const lapsed =
+    guard && refused.length
+      ? [
+          `hooks changed since they were trusted, so they must be trusted again: run \`sente hooks trust\` (${refused
+            .map((item) => item.hook.source)
+            .filter((source, index, all) => all.indexOf(source) === index)
+            .join(", ")})`,
+        ]
+      : []
+  if (!selected.length) return { block: lapsed.length > 0, reasons: lapsed, context: [], results: [] }
   const env = hookEnv(input.env)
   // Every matching hook runs, in parallel, like Claude Code.
   const results = await Promise.all(
@@ -363,7 +398,8 @@ export async function run(input: {
   // Whatever goes back to the model or the screen passes the same secret mask as tool output.
   return {
     ...outcome,
-    reasons: outcome.reasons.map((item) => SecretRedact.redact(item)),
+    block: outcome.block || lapsed.length > 0,
+    reasons: [...lapsed, ...outcome.reasons].map((item) => SecretRedact.redact(item)),
     context: outcome.context.map((item) => SecretRedact.redact(item)),
   }
 }
@@ -416,6 +452,8 @@ export function ConfigHooksPlugin(
     mcpServers?: string[]
     // Re-checks project/remote trust right before a hook runs (see ConfigHooks.recheck).
     verify?: (hook: ConfigHooks.Origin) => string | undefined
+    // Shows a message to the person (TUI toast, stderr under `sente run`), for hooks that were not run.
+    alert?: (message: string) => void
     // Called once, on the first prompt of this process: by then the TUI is surely listening, so a warning about hooks
     // that were not run (untrusted project/remote hooks) is not lost in startup.
     notice?: (sessionID: string) => void
@@ -447,6 +485,7 @@ export function ConfigHooksPlugin(
         signal: event === "Stop" || event === "Notification" ? undefined : controller.signal,
         warn: options.warn,
         verify: options.verify,
+        alert: options.alert,
         payload: {
           session_id: sessionID,
           transcript_path: "",
