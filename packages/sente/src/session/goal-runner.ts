@@ -93,7 +93,9 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
    *   ends.
    * - stoppedRoots: roots stopped at their budget -> the goal's start time. Subagents created
    *   since then stop at their next step (a backstop for runs stopTree could not interrupt).
-   *   Removed when the root's run ends, a new root run starts, or a new goal starts.
+   *   Kept while the root's run or any such subagent run or background job is still going,
+   *   even after the root's own run ends; removed by the last of them to end (checked when
+   *   the root's or a subagent's run ends), or when a new goal starts.
    * - budgetStopped: roots whose goal a subagent stopped while the root was running; the root
    *   writes the closing line at its next step or when its run ends. A root that is idle gets
    *   the line at once and never enters this set. Removed when the line is written, the goal
@@ -193,6 +195,26 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
       (job) => deps.background.cancel(job.id).pipe(Effect.ignore),
       { concurrency: "unbounded", discard: true },
     )
+  })
+
+  // Drop a root's budget backstop once nothing the goal started is still running: no
+  // subagent run under it and no background job begun since the goal started.
+  // While the root's own run goes on it may still launch a subagent (a parallel task call in
+  // the step that hit the budget), so the backstop stays until that run ends too.
+  const releaseStopped = Effect.fn("SessionGoalRunner.releaseStopped")(function* (root: string, rootEnded: boolean) {
+    const since = stoppedRoots.get(root)
+    if (since === undefined) return
+    if ([...rootOfRun.values()].includes(root)) return
+    if (!rootEnded && (yield* deps.isBusy(SessionID.make(root)))) return
+    const below = new Set<string>([root, ...(yield* descendants(SessionID.make(root), since))])
+    const jobs = yield* deps.background.list()
+    const running = jobs.some(
+      (job) =>
+        job.status === "running" &&
+        job.started_at >= since &&
+        (below.has(String(job.metadata?.parentSessionId)) || below.has(String(job.metadata?.sessionId))),
+    )
+    if (!running) stoppedRoots.delete(root)
   })
 
   // USD the goal has used: turn cost of the session tree since the goal started, plus reviews.
@@ -376,8 +398,6 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
       if (SessionGoal.read(root.metadata)?.status === "active") liveGoals.add(root.id)
       return
     }
-    // A new run of the root: a budget stop from an earlier run is over.
-    stoppedRoots.delete(session.id)
     if (budgetStopped.delete(session.id)) {
       const stopped = SessionGoal.read(session.metadata)
       if (stopped) yield* note(session.id, stopped)
@@ -603,9 +623,9 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
   const afterLoop = (sessionID: SessionID, exit: Exit.Exit<unknown, unknown>) =>
     Effect.gen(function* () {
       const cancelled = userCancelled.delete(sessionID)
+      const root = rootOfRun.get(sessionID)
       rootOfRun.delete(sessionID)
-      // The root's run is over: whatever it started has been stopped or has finished.
-      stoppedRoots.delete(sessionID)
+      yield* releaseStopped(root ?? sessionID, root === undefined)
       if (budgetStopped.delete(sessionID)) {
         const stopped = yield* readGoal(sessionID)
         if (stopped) yield* note(sessionID, stopped)
@@ -849,5 +869,5 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
     Effect.forkIn(deps.scope),
   )
 
-  return { onStart, beforeStep, afterTurn, modelMessages, afterLoop, cancel, command, snapshot }
+  return { onStart, beforeStep, afterTurn, modelMessages, afterLoop, cancel, command, snapshotForTest: snapshot }
 })

@@ -116,8 +116,8 @@ export interface Interface {
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
-  /** Sizes of the goal runner's in-memory state (tests check that a finished goal leaves none). */
-  readonly goalState: () => Record<string, number>
+  /** Test only: sizes of the goal runner's in-memory state (a finished goal must leave none). */
+  readonly _goalStateForTest: () => Record<string, number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@sente/SessionPrompt") {}
@@ -1732,7 +1732,7 @@ const layer = Layer.effect(
       shell,
       command,
       resolvePromptParts,
-      goalState: goals.snapshot,
+      _goalStateForTest: goals.snapshotForTest,
     })
   }),
 )

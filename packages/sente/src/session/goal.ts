@@ -263,11 +263,13 @@ export function parse(text: string, lang: Lang = ProviderQuota.language()): Comm
   }
   // Limits go before or after the condition: `/goal --budget 5 ship it` or `/goal ship it --budget 5`.
   // A value meant as a number must read as one: `--budget 3円` or `--budget abc3` is an error,
-  // never silently the default. A plain word after the flag ("--budget の説明を README に書く",
-  // "explain the --budget flag") is the condition, and so is a flag in the middle.
+  // never silently the default; so is a single ASCII word ("--budget three"). Other text after
+  // the flag ("--budget の説明を README に書く") is the condition, and so is a flag in the middle.
   const patterns = [/^--(budget|max-rounds)(?:=|\s+)(\S+)(?:\s+|$)/, /\s+--(budget|max-rounds)(?:=|\s+)(\S+)$/]
   while (true) {
     const flag = patterns.map((pattern) => pattern.exec(rest)).find((match) => match !== null)
+    // An ASCII word ("abc", "three") right after the flag is a mistyped value, not prose.
+    if (flag && /^[a-z]+$/i.test(flag[2])) return invalid(flag[1] === "budget" ? "budget" : "max-rounds", flag[2])
     if (!flag || !amountLike(flag[2])) break
     if (flag[1] === "budget") {
       const value = dollars(flag[2])
@@ -486,20 +488,25 @@ export function sameReason(previous: string, next: string): boolean {
  * "not done yet, continue" or an echoed instruction cannot read as done.
  */
 export function parseVerdict(text: string): Verdict | undefined {
+  // Lines inside ``` code blocks are quoted material (an example, a log) when the answer is
+  // also outside them. A reviewer that wraps its whole answer in a code block is still read.
+  const visible = text.replace(/<think>[\s\S]*?<\/think>/g, "")
+  return (
+    readVerdict(visible.replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1\s*$|(?![\s\S]))/gm, "")) ??
+    readVerdict(visible.replace(/^\s*(```|~~~).*$/gm, ""))
+  )
+}
+
+function readVerdict(text: string): Verdict | undefined {
   // Markdown and list decoration around the label are dropped: `**VERDICT:** done`,
   // `VERDICT:** done`, `1. VERDICT: done`, `- VERDICT: done`.
-  // Lines inside ``` code blocks are quoted material (an example, a log), never the answer.
-  const lines = text
-    .replace(/<think>[\s\S]*?<\/think>/g, "")
-    .replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1\s*$|(?![\s\S]))/gm, "")
-    .split("\n")
-    .map((line) =>
-      line
-        .trim()
-        .replace(/^(?:[-*+>#]+\s*|\d+[.)]\s*)+/, "")
-        .replace(/^[*_`]+/, "")
-        .trim(),
-    )
+  const lines = text.split("\n").map((line) =>
+    line
+      .trim()
+      .replace(/^(?:[-*+>#]+\s*|\d+[.)]\s*)+/, "")
+      .replace(/^[*_`]+/, "")
+      .trim(),
+  )
   const label = (name: string) => new RegExp(`^${name}[*_\`]*\\s*[:：][*_\`]*\\s*(.*)$`, "i")
   const field = (name: string) =>
     lines

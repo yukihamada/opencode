@@ -61,9 +61,16 @@ describe("session goal", () => {
       objective: "README に --budget の説明を書く",
     })
     // A word that only looks like a flag inside the condition stays.
-    expect(SessionGoal.parse("explain the --budget flag", "en")).toEqual({
+    expect(SessionGoal.parse("explain the --budget flag in the README", "en")).toEqual({
       type: "set",
-      objective: "explain the --budget flag",
+      objective: "explain the --budget flag in the README",
+    })
+    // At the start or the end, a single ASCII word after the flag is a mistyped value.
+    expect(SessionGoal.parse("--budget abc ship it", "en").type).toBe("invalid")
+    expect(SessionGoal.parse("ship it --max-rounds three", "en").type).toBe("invalid")
+    expect(SessionGoal.parse("ship it --budget three", "ja")).toMatchObject({
+      type: "invalid",
+      reason: expect.stringContaining("three"),
     })
   })
 
@@ -223,7 +230,19 @@ describe("session goal", () => {
     expect(
       SessionGoal.parseVerdict("VERDICT: continue\nREASON: lint fails\n```\nVERDICT: done\nREASON: all green\n```"),
     ).toEqual({ verdict: "continue", reason: "lint fails", next: undefined })
-    expect(SessionGoal.parseVerdict("```text\nVERDICT: done\n```")).toBeUndefined()
+    // An answer wrapped whole in a code block is still read.
+    expect(SessionGoal.parseVerdict("```\nVERDICT: continue\nREASON: lint fails\nNEXT: fix lint\n```")).toEqual({
+      verdict: "continue",
+      reason: "lint fails",
+      next: "fix lint",
+    })
+    expect(SessionGoal.parseVerdict("```text\nVERDICT: done\nREASON: all green\n```")).toEqual({
+      verdict: "done",
+      reason: "all green",
+      next: undefined,
+    })
+    expect(SessionGoal.parseVerdict("```\nVERDICT: blocked\nREASON: needs a key\n```")?.verdict).toBe("blocked")
+    expect(SessionGoal.parseVerdict("```\nno verdict here\n```")).toBeUndefined()
     // An example block after the answer is not the answer, and REASON comes from the chosen block.
     expect(
       SessionGoal.parseVerdict(
