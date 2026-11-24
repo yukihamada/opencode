@@ -75,7 +75,7 @@ function world() {
   const sessions: { id: string; parentID?: string; time: { created: number; updated: number } }[] = [
     { id: "s", time: { created: 0, updated: 0 } },
   ]
-  const ledger = Loop.createLedger()
+  const ledger = Loop.createLedger({ now: () => clock.now })
   const loopIDs = new Set<string>()
   const humanIDs = new Set<string>()
   const state = { busy: false, seq: 0 }
@@ -119,10 +119,17 @@ function world() {
     record({ id, role: "user" })
     if (via === "other") ledger.recordPart({ messageID: id, sessionID: "s", type: "text" }, sessions)
   }
-  // サーバーが回の途中で自動で足すユーザーメッセージ(パーツは全部 synthetic)
-  const serverAdds = (id: string, partsKnown = true) => {
+  // サーバーが回の途中で自動で足すユーザーメッセージ。実物と同じ形のパーツを付ける:
+  // todo の催促・出力切れの続き・サブエージェント結果まとめ = synthetic な text / 自動要約 = compaction パーツ(synthetic 印なし)
+  const serverAdds = (id: string, shape: "synthetic-text" | "compaction" | "none" = "synthetic-text") => {
     record({ id, role: "user" })
-    if (partsKnown) ledger.recordPart({ messageID: id, sessionID: "s", type: "text", synthetic: true }, sessions)
+    if (shape === "synthetic-text") ledger.recordPart({ messageID: id, sessionID: "s", type: "text", synthetic: true }, sessions)
+    if (shape === "compaction") ledger.recordPart({ messageID: id, sessionID: "s", type: "compaction" }, sessions)
+  }
+  // /goal(#75)の自動継続: synthetic な text で metadata.source = "goal"
+  const goalContinues = (id: string) => {
+    record({ id, role: "user" })
+    ledger.recordPart({ messageID: id, sessionID: "s", type: "text", synthetic: true, metadata: { source: "goal", goalID: "g1" } }, sessions)
   }
   const endRun = async () => {
     state.busy = false
@@ -130,7 +137,7 @@ function world() {
     await Promise.resolve()
     await Promise.resolve()
   }
-  return { clock, sessions, ledger, state, aborted, events, manager, tick, lastLoop, step, userAsks, serverAdds, endRun, loopIDs, humanIDs }
+  return { clock, sessions, ledger, state, aborted, events, manager, tick, lastLoop, step, userAsks, serverAdds, goalContinues, endRun, loopIDs, humanIDs }
 }
 
 describe("util.loop parse", () => {
@@ -598,19 +605,19 @@ describe("util.loop TUI state", () => {
   })
 
   const autoScenarios = [
-    ["todo follow-up (prompt.ts todo 催促)", "msg_auto_todo"],
-    ["output-limit continuation (出力切れの続き)", "msg_auto_continue"],
-    ["subagent result summary (サブエージェント結果まとめ)", "msg_auto_summary"],
-    ["auto compaction (自動要約)", "msg_auto_compaction"],
+    ["todo follow-up (prompt.ts todo 催促)", "msg_auto_todo", "synthetic-text"],
+    ["output-limit continuation (出力切れの続き)", "msg_auto_continue", "synthetic-text"],
+    ["subagent result summary (サブエージェント結果まとめ)", "msg_auto_summary", "synthetic-text"],
+    ["auto compaction (自動要約: compaction パーツ・synthetic 印なし)", "msg_auto_compaction", "compaction"],
   ] as const
-  for (const [name, id] of autoScenarios)
+  for (const [name, id, shape] of autoScenarios)
     test(`server-added message mid-run is part of the loop's run: ${name}`, async () => {
       const w = world()
       w.ledger.watch("s")
       w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 1 })
       w.tick(Loop.SETTLE_MS + 1000)
       w.step(w.lastLoop(), 0.1)
-      w.serverAdds(id)
+      w.serverAdds(id, shape)
       if (id === "msg_auto_summary") {
         w.sessions.push({ id: "child_task", parentID: "s", time: { created: 0, updated: 0 } })
         w.step("y", 0.2, "child_task")
@@ -631,7 +638,7 @@ describe("util.loop TUI state", () => {
     w.ledger.watch("s")
     w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 })
     w.tick(Loop.SETTLE_MS + 1000)
-    w.serverAdds("msg_unknown", false)
+    w.serverAdds("msg_unknown", "none")
     w.step(w.lastLoop(), 0.2)
     w.tick(3000)
     expect(w.aborted).toEqual([])
@@ -640,6 +647,70 @@ describe("util.loop TUI state", () => {
     w.ledger.recordPart({ messageID: "msg_unknown", sessionID: "s", type: "text", synthetic: true }, w.sessions)
     w.tick()
     expect(w.aborted).toEqual(["s"])
+  })
+
+  test("an unknown-kind user message is waited for at most UNKNOWN_KIND_MS, then treated as automatic", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.5 })
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.serverAdds("msg_never_classified", "none")
+    w.step(w.lastLoop(), 0.6)
+    w.tick(Loop.UNKNOWN_KIND_MS - 2000)
+    expect(w.aborted).toEqual([])
+    const unknown = w.ledger.runCost("s", { messageID: w.lastLoop(), sentAt: 0 }, w.loopIDs, w.humanIDs).unknown
+    expect(unknown).toEqual(["msg_never_classified"])
+    w.tick(3000)
+    // 期限を過ぎたので自動扱い(回の続き): 上限超えで中断して終える
+    expect(w.aborted).toEqual(["s"])
+    const finished = w.events.find((event) => event.type === "finished")
+    expect(finished && finished.type === "finished" && [finished.aborted, finished.interjected, finished.third]).toEqual([true, false, false])
+  })
+
+  test("a /goal continuation is a third party: not counted, never interrupted, reported as such", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.05)
+    w.goalContinues("msg_goal_next")
+    w.step("msg_goal_next", 2) // /goal の回の費用
+    w.tick(3000)
+    expect(w.aborted).toEqual([])
+    expect(w.manager.list()).toEqual([item])
+    await w.endRun()
+    w.tick(2000)
+    expect(item.spent).toBeCloseTo(0.05)
+    // ループ自身の分が上限を超えた後に /goal が引き継いだ場合も、会話は止めずループだけ終える
+    const w2 = world()
+    w2.ledger.watch("s")
+    w2.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 })
+    w2.tick(Loop.SETTLE_MS + 1000)
+    w2.step(w2.lastLoop(), 0.15)
+    w2.goalContinues("msg_goal_next2")
+    w2.tick()
+    expect(w2.aborted).toEqual([])
+    const finished = w2.events.find((event) => event.type === "finished")
+    expect(finished && finished.type === "finished" && [finished.reason, finished.aborted, finished.interjected, finished.third]).toEqual([
+      "budget",
+      false,
+      false,
+      true,
+    ])
+  })
+
+  test("partKind: text without synthetic / file / agent = human, goal・hook source = third, others = automatic", () => {
+    const part = (extra: Record<string, unknown>) => ({ messageID: "m", sessionID: "s", type: "text", ...extra })
+    expect(Loop.partKind(part({}))).toBe("human")
+    expect(Loop.partKind(part({ type: "file" }))).toBe("human")
+    expect(Loop.partKind(part({ type: "agent" }))).toBe("human")
+    expect(Loop.partKind(part({ synthetic: true }))).toBe("auto")
+    expect(Loop.partKind(part({ ignored: true }))).toBe("auto")
+    expect(Loop.partKind(part({ type: "compaction" }))).toBe("auto")
+    expect(Loop.partKind(part({ type: "subtask" }))).toBe("auto")
+    expect(Loop.partKind(part({ metadata: { source: "loop" } }))).toBe("auto")
+    expect(Loop.partKind(part({ synthetic: true, metadata: { source: "goal" } }))).toBe("third")
+    expect(Loop.partKind(part({ metadata: { source: "hook" } }))).toBe("third")
   })
 
   test("the user's input right after the loop message (same millisecond) is recognised by ID, not by time", async () => {

@@ -203,7 +203,7 @@ export type Event =
   | { type: "skipped"; item: Item }
   | { type: "paused"; sessionID: string; items: Item[]; reason: PauseReason; repeat: boolean }
   | { type: "resumed"; items: Item[]; auto: boolean }
-  | { type: "finished"; item: Item; reason: FinishReason; aborted?: boolean; interjected?: boolean }
+  | { type: "finished"; item: Item; reason: FinishReason; aborted?: boolean; interjected?: boolean; third?: boolean }
 
 export type Session = { busy: boolean; costGate: boolean }
 
@@ -218,7 +218,7 @@ export type ManagerOptions = {
    * ループの1回分の費用(USD)と、その回の後に本人(ループ以外)の依頼が会話に入ったか。
    * 回の費用は「ループが送ったメッセージを親とする応答」と、その回の間に作られた子セッションだけで数える。
    */
-  runCost?: (sessionID: string, run: Run) => { cost: number; interjected: boolean; undecided?: boolean }
+  runCost?: (sessionID: string, run: Run) => { cost: number; interjected: boolean; third?: boolean; undecided?: boolean }
   /** ループが送るメッセージのID(回の応答を見分けるために送信時に指定する)。 */
   newMessageID?: (sessionID: string) => string
   /** 書きかけのある入力欄を最後に触った時刻(書きかけがなければ undefined)。 */
@@ -298,13 +298,22 @@ export function create(options: ManagerOptions) {
     const current = runCost(sessionID, owner.run)
     const running = item.spent + current.cost
     if (running < item.budget) return
-    // 種類がまだ分からないユーザーメッセージがあるうちは判断を次の tick に回す(本人の依頼を止めないため)。
-    if (current.undecided && !current.interjected) return
+    // 種類がまだ分からないユーザーメッセージがあるうちは判断を次の tick に回す(本人の依頼を止めないため。待ち時間あり)。
+    const handedOver = current.interjected || current.third === true
+    if (current.undecided && !handedOver) return
     item.spent = running
     session.owner = undefined
-    if (!current.interjected) options.abort?.(sessionID)
+    // 会話を中断するのは、ループの回だけが会話を動かしている時だけ。本人や /goal 等が引き継いでいたら触らない。
+    if (!handedOver) options.abort?.(sessionID)
     if (items.delete(item.id))
-      emit({ type: "finished", item, reason: "budget", aborted: !current.interjected, interjected: current.interjected })
+      emit({
+        type: "finished",
+        item,
+        reason: "budget",
+        aborted: !handedOver,
+        interjected: current.interjected,
+        third: current.third === true,
+      })
   }
 
   function observe(sessionID: string, now: number, status: Session) {
@@ -508,9 +517,40 @@ export function sessionState(data: StatusData, sessionID: string): Session {
 
 type Tree = readonly { id: string; parentID?: string; time: { created: number; updated: number } }[]
 type LedgerMessage = { id: string; sessionID: string; role: string; parentID?: string; cost?: number }
-type LedgerPart = { messageID: string; sessionID: string; type: string; synthetic?: boolean }
-// human: 本人の依頼と分かった / auto: パーツが全部 synthetic(サーバーが自動で足した催促・続き・要約) / undefined: まだ不明
-type Entry = { sessionID: string; role: string; cost: number; kind?: "human" | "auto" }
+type LedgerPart = {
+  messageID: string
+  sessionID: string
+  type: string
+  synthetic?: boolean
+  ignored?: boolean
+  metadata?: Record<string, unknown>
+}
+/**
+ * ユーザーメッセージの種類。
+ * - human: 本人の依頼(synthetic でない文章、またはファイル・エージェント指定のパーツがある)
+ * - third: ループでも本人でもない自動継続(/goal の継続・hooks。text パーツの metadata.source で分かる)
+ * - auto: サーバーが回の途中で足すもの(todo の催促・出力切れの続き・サブエージェント結果まとめは synthetic な文章、
+ *   自動要約は compaction パーツ)。回の続きとして数える
+ */
+export type MessageKind = "human" | "third" | "auto"
+const RANK: Record<MessageKind, number> = { auto: 1, third: 2, human: 3 }
+// /goal(#75)と hooks が自分の差し込みに付ける印。ループ自身は "loop" を付けて送る。
+export const THIRD_PARTY_SOURCES = new Set(["goal", "hook"])
+export const LOOP_SOURCE = "loop"
+// 種類の分からないユーザーメッセージ(パーツ未着)を待つ時間。過ぎたら自動扱いで判断する。
+export const UNKNOWN_KIND_MS = 10_000
+
+/** パーツ1つからユーザーメッセージの種類を決める。 */
+export function partKind(part: LedgerPart): MessageKind {
+  if (part.type === "file" || part.type === "agent") return "human"
+  if (part.type !== "text") return "auto"
+  const source = part.metadata?.source
+  if (typeof source === "string" && THIRD_PARTY_SOURCES.has(source)) return "third"
+  if (source === LOOP_SOURCE || part.synthetic === true || part.ignored === true) return "auto"
+  return "human"
+}
+
+type Entry = { sessionID: string; role: string; cost: number; kind?: MessageKind; seenAt: number }
 
 /**
  * ループの回の費用台帳。ループのある会話(と子セッション)のメッセージだけを、届いた順に覚える。
@@ -518,10 +558,10 @@ type Entry = { sessionID: string; role: string; cost: number; kind?: "human" | "
  * - 並び順は「届いた順」(サーバーは作成順に送る)。メッセージIDや時刻の比較は使わないので、時計のずれに影響されない。
  * ループが無くなった会話は unwatch で消す(全会話を記録し続けない)。
  */
-export function createLedger() {
+export function createLedger(clock: { now: () => number } = { now: () => Date.now() }) {
   const watched = new Map<string, Map<string, Entry>>()
   // パーツが先に届いた場合の種類(メッセージが届いたら反映する)。
-  const early = new Map<string, "human" | "auto">()
+  const early = new Map<string, MessageKind>()
   function rootOf(sessionID: string, sessions: Tree) {
     const seen = new Set<string>()
     for (let id: string | undefined = sessionID; id && !seen.has(id); id = sessions.find((session) => session.id === id)?.parentID) {
@@ -530,6 +570,8 @@ export function createLedger() {
     }
     return undefined
   }
+  const stronger = (a: MessageKind | undefined, b: MessageKind | undefined) =>
+    a === undefined ? b : b === undefined ? a : RANK[a] >= RANK[b] ? a : b
   return {
     watch(sessionID: string) {
       if (!watched.has(sessionID)) watched.set(sessionID, new Map())
@@ -548,49 +590,51 @@ export function createLedger() {
         sessionID: message.sessionID,
         role: message.role,
         cost: positive(message.cost),
-        kind: previous?.kind ?? early.get(message.id),
+        kind: stronger(previous?.kind, early.get(message.id)),
+        seenAt: previous?.seenAt ?? clock.now(),
       })
       early.delete(message.id)
     },
-    /** パーツから、ユーザーメッセージが本人の依頼か自動の差し込みかを判定する(synthetic でないパーツが1つでもあれば本人)。 */
+    /** パーツから、ユーザーメッセージの種類を決める(複数のパーツは 本人 > 第三者 > 自動 の強い方)。 */
     recordPart(part: LedgerPart, sessions: Tree) {
       const root = rootOf(part.sessionID, sessions)
       if (!root) return
       const entry = watched.get(root)!.get(part.messageID)
-      const kind = part.synthetic === true ? "auto" : "human"
+      const kind = partKind(part)
       if (!entry) {
-        if (early.get(part.messageID) !== "human") early.set(part.messageID, kind)
+        early.set(part.messageID, stronger(early.get(part.messageID), kind)!)
         return
       }
-      if (entry.kind !== "human") entry.kind = kind
+      entry.kind = stronger(entry.kind, kind)
     },
     /**
-     * ループの1回分: ループのメッセージから「次の本人の依頼(またはループの次の回)」までに届いた全ての応答と、
-     * その間に始まった子セッションの費用。サーバーが自動で足すメッセージ(todo の催促・出力切れの続き・
+     * ループの1回分: ループのメッセージから「次の本人の依頼・第三者(/goal 等)の継続・ループの次の回」までに届いた
+     * 全ての応答と、その間に始まった子セッションの費用。サーバーが自動で足すメッセージ(todo の催促・出力切れの続き・
      * サブエージェント結果のまとめ・自動要約)は回の続きとして数える。
-     * interjected: 本人の依頼が入った。undecided: 種類がまだ分からないユーザーメッセージがある(会話の中断は控える)。
+     * - interjected: 本人の依頼が入った / third: /goal 等の自動継続が会話を引き継いだ
+     * - undecided: 種類が分からないユーザーメッセージがまだ待ち時間内(会話の中断は控える)
+     * - unknown: 種類が分からないユーザーメッセージのID(取り直しの対象)
+     * 待ち時間を過ぎても種類が分からないものは自動扱い(回の続き)にする。
      */
     runCost(sessionID: string, run: Run, loopMessages: ReadonlySet<string>, humanMessages: ReadonlySet<string>) {
+      const now = clock.now()
       const entries = [...(watched.get(sessionID)?.entries() ?? [])]
       const start = entries.findIndex(([id]) => id === run.messageID)
-      if (start < 0) return { cost: 0, interjected: false, undecided: true }
+      if (start < 0) return { cost: 0, interjected: false, third: false, undecided: true, unknown: [] as string[] }
       const firstSeen = new Map<string, number>()
       entries.forEach(([, entry], index) => {
         if (!firstSeen.has(entry.sessionID)) firstSeen.set(entry.sessionID, index)
       })
-      const human = (id: string, entry: Entry) => humanMessages.has(id) || entry.kind === "human"
-      const end = entries.findIndex(
-        ([id, entry], index) =>
-          index > start &&
-          entry.sessionID === sessionID &&
-          entry.role === "user" &&
-          (loopMessages.has(id) || human(id, entry)),
-      )
+      const kindOf = (id: string, entry: Entry) => (humanMessages.has(id) ? "human" : entry.kind)
+      const end = entries.findIndex(([id, entry], index) => {
+        if (index <= start || entry.sessionID !== sessionID || entry.role !== "user") return false
+        const kind = kindOf(id, entry)
+        return loopMessages.has(id) || kind === "human" || kind === "third"
+      })
       const stop = end < 0 ? entries.length : end
-      const range = entries.slice(start + 1, stop)
-      const undecided = range.some(
-        ([id, entry]) => entry.sessionID === sessionID && entry.role === "user" && entry.kind === undefined && !humanMessages.has(id),
-      )
+      const unknown = entries
+        .slice(start + 1, stop)
+        .filter(([id, entry]) => entry.sessionID === sessionID && entry.role === "user" && kindOf(id, entry) === undefined)
       const cost = entries
         .filter(([, entry], index) => {
           if (entry.role !== "assistant") return false
@@ -600,8 +644,14 @@ export function createLedger() {
           return first > start && first < stop
         })
         .reduce((sum, [, entry]) => sum + entry.cost, 0)
-      const interjected = end >= 0 && !loopMessages.has(entries[end][0])
-      return { cost, interjected, undecided }
+      const boundary = end >= 0 && !loopMessages.has(entries[end][0]) ? kindOf(entries[end][0], entries[end][1]) : undefined
+      return {
+        cost,
+        interjected: boundary === "human",
+        third: boundary === "third",
+        undecided: unknown.some(([, entry]) => now - entry.seenAt < UNKNOWN_KIND_MS),
+        unknown: unknown.map(([id]) => id),
+      }
     },
   }
 }

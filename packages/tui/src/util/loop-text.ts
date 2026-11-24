@@ -47,6 +47,8 @@ export function loopText(language: "ja" | "en") {
         `ループ ${id} は上限に達したため、実行中の回を中断して終了しました(累計 ${usd(spent)})。中断した回の操作(ファイル編集など)は途中のままの場合があります。会話を確認してください。`,
       interjectedBudget: (id: string, spent: number) =>
         `ループ ${id} は上限に達したため終了しました(累計 ${usd(spent)})。本人の依頼が会話に入っているので、会話は止めていません。`,
+      thirdBudget: (id: string, spent: number) =>
+        `ループ ${id} は上限に達したため終了しました(累計 ${usd(spent)})。/goal などの自動継続が会話を続けているので、会話は止めていません(その費用はループに数えていません)。`,
       capped: (keys: Loop.Capped[]) =>
         keys
           .map((key) => ({ max: `回数は最大${limits.maxRuns}回`, for: `期間は最長${limits.maxDays}日`, budget: `上限は最大${limits.maxBudget}` })[key])
@@ -116,6 +118,8 @@ export function loopText(language: "ja" | "en") {
       `Loop ${id} reached its budget; the running turn was interrupted (total ${usd(spent)}). Work from that turn (e.g. file edits) may be left half-done; check the conversation.`,
     interjectedBudget: (id: string, spent: number) =>
       `Loop ${id} reached its budget (total ${usd(spent)}). Your own request is in the conversation, so it was not interrupted.`,
+    thirdBudget: (id: string, spent: number) =>
+      `Loop ${id} reached its budget (total ${usd(spent)}). An automatic continuation such as /goal is running the conversation, so it was not interrupted (its cost is not counted toward the loop).`,
     capped: (keys: Loop.Capped[]) =>
       "Capped " +
       keys

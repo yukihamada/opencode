@@ -77,7 +77,7 @@ async function setup() {
   const prompts: Array<{ at: number; text: string; messageID?: string }> = []
   const aborts: string[] = []
   // 本物のサーバーと同じく、prompt の応答は生成が終わるまで返さない(hold=true の間)
-  const server = { hold: false, release: [] as (() => void)[] }
+  const server = { hold: false, release: [] as (() => void)[], history: [] as unknown[], historyRequests: 0, bodies: [] as any[] }
   const base = createFetch((url) => {
     if (url.pathname === "/config/providers") return json({ providers: [provider], default: { teai: "auto" } })
     if (url.pathname === "/provider") return json({ all: [provider], default: { teai: "auto" }, connected: ["teai"] })
@@ -92,8 +92,13 @@ async function setup() {
     if (method === "POST" && url.pathname === `/session/${sessionID}/message`) {
       const body = request ? await request.clone().json() : JSON.parse(String(init?.body))
       prompts.push({ at: Date.now(), text: body.parts.find((part: { type: string }) => part.type === "text")?.text, messageID: body.messageID })
+      server.bodies.push(body)
       if (server.hold) await new Promise<void>((resolve) => server.release.push(resolve))
       return json({})
+    }
+    if ((method ?? "GET") === "GET" && url.pathname === `/session/${sessionID}/message`) {
+      server.historyRequests++
+      return json(server.history)
     }
     if (method === "POST" && url.pathname === `/session/${sessionID}/abort`) {
       aborts.push(sessionID)
@@ -421,6 +426,81 @@ test("a server-added synthetic message (todo follow-up) stays part of the loop's
     await wait(() => s.aborts.length === 1, 2000)
     expect(s.ctx.toast.currentToast?.message).toContain("中断して終了")
     expect(s.ctx.toast.currentToast?.message).not.toContain("本人の依頼")
+    s.finishRun()
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)
+
+test("auto compaction (a compaction part, no synthetic flag) is automatic: budget interrupts, no false notice", async () => {
+  const s = await setup()
+  try {
+    s.server.hold = true
+    await s.submit("/loop 1m --budget 0.05 状況確認")
+    await wait(() => s.prompts.length > 0, 8000)
+    const loopMessage = s.prompts[0].messageID!
+    // ループの依頼文には source: "loop" の印が付く(/goal 等が本人の依頼と取り違えないため)
+    expect(s.server.bodies[0].parts.find((part: { type: string }) => part.type === "text").metadata).toEqual({ source: "loop" })
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(loopMessage) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: user("msg_compaction") } })
+    s.emit({
+      type: "message.part.updated",
+      properties: { sessionID, time: Date.now(), part: { id: "prt_c", sessionID, messageID: "msg_compaction", type: "compaction", auto: true } },
+    })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_after_compaction", "msg_compaction", 0.06) } })
+    await wait(() => s.aborts.length === 1, 4000)
+    expect(s.ctx.toast.currentToast?.message).toContain("中断して終了")
+    expect(s.ctx.toast.currentToast?.message).not.toContain("本人の依頼")
+    s.finishRun()
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)
+
+test("a /goal continuation takes over: not counted, not interrupted, reported as an automatic continuation", async () => {
+  const s = await setup()
+  try {
+    s.server.hold = true
+    await s.submit("/loop 1m --budget 0.05 状況確認")
+    await wait(() => s.prompts.length > 0, 8000)
+    const loopMessage = s.prompts[0].messageID!
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(loopMessage) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_l_own", loopMessage, 0.06) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: user("msg_goal_cont") } })
+    s.emit({
+      type: "message.part.updated",
+      properties: { sessionID, time: Date.now(), part: { ...textPart("msg_goal_cont", "Continue the goal.", true), metadata: { source: "goal", goalID: "g1" } } },
+    })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_goal_reply", "msg_goal_cont", 5) } })
+    await wait(() => s.ctx.loop.list().length === 0, 4000)
+    await Bun.sleep(300)
+    expect(s.aborts).toEqual([])
+    expect(s.ctx.toast.currentToast?.message).toContain("/goal などの自動継続")
+    s.finishRun()
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)
+
+test("a user message whose parts never arrive is re-fetched from the server and classified", async () => {
+  const s = await setup()
+  try {
+    s.server.hold = true
+    await s.submit("/loop 1m --budget 0.05 状況確認")
+    await wait(() => s.prompts.length > 0, 8000)
+    const loopMessage = s.prompts[0].messageID!
+    s.server.history = [
+      {
+        info: user("msg_partless"),
+        parts: [{ id: "prt_x", sessionID, messageID: "msg_partless", type: "text", text: "todo", synthetic: true }],
+      },
+    ]
+    s.emit({ type: "message.updated", properties: { sessionID, info: user(loopMessage) } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: user("msg_partless") } })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_after_partless", "msg_partless", 0.06) } })
+    // パーツのイベントは来ない → 取り直しで自動と分かり、待ち時間(10秒)を待たずに中断
+    await wait(() => s.aborts.length === 1, 5000)
+    expect(s.server.historyRequests).toBeGreaterThanOrEqual(1)
     s.finishRun()
   } finally {
     await s.teardown()

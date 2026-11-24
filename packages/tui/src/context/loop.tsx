@@ -32,6 +32,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     // 会話ごとの、ループが送ったメッセージIDと、この画面の入力欄から送ったメッセージID(本人の依頼)。
     const loopMessages = new Map<string, Set<string>>()
     const humanMessages = new Map<string, Set<string>>()
+    const refetched = new Set<string>()
     function release() {
       const active = new Set(manager.list().map((item) => item.target.sessionID))
       ;[...loopMessages.keys()].filter((sessionID) => !active.has(sessionID)).forEach((sessionID) => {
@@ -44,8 +45,21 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     const manager = Loop.create({
       now: () => Date.now(),
       session: (sessionID) => Loop.sessionState(sync.data, sessionID),
-      runCost: (sessionID, run) =>
-        ledger.runCost(sessionID, run, loopMessages.get(sessionID) ?? new Set(), humanMessages.get(sessionID) ?? new Set()),
+      runCost: (sessionID, run) => {
+        const result = ledger.runCost(sessionID, run, loopMessages.get(sessionID) ?? new Set(), humanMessages.get(sessionID) ?? new Set())
+        // 種類が分からないユーザーメッセージ(パーツ未着)は、会話のメッセージ一覧を取り直して判定する(1件につき1回)。
+        const fresh = result.unknown.filter((id) => !refetched.has(id))
+        if (fresh.length) {
+          fresh.forEach((id) => refetched.add(id))
+          void sdk.client.session
+            .messages({ sessionID, limit: 30 })
+            .then((response) =>
+              (response.data ?? []).forEach((message) => message.parts.forEach((part) => ledger.recordPart(part, sync.data.session))),
+            )
+            .catch(() => {})
+        }
+        return result
+      },
       newMessageID: (sessionID) => Loop.nextMessageID(sync.data.message[sessionID]?.at(-1)?.id, Date.now()),
       abort: (sessionID) => void sdk.client.session.abort({ sessionID }).catch(() => {}),
       lastTyped: () => typedAt,
@@ -53,6 +67,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
         loopMessages.get(item.target.sessionID)?.add(messageID)
         return sendPrompt(sdk.client, {
           messageID,
+          textMetadata: { source: Loop.LOOP_SOURCE },
           sessionID: item.target.sessionID,
           prompt: { input: item.prompt, parts: [] },
           text: item.prompt,
@@ -80,7 +95,9 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
               ? t.abortedBudget(event.item.id, event.item.spent)
               : event.interjected
                 ? t.interjectedBudget(event.item.id, event.item.spent)
-                : t.finished(event.item.id, event.reason, event.item.spent),
+                : event.third
+                  ? t.thirdBudget(event.item.id, event.item.spent)
+                  : t.finished(event.item.id, event.reason, event.item.spent),
             duration: 10_000,
           })
       },

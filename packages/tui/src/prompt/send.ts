@@ -29,6 +29,8 @@ export async function sendPrompt(
     editorParts: TextPartInput[]
     /** 送るメッセージのIDを指定する(/loop が自分の回の応答を見分けるのに使う)。 */
     messageID?: string
+    /** 依頼文のパーツに付ける印(/loop は { source: "loop" } を付け、/goal 等が本人の依頼と取り違えないようにする)。 */
+    textMetadata?: Record<string, unknown>
   },
 ) {
   const options = { throwOnError: true } as const
@@ -64,7 +66,11 @@ export async function sendPrompt(
       ...common,
       ...id,
       variant: input.variant,
-      parts: [...input.editorParts, { type: "text", text: input.text }, ...parts],
+      parts: [
+        ...input.editorParts,
+        { type: "text", text: input.text, ...(input.textMetadata ? { metadata: input.textMetadata } : {}) },
+        ...parts,
+      ],
     },
     options,
   )
