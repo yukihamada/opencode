@@ -45,6 +45,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { ModelV2 } from "@sente-ai/core/model"
 import { SessionMessage } from "@sente-ai/schema/session-message"
+import { SessionGoal } from "./goal"
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
@@ -720,7 +721,10 @@ const layer: Layer.Layer<
         path: sessionPath(ctx.worktree, ctx.directory),
         workspaceID: original.workspaceID,
         title,
-        metadata: structuredClone(SideSpend.drop(original.metadata)),
+        // A fork starts without the original's /goal (nothing would drive it there) or its /btw spend.
+        metadata: original.metadata
+          ? SessionGoal.withGoal(structuredClone(SideSpend.drop(original.metadata)), undefined)
+          : undefined,
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()

@@ -57,6 +57,9 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@sente-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTodoFollowup } from "./todo-followup"
+import { SessionGoalRunner } from "./goal-runner"
+import { BackgroundJob } from "@/background/job"
+import { TuiEvent } from "@/server/tui-event"
 import { Todo } from "./todo"
 import { SessionTools } from "./tools"
 import { SessionTitle } from "./title"
@@ -113,6 +116,8 @@ export interface Interface {
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
+  /** Test only: sizes of the goal runner's in-memory state (a finished goal must leave none). */
+  readonly _goalStateForTest: () => Record<string, number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@sente/SessionPrompt") {}
@@ -148,6 +153,7 @@ const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     const todo = yield* Todo.Service
+    const background = yield* BackgroundJob.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -159,7 +165,35 @@ const layer = Layer.effect(
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
-      yield* state.cancel(sessionID)
+      // Interrupting is the user taking over: an active goal must not start again on its own.
+      yield* goals.cancel(sessionID)
+    })
+
+    const goals = yield* SessionGoalRunner.make({
+      sessions,
+      llm,
+      agents,
+      provider,
+      config,
+      todo,
+      background,
+      db,
+      scope,
+      toast: (message, variant = "info") =>
+        events.publish(TuiEvent.ToastShow, { message, variant, duration: 8000 }).pipe(Effect.ignore),
+      isBusy: (sessionID) => status.get(sessionID).pipe(Effect.map((current) => current.type !== "idle")),
+      cancelRun: (sessionID) => state.cancel(sessionID),
+      prompt: (input) => prompt(input as PromptInput),
+      currentModel: (sessionID) => currentModel(sessionID),
+      lastAssistant: (sessionID) => lastAssistant(sessionID),
+      defaultAgent: () => agents.defaultInfo().pipe(Effect.map((agent) => agent.name)),
+      executed: (input, messageID) =>
+        events.publish(Command.Event.Executed, {
+          name: input.command,
+          sessionID: input.sessionID,
+          arguments: input.arguments,
+          messageID,
+        }),
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -1106,6 +1140,7 @@ const layer = Layer.effect(
         const blockedFamilies = new Set<string>()
         let fallbackExhausted = false
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        yield* goals.onStart(session)
 
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
@@ -1147,6 +1182,12 @@ const layer = Layer.effect(
                 callID: orphan.callID,
               })
             }
+            // An active goal decides what happens after a finished turn: the reviewer either
+            // ends it or sends one more turn. It replaces the todo follow-up while it runs
+            // (the reviewer sees open todos), so the two never both add a turn.
+            const goalNext = yield* goals.afterTurn({ session, lastUser, messages: msgs, orphan: Boolean(orphan) })
+            if (goalNext === "continue") continue
+            if (goalNext === "break") break
             // A finished turn with unfinished todos usually means the list was left
             // stale. Ask the model to finish or close them, bounded so it cannot loop.
             const openTodos = session.parentID ? [] : SessionTodoFollowup.unfinished(yield* todo.get(sessionID))
@@ -1180,6 +1221,8 @@ const layer = Layer.effect(
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
           }
+
+          if (yield* goals.beforeStep(session)) break
 
           step++
           if (step === 1)
@@ -1327,7 +1370,11 @@ const layer = Layer.effect(
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
+              MessageV2.toModelMessagesEffect(msgs, model).pipe(
+                Effect.flatMap((modelMsgs) =>
+                  goals.modelMessages(session, modelMsgs, msgs, (text) => ({ role: "user" as const, content: text })),
+                ),
+              ),
             ])
             const system = [
               ...env,
@@ -1530,7 +1577,11 @@ const layer = Layer.effect(
     const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
-      return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
+      return yield* state.ensureRunning(
+        input.sessionID,
+        lastAssistant(input.sessionID),
+        runLoop(input.sessionID).pipe(Effect.onExit((exit) => goals.afterLoop(input.sessionID, exit))),
+      )
     })
 
     const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
@@ -1553,6 +1604,12 @@ const layer = Layer.effect(
         const error = new NamedError.Unknown({ message: `Command not found: "${input.command}".${hint}` })
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
+      }
+      // The built-in /goal runs the goal loop (session/goal-runner.ts); undefined means a user's
+      // own `goal` command runs as a normal template below.
+      if (input.command === Command.Default.GOAL) {
+        const handled = yield* goals.command(input)
+        if (handled) return handled
       }
       const agentName = cmd.agent ?? input.agent
 
@@ -1675,6 +1732,7 @@ const layer = Layer.effect(
       shell,
       command,
       resolvePromptParts,
+      _goalStateForTest: goals.snapshotForTest,
     })
   }),
 )
@@ -1815,6 +1873,7 @@ export const node = LayerNode.make({
     RuntimeFlags.node,
     Database.node,
     Todo.node,
+    BackgroundJob.node,
   ],
 })
 
