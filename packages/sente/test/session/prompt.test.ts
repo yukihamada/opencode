@@ -3861,3 +3861,98 @@ it.instance("a background subagent of the goal that starts only after the root's
     expect(prompt._goalStateForTest().rootOfRun).toBe(0)
   }),
 )
+
+// A "done" inside a code block next to other text is ambiguous: the reviewer is asked once to
+// answer again in plain lines, and its second answer decides.
+const ambiguousOutsides = [
+  "Here is my verdict:",
+  "判定結果は以下の通りです。",
+  "テストはまだ2件失敗しています。",
+  "The goal is not finished yet.",
+  "まだ問題はありません。全件通過です。",
+  "All tests pass, nothing incomplete remains.",
+  "The work isn't complete.",
+  "The feature hasn't been completed.",
+  "Tests are still failing.",
+  "2 tests still fail.",
+  "テストが失敗しています。",
+  "完了していないものはありません。",
+  "未完了の項目は残っていません。",
+  "There is nothing left that is not done.",
+  "まだ完了していませんが、残りは軽微です。",
+]
+
+it.instance("an ambiguous fenced done is asked again once and the second answer decides", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    for (const [index, outside] of ambiguousOutsides.entries()) {
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const before = reviewHits(yield* llm.hits).length
+      const answer = index % 2 === 0 ? "done" : "blocked"
+      yield* work(llm, "did the work")
+      yield* review(llm, `${outside}\n\`\`\`\nVERDICT: done\nREASON: looks fine\n\`\`\``)
+      yield* review(llm, `VERDICT: ${answer}\nREASON: second answer ${index}\nNEXT: -`)
+
+      yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "task", agent: "build" })
+
+      const reviews = reviewHits(yield* llm.hits).slice(before)
+      expect(reviews).toHaveLength(2)
+      expect(bodyOf(reviews[0]!)).not.toContain("Answer again with only the three lines")
+      expect(bodyOf(reviews[1]!)).toContain("Answer again with only the three lines")
+      const goal = yield* goalOf(chat.id)
+      expect(goal?.status).toBe(answer === "done" ? "complete" : "paused")
+      expect(goal?.reason).toContain(`second answer ${index}`)
+    }
+  }),
+)
+
+it.instance("a second ambiguous answer is no verdict, and a re-asked continue keeps the goal going", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const fenced = (outside: string) => `${outside}\n\`\`\`\nVERDICT: done\nREASON: fine\n\`\`\``
+
+    const twice = yield* sessions.create({ title: "Twice" })
+    yield* work(llm, "did it")
+    yield* review(llm, fenced("Tests are still failing."))
+    yield* review(llm, fenced("Still ambiguous."))
+    yield* prompt.command({ sessionID: twice.id, command: "goal", arguments: "task", agent: "build" })
+    expect((yield* goalOf(twice.id))?.status).toBe("paused")
+
+    const goes = yield* sessions.create({ title: "Goes on" })
+    yield* work(llm, "first part")
+    yield* review(llm, fenced("2 tests still fail."))
+    yield* review(llm, "VERDICT: continue\nREASON: 2 tests fail\nNEXT: fix them")
+    yield* work(llm, "fixed them")
+    yield* review(llm, "VERDICT: done\nREASON: all pass\nNEXT: -")
+    yield* prompt.command({ sessionID: goes.id, command: "goal", arguments: "task", agent: "build" })
+    const goal = yield* goalOf(goes.id)
+    expect(goal?.status).toBe("complete")
+    expect(goal?.rounds).toBe(1)
+  }),
+)
+
+it.instance("the second question counts against the goal's budget", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => goalCfg(url, { input: 1, output: 1 }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* work(llm, "did a part", { input: 50_000, output: 0 })
+    yield* review(llm, "Tests are still failing.\n```\nVERDICT: done\nREASON: fine\n```", { input: 100_000, output: 0 })
+    yield* review(llm, "VERDICT: continue\nREASON: tests fail\nNEXT: fix", { input: 100_000, output: 0 })
+    yield* work(llm, "should not run")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "--budget 0.2 task", agent: "build" })
+
+    const goal = yield* goalOf(chat.id)
+    // $0.05 of work plus two $0.10 reviews crosses the $0.20 budget before another turn.
+    expect(goal?.judgeCost).toBeCloseTo(0.2, 5)
+    expect(goal?.spent).toBeCloseTo(0.25, 5)
+    expect(goal?.status).toBe("paused")
+    expect(workHits(yield* llm.hits)).toHaveLength(1)
+  }),
+)

@@ -252,36 +252,40 @@ describe("session goal", () => {
     })
     expect(SessionGoal.parseVerdict("```\nVERDICT: blocked\nREASON: needs a key\n```")?.verdict).toBe("blocked")
     expect(SessionGoal.parseVerdict("```\nno verdict here\n```")).toBeUndefined()
-    // An ordinary lead-in of any length outside the block still lets the block be read.
-    expect(
-      SessionGoal.parseVerdict(
-        "作業ログを確認しました。テストの実行結果と生成されたファイルの内容をもとに、ゴールの達成状況を判定します。\n```\nVERDICT: done\nREASON: テストが全件通過\n```",
-      )?.verdict,
-    ).toBe("done")
-    expect(
-      SessionGoal.parseVerdict(
-        "Based on the work log, here is my assessment of the goal:\n```\nVERDICT: continue\nREASON: lint fails\n```",
-      )?.verdict,
-    ).toBe("continue")
-    // Text outside that says the work is not finished, or names a verdict, wins over the block.
-    expect(
-      SessionGoal.parseVerdict("Here is my log:\n```\nVERDICT: done\n```\nI think it is not finished."),
-    ).toBeUndefined()
-    expect(
-      SessionGoal.parseVerdict("ログを貼ります。\n```\nVERDICT: done\n```\nただしテストはまだ通っていません。"),
-    ).toBeUndefined()
-    // Ordinary lead-ins and text that agrees with the block keep its verdict; only a "done"
-    // inside is dropped when the text around says the work is not finished.
+    // A "done" inside a block next to other text is ambiguous and is asked again (see the
+    // runner); continue and blocked never contradict the text around them.
     const fenced = (outside: string, verdict: string) =>
-      SessionGoal.parseVerdict(`${outside}\n\`\`\`\nVERDICT: ${verdict}\nREASON: r\n\`\`\``)?.verdict
-    expect(fenced("Here is my verdict:", "done")).toBe("done")
-    expect(fenced("判定結果は以下の通りです。", "done")).toBe("done")
-    expect(fenced("テストはまだ2件失敗しています。", "continue")).toBe("continue")
-    expect(fenced("The goal is not finished yet.", "continue")).toBe("continue")
-    expect(fenced("まだ問題はありません。全件通過です。", "done")).toBe("done")
-    expect(fenced("All tests pass, nothing incomplete remains.", "done")).toBe("done")
-    expect(fenced("テストはまだ2件失敗しています。", "done")).toBeUndefined()
-    expect(fenced("The goal is not finished yet.", "blocked")).toBe("blocked")
+      SessionGoal.parseVerdict(`${outside}\n\`\`\`\nVERDICT: ${verdict}\nREASON: r\n\`\`\``)
+    const outsides = [
+      // Earlier review rounds.
+      "Here is my verdict:",
+      "判定結果は以下の通りです。",
+      "テストはまだ2件失敗しています。",
+      "The goal is not finished yet.",
+      "まだ問題はありません。全件通過です。",
+      "All tests pass, nothing incomplete remains.",
+      // Missed by a word list.
+      "The work isn't complete.",
+      "The feature hasn't been completed.",
+      "Tests are still failing.",
+      "2 tests still fail.",
+      "テストが失敗しています。",
+      // Double negatives.
+      "完了していないものはありません。",
+      "未完了の項目は残っていません。",
+      "There is nothing left that is not done.",
+      "まだ完了していませんが、残りは軽微です。",
+      "作業ログを確認しました。テストの実行結果と生成されたファイルの内容をもとに、ゴールの達成状況を判定します。",
+    ]
+    for (const outside of outsides) {
+      expect(fenced(outside, "done")).toMatchObject({ verdict: "done", ambiguous: true })
+      expect(fenced(outside, "continue")).toEqual({ verdict: "continue", reason: "r", next: undefined })
+      expect(fenced(outside, "blocked")).toEqual({ verdict: "blocked", reason: "r", next: undefined })
+    }
+    // A block with nothing around it is a clear answer.
+    expect(SessionGoal.parseVerdict("```\nVERDICT: done\nREASON: ok\n```")?.ambiguous).toBeUndefined()
+    // The second question asks for the three lines only.
+    expect(SessionGoal.judgeRetryPrompt(goal(), "log", "en")).toContain("Answer again with only the three lines")
     // An example block after the answer is not the answer, and REASON comes from the chosen block.
     expect(
       SessionGoal.parseVerdict(

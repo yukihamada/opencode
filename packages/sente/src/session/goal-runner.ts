@@ -323,52 +323,65 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
     const mdl = yield* judgeModel(input.user.model.providerID)
     if (!ag || !mdl) return { verdict: undefined, cost: 0, missing: true }
     const work = SessionGoal.transcript(input.messages, input.goal, yield* deps.todo.get(input.sessionID))
-    const ask = Effect.gen(function* () {
-      const acc = { text: "", cost: 0, steps: 0, finish: 0 }
-      const cost = (event: { usage?: Usage; providerMetadata?: unknown }) =>
-        Session.getUsage({
-          model: mdl,
-          usage: event.usage ?? new Usage({}),
-          metadata: event.providerMetadata as Parameters<typeof Session.getUsage>[0]["metadata"],
-        }).cost
-      yield* deps.llm
-        .stream({
-          agent: ag,
-          user: input.user,
-          system: [],
-          small: true,
-          tools: {},
-          model: mdl,
-          sessionID: input.sessionID,
-          retries: 0,
-          messages: [{ role: "user", content: SessionGoal.judgePrompt(input.goal, work) }],
-        })
-        .pipe(
-          Stream.runForEach((event) =>
-            Effect.sync(() => {
-              if (LLMEvent.is.textDelta(event)) acc.text += event.text
-              if (LLMEvent.is.stepFinish(event)) {
-                acc.steps++
-                acc.cost += cost(event)
-              }
-              if (LLMEvent.is.finish(event)) acc.finish = cost(event)
-            }),
-          ),
-        )
-      return { verdict: SessionGoal.parseVerdict(acc.text), cost: acc.steps > 0 ? acc.cost : acc.finish }
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.interrupt
-          : Effect.logWarning("goal review failed", { "session.id": input.sessionID, cause: Cause.pretty(cause) }).pipe(
-              Effect.as({ verdict: undefined, cost: 0 }),
+    const ask = (retry: boolean) =>
+      Effect.gen(function* () {
+        const acc = { text: "", cost: 0, steps: 0, finish: 0 }
+        const cost = (event: { usage?: Usage; providerMetadata?: unknown }) =>
+          Session.getUsage({
+            model: mdl,
+            usage: event.usage ?? new Usage({}),
+            metadata: event.providerMetadata as Parameters<typeof Session.getUsage>[0]["metadata"],
+          }).cost
+        yield* deps.llm
+          .stream({
+            agent: ag,
+            user: input.user,
+            system: [],
+            small: true,
+            tools: {},
+            model: mdl,
+            sessionID: input.sessionID,
+            retries: 0,
+            messages: [
+              {
+                role: "user",
+                content: retry
+                  ? SessionGoal.judgeRetryPrompt(input.goal, work)
+                  : SessionGoal.judgePrompt(input.goal, work),
+              },
+            ],
+          })
+          .pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                if (LLMEvent.is.textDelta(event)) acc.text += event.text
+                if (LLMEvent.is.stepFinish(event)) {
+                  acc.steps++
+                  acc.cost += cost(event)
+                }
+                if (LLMEvent.is.finish(event)) acc.finish = cost(event)
+              }),
             ),
-      ),
-    )
-    const first = yield* ask
-    if (first.verdict) return { ...first, missing: false }
-    const second = yield* ask
-    return { verdict: second.verdict, cost: first.cost + second.cost, missing: false }
+          )
+        return { verdict: SessionGoal.parseVerdict(acc.text), cost: acc.steps > 0 ? acc.cost : acc.finish }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("goal review failed", {
+                "session.id": input.sessionID,
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.as({ verdict: undefined, cost: 0 })),
+        ),
+      )
+    // Two requests at most: a clear first answer is used; an unusable one is asked again; an
+    // ambiguous one (a fenced "done" next to prose) is asked to answer in plain lines, and a
+    // second ambiguous answer counts as no verdict.
+    const first = yield* ask(false)
+    if (first.verdict && !first.verdict.ambiguous) return { ...first, missing: false }
+    const second = yield* ask(first.verdict?.ambiguous === true)
+    const verdict = second.verdict && !second.verdict.ambiguous ? second.verdict : undefined
+    return { verdict, cost: first.cost + second.cost, missing: false }
   })
 
   // Background jobs (background subagents, shells) started from this session that still run.

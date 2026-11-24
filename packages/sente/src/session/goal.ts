@@ -75,7 +75,13 @@ export type State = {
   note?: string
 }
 
-export type Verdict = { verdict: "done" | "continue" | "blocked"; reason: string; next?: string }
+export type Verdict = {
+  verdict: "done" | "continue" | "blocked"
+  reason: string
+  next?: string
+  /** A "done" found only inside a code block next to other text: ask the reviewer again. */
+  ambiguous?: true
+}
 
 export type Decision =
   | { type: "complete"; reason: string }
@@ -505,27 +511,19 @@ export function sameReason(previous: string, next: string): boolean {
  * exactly `VERDICT: <one word>` counts, and the last such line wins, so prose such as
  * "not done yet, continue" or an echoed instruction cannot read as done.
  */
-/**
- * Text outside the code blocks that says the work is not finished. It only ever cancels a
- * "done" read from inside a block; continue and blocked never contradict it.
- */
-const OUTSIDE_NOT_DONE =
-  /not\s+(?:yet\s+)?(?:finished|done|complete|completed|met)|\bincomplete\b|\bunfinished\b|cannot\s+tell|can't\s+tell|未達|未完了|未完成|終わっていない|完了していない|達成していない|判断できない|まだ[^。．.!！?？\n]{0,24}?(?:ない|ません|失敗|残)/i
-/** Double negatives and reassurances that look like "not done" but mean the opposite. */
-const OUTSIDE_REASSURING =
-  /\b(?:nothing|no)\s+(?:\w+\s+)?(?:incomplete|unfinished)\b|まだ?[^。．.!！?？\n]{0,8}?問題(?:は|が|も)?(?:ない|無い|ありません)/gi
-
 export function parseVerdict(text: string): Verdict | undefined {
   // A verdict outside code blocks wins; the blocks are then quoted material (an example, a
-  // log). With none outside, a reviewer that wrapped its answer in a block is read, except
-  // that a "done" inside is dropped when the text around it says the work is not finished.
+  // log). With none outside, a verdict inside a block is used. A "done" inside a block next
+  // to prose outside is ambiguous (the prose may say otherwise, in words no list can cover):
+  // it comes back marked so the caller asks the reviewer to answer again in plain lines.
+  // continue and blocked never contradict the prose around them and are used as they are.
   const visible = text.replace(/<think>[\s\S]*?<\/think>/g, "")
   const outside = visible.replace(/^\s*(```|~~~)[^\n]*\n[\s\S]*?(?:^\s*\1\s*$|(?![\s\S]))/gm, "")
   const found = readVerdict(outside)
   if (found) return found
   const inside = readVerdict(visible.replace(/^\s*(```|~~~).*$/gm, ""))
-  if (inside?.verdict !== "done") return inside
-  return OUTSIDE_NOT_DONE.test(outside.replace(OUTSIDE_REASSURING, "")) ? undefined : inside
+  if (inside?.verdict === "done" && outside.trim() !== "") return { ...inside, ambiguous: true }
+  return inside
 }
 
 function readVerdict(text: string): Verdict | undefined {
@@ -630,6 +628,15 @@ export function transcript(
 // Escaped so a condition cannot close the block it is quoted in.
 function escape(text: string) {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
+/** The second question when the first answer was ambiguous: the three lines only, no code block. */
+export function judgeRetryPrompt(goal: State, work: string, lang: Lang = ProviderQuota.language()): string {
+  return [
+    judgePrompt(goal, work, lang),
+    "",
+    "Your previous answer put the verdict inside a code block next to other text, so it could not be read with certainty. Answer again with only the three lines VERDICT, REASON and NEXT: no code block and no other text.",
+  ].join("\n")
 }
 
 export function judgePrompt(goal: State, work: string, lang: Lang = ProviderQuota.language()): string {
