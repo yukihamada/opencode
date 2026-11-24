@@ -10,6 +10,7 @@ import { Location } from "./location"
 import { makeGlobalNode } from "./effect/app-node"
 import { isDeepStrictEqual } from "node:util"
 import { Durable } from "@sente-ai/schema/durable-event-manifest"
+import { Latest } from "@sente-ai/schema/event-manifest"
 
 export const ID = Event.ID
 export type ID = import("@sente-ai/schema/event").ID
@@ -46,6 +47,15 @@ export class InvalidDurableEventError extends Schema.TaggedErrorClass<InvalidDur
     message: Schema.String,
   },
 ) {}
+
+/** `session.updated.1` → `session.updated`; undefined when there is no numeric version suffix. */
+export function unversionedType(type: string) {
+  const match = /^([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*)\.(\d+)$/.exec(type)
+  return match?.[1]
+}
+
+/** Type names this version knows (durable definitions and every public event type). */
+const knownTypeNames = new Set([...Array.from(Durable.values()).map((definition) => definition.type), ...Latest.keys()])
 
 const decodeSerializedEvent = (event: SerializedEvent): Payload => {
   const definition = Durable.get(event.type)
@@ -445,15 +455,30 @@ export const layerWith = (options?: LayerOptions) =>
         return Effect.gen(function* () {
           const definition = Durable.get(event.type)
           if (!definition?.durable) {
-            // A newer version may add durable event types. Dying here would stop
-            // every later event of the aggregate (workspace sync, startup import),
-            // so keep the event in the log, advance the sequence and skip it.
-            yield* Effect.logWarning("skipping unknown durable event type", {
-              type: event.type,
-              aggregateID: event.aggregateID,
-              seq: event.seq,
-            })
-            yield* skipUnknown(event, options)
+            // A newer version may add durable event *types*. Dying here would
+            // stop every later event of the aggregate (workspace sync, startup
+            // import), so an event whose type name is unknown is kept in the log,
+            // the sequence advances and it is skipped. A known type in an unknown
+            // version (its shape may have changed) or a malformed type still stops.
+            const name = unversionedType(event.type)
+            if (name === undefined || knownTypeNames.has(name)) {
+              yield* Effect.die(
+                new InvalidDurableEventError({
+                  type: event.type,
+                  message:
+                    name === undefined
+                      ? `Malformed durable event type ${event.type}`
+                      : `Unsupported version of durable event type ${event.type}; update to a newer version`,
+                }),
+              )
+            } else {
+              yield* Effect.logWarning("skipping unknown durable event type", {
+                type: event.type,
+                aggregateID: event.aggregateID,
+                seq: event.seq,
+              })
+              yield* skipUnknown(event, options)
+            }
           } else {
             const payload = {
               id: event.id,
@@ -503,6 +528,8 @@ export const layerWith = (options?: LayerOptions) =>
                     }),
                   )
                 }
+                // Another owner holds this aggregate: ignore, like a known event (see commitDurableEvent).
+                if (row?.ownerID && row.ownerID !== options?.ownerID) return
                 // Already have it (a repeated sync): nothing to do.
                 if (event.seq <= latest) return
                 if (event.seq !== latest + 1) {

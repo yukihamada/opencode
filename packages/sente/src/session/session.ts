@@ -448,7 +448,7 @@ export interface Interface {
   readonly searchParts: (input: {
     sessionID: SessionID
     before: number
-    /** More sessions searched in full (subagent sessions below this one). */
+    /** Subagent sessions below this one; each contributes only its newest 1,000 parts. */
     others?: readonly SessionID[]
     terms: readonly string[]
     limit: number
@@ -845,6 +845,9 @@ const layer: Layer.Layer<
       )
     })
 
+    /** Newest parts per subagent session considered by `searchParts`. */
+    const OTHER_PARTS = 1_000
+
     const searchParts = Effect.fn("Session.searchParts")(function* (input: {
       sessionID: SessionID
       before: number
@@ -875,7 +878,19 @@ const layer: Layer.Layer<
             input.others?.length
               ? or(
                   and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before)),
-                  inArray(PartTable.session_id, [...input.others]),
+                  // Each subagent session contributes at most its newest OTHER_PARTS parts,
+                  // so the scan stays bounded however long those sessions are.
+                  ...input.others.map((other) =>
+                    inArray(
+                      PartTable.id,
+                      db
+                        .select({ id: PartTable.id })
+                        .from(PartTable)
+                        .where(eq(PartTable.session_id, other))
+                        .orderBy(desc(PartTable.time_created))
+                        .limit(OTHER_PARTS),
+                    ),
+                  ),
                 )
               : and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before)),
             sql`(${score}) > 0`,

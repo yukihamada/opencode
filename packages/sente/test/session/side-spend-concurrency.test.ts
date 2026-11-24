@@ -167,4 +167,27 @@ describe("/btw spend vs other session writes", () => {
       expect(yield* session.searchParts({ sessionID: info.id, before: 0, terms: ["test"], limit: 10 })).toEqual([])
     }),
   )
+
+  it.instance("each subagent session contributes only its newest 1,000 parts to the search", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const { db } = yield* Database.Service
+      const { PartTable } = yield* Effect.promise(() => import("@sente-ai/core/session/sql"))
+      const model = { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test") }
+      const root = yield* session.create({ title: "root" })
+      const child = yield* session.create({ parentID: root.id, title: "child" })
+      const message = yield* session.updateMessage({ id: MessageID.ascending(), role: "user", sessionID: child.id, agent: "build", model, time: { created: Date.now() } })
+      const rows = Array.from({ length: 1_200 }, (_, i) => ({
+        id: PartID.ascending(),
+        message_id: message.id,
+        session_id: child.id,
+        time_created: 1_000 + i,
+        time_updated: 1,
+        data: ({ type: "text", text: i === 0 ? "oldest needle" : i === 1_199 ? "newest needle" : `filler ${i}` } as never),
+      }))
+      for (let i = 0; i < rows.length; i += 400) yield* db.insert(PartTable).values(rows.slice(i, i + 400)).run().pipe(Effect.orDie)
+      const found = yield* session.searchParts({ sessionID: root.id, before: 0, others: [child.id], terms: ["needle"], limit: 10 })
+      expect(found.map((item) => (item.part.type === "text" ? item.part.text : ""))).toEqual(["newest needle"])
+    }),
+  )
 })

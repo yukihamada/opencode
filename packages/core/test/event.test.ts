@@ -715,6 +715,55 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("replay stops on a known type in an unknown version, and on a malformed type", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = Session.ID.create()
+      const newer = yield* events
+        .replay({
+          id: EventV2.ID.create(),
+          type: EventV2.versionedType(DurableMessage.type, 99),
+          seq: 0,
+          aggregateID,
+          data: durableData(aggregateID, "v99"),
+        })
+        .pipe(Effect.exit)
+      expect(String(newer)).toContain("Unsupported version of durable event type")
+      const malformed = yield* events
+        .replay({ id: EventV2.ID.create(), type: "NotAType", seq: 0, aggregateID, data: {} })
+        .pipe(Effect.exit)
+      expect(String(malformed)).toContain("Malformed durable event type")
+      expect(EventV2.unversionedType("session.side_spent.1")).toBe("session.side_spent")
+      expect(EventV2.unversionedType("session.updated")).toBeUndefined()
+    }),
+  )
+
+  it.effect("an unknown event for an aggregate owned by someone else does not advance its sequence", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      yield* events.replay({
+        id: EventV2.ID.create(),
+        type: EventV2.versionedType(DurableMessage.type, 1),
+        seq: 0,
+        aggregateID,
+        data: durableData(aggregateID, "owned"),
+      })
+      yield* events.claim(aggregateID, "owner-a")
+      const before = yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).get()
+      yield* events.replay(
+        { id: EventV2.ID.create(), type: "session.from_the_future.1", seq: (before?.seq ?? -1) + 1, aggregateID, data: {} },
+        { ownerID: "owner-b" },
+      )
+      const after = yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).get()
+      expect(before?.seq).toBe(0)
+      expect(after?.seq).toBe(0)
+      const rows = yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()
+      expect(rows.map((row) => row.type)).toEqual([EventV2.versionedType(DurableMessage.type, 1)])
+    }),
+  )
+
   it.effect("replay still rejects an unknown event type out of sequence", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
