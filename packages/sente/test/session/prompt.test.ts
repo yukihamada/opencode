@@ -3820,3 +3820,40 @@ it.instance("after a budget stop, subagents of the user's next request run norma
     yield* Fiber.await(fw)
   }),
 )
+
+it.instance("a background subagent of the goal that starts only after the root's run ended still stops", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const started = (sessionID: SessionID) =>
+      prompt.prompt({
+        sessionID,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "go", synthetic: true }],
+      })
+    const root = yield* runningGoal(llm, chat.id, "--budget 0.1 big task")
+    // The goal's run launches a background subagent whose own run has not started yet.
+    const pending = yield* sessions.create({ title: "Background subagent (queued)", parentID: chat.id })
+    const over = yield* sessions.create({ title: "Overspending subagent", parentID: chat.id })
+    yield* spend(over.id, 0.2)
+    yield* started(over.id)
+    yield* prompt.loop({ sessionID: over.id })
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(root)
+    // The root's run is over and nothing of the goal runs: the in-memory stop is gone.
+    expect(prompt._goalStateForTest().stoppedRoots).toBe(0)
+    expect((yield* goalOf(chat.id))?.stoppedBy).toBe("budget")
+    const calls = yield* llm.calls
+
+    // The queued subagent starts now: it belongs to the stopped goal, so it stops at once.
+    yield* started(pending.id)
+    yield* work(llm, "should not run")
+    yield* prompt.loop({ sessionID: pending.id })
+
+    expect(yield* llm.calls).toBe(calls)
+    expect(prompt._goalStateForTest().rootOfRun).toBe(0)
+  }),
+)

@@ -252,14 +252,25 @@ describe("session goal", () => {
     })
     expect(SessionGoal.parseVerdict("```\nVERDICT: blocked\nREASON: needs a key\n```")?.verdict).toBe("blocked")
     expect(SessionGoal.parseVerdict("```\nno verdict here\n```")).toBeUndefined()
-    // A short lead-in outside the block still lets the block be read.
-    expect(SessionGoal.parseVerdict("Here is my answer:\n```\nVERDICT: done\nREASON: ok\n```")?.verdict).toBe("done")
-    // Real prose outside with no verdict there: the block is quoted material, not the answer.
+    // An ordinary lead-in of any length outside the block still lets the block be read.
     expect(
       SessionGoal.parseVerdict(
-        "The assistant pasted the README, which contains this example of the output format:\n```\nVERDICT: done\nREASON: all green\n```\nI cannot tell from that whether the work is finished.",
-      ),
+        "作業ログを確認しました。テストの実行結果と生成されたファイルの内容をもとに、ゴールの達成状況を判定します。\n```\nVERDICT: done\nREASON: テストが全件通過\n```",
+      )?.verdict,
+    ).toBe("done")
+    expect(
+      SessionGoal.parseVerdict(
+        "Based on the work log, here is my assessment of the goal:\n```\nVERDICT: continue\nREASON: lint fails\n```",
+      )?.verdict,
+    ).toBe("continue")
+    // Text outside that says the work is not finished, or names a verdict, wins over the block.
+    expect(
+      SessionGoal.parseVerdict("Here is my log:\n```\nVERDICT: done\n```\nI think it is not finished."),
     ).toBeUndefined()
+    expect(
+      SessionGoal.parseVerdict("ログを貼ります。\n```\nVERDICT: done\n```\nただしテストはまだ通っていません。"),
+    ).toBeUndefined()
+    expect(SessionGoal.parseVerdict("The README shows this verdict format:\n```\nVERDICT: done\n```")).toBeUndefined()
     // An example block after the answer is not the answer, and REASON comes from the chosen block.
     expect(
       SessionGoal.parseVerdict(

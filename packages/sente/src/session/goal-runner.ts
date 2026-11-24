@@ -256,16 +256,17 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
   // written yet and must be the same goal.
   const settle = Effect.fn("SessionGoalRunner.settle")(function* (
     sessionID: SessionID,
-    end: { status: "paused" | "complete"; reason: string; note?: boolean },
+    end: { status: "paused" | "complete"; reason: string; note?: boolean; budget?: boolean },
     latest?: SessionGoal.State,
   ) {
     const goal = yield* readGoal(sessionID)
     if (goal?.status !== "active") return
     if (latest && latest.id !== goal.id) return
     const base = latest ?? goal
-    const { waitingSince: _, ...rest } = base
+    const { waitingSince: _, stoppedBy: __, ...rest } = base
     const next: SessionGoal.State = {
       ...rest,
+      ...(end.budget ? { stoppedBy: "budget" as const } : {}),
       status: end.status,
       reason: end.reason,
       spent: yield* spentOf(sessionID, base),
@@ -389,15 +390,35 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
    */
   const onStart = Effect.fn("SessionGoalRunner.onStart")(function* (session: Session.Info) {
     if (session.parentID) {
-      // No goal anywhere in this runner: skip walking up to the root.
-      if (liveGoals.size === 0 && stoppedRoots.size === 0) return
-      const root = yield* rootOf(session)
-      const active = SessionGoal.read(root.metadata)
-      rootOfRun.set(session.id, {
-        root: root.id,
-        goal: active?.status === "active" ? active.id : runGoal.get(root.id),
-      })
-      if (active?.status === "active") liveGoals.add(root.id)
+      // The root: known from the parent's own run, or the parent itself when it is the root
+      // (one read). Only a deeper chain with some goal in this runner walks further up.
+      const known = rootOfRun.get(session.parentID)?.root
+      const parent = known ? undefined : yield* sessions.get(session.parentID).pipe(Effect.option)
+      const root = known
+        ? yield* sessions.get(SessionID.make(known)).pipe(Effect.orElseSucceed(() => undefined))
+        : Option.isNone(parent!)
+          ? undefined
+          : !parent!.value.parentID
+            ? parent!.value
+            : liveGoals.size > 0 || stoppedRoots.size > 0
+              ? yield* rootOf(parent!.value)
+              : undefined
+      if (!root) return
+      const goal = SessionGoal.read(root.metadata)
+      // The goal this run works for: the root's active goal; else the goal of the root run that
+      // launched it; else, for a run that starts only now (a background subagent launched
+      // before the root's run ended), the root's goal if this session was created while that
+      // goal was running.
+      const inherited =
+        goal?.status === "active"
+          ? goal.id
+          : (runGoal.get(root.id) ??
+            (goal && session.time.created >= SessionGoal.startedAt(goal) && session.time.created <= goal.updatedAt
+              ? goal.id
+              : undefined))
+      if (!inherited && liveGoals.size === 0 && stoppedRoots.size === 0) return
+      rootOfRun.set(session.id, { root: root.id, goal: inherited })
+      if (goal?.status === "active") liveGoals.add(root.id)
       return
     }
     // The user's own new message to the root after a budget stop starts ordinary work: the
@@ -445,10 +466,15 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
     const run = session.parentID ? rootOfRun.get(session.id) : undefined
     const rootID = session.parentID ? run?.root : session.id
     if (!rootID) return false
-    // A subagent run of a goal that stopped at its budget stops too.
+    // A subagent run of a goal that stopped at its budget stops too: while the stop is in
+    // memory, or (for a run that started later) as recorded on the stopped goal itself.
     const stopped = stoppedRoots.get(rootID)
-    if (run && stopped && run.goal === stopped.goal) return true
-    if (!liveGoals.has(rootID)) return false
+    if (run?.goal && stopped && run.goal === stopped.goal) return true
+    if (!liveGoals.has(rootID)) {
+      if (!run?.goal) return false
+      const recorded = yield* readGoal(SessionID.make(rootID))
+      return recorded?.id === run.goal && recorded.status !== "active" && recorded.stoppedBy === "budget"
+    }
     const root = SessionID.make(rootID)
     const goal = yield* readGoal(root)
     if (goal?.status !== "active") {
@@ -470,7 +496,7 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
       if (session.parentID) {
         // The root writes its closing line between its own steps; an idle root gets it now.
         const busy = yield* deps.isBusy(root)
-        yield* settle(root, { status: "paused", reason, note: !busy }, current)
+        yield* settle(root, { status: "paused", reason, note: !busy, budget: true }, current)
         if (busy) budgetStopped.add(rootID)
         const keep = new Set<string>([session.id])
         for (let at: Session.Info | undefined = session; at?.parentID; ) {
@@ -479,7 +505,7 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
         }
         yield* stopTree(root, current, keep)
       } else {
-        yield* settle(root, { status: "paused", reason }, current)
+        yield* settle(root, { status: "paused", reason, budget: true }, current)
         yield* stopTree(root, current, new Set([rootID]))
       }
       return true
@@ -556,7 +582,11 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
     const { waitingSince: _, ...rest } = goal
     const current = { ...rest, spent: yield* spentOf(sessionID, goal) }
     if (SessionGoal.overBudget(current)) {
-      yield* settle(sessionID, { status: "paused", reason: SessionGoal.budgetReason(current, language) }, current)
+      yield* settle(
+        sessionID,
+        { status: "paused", reason: SessionGoal.budgetReason(current, language), budget: true },
+        current,
+      )
       yield* stopTree(sessionID, current, new Set([String(sessionID)]))
       return "break" as const
     }
