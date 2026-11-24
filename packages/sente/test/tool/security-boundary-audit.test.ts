@@ -9,6 +9,7 @@ import { PermissionV1 } from "@sente-ai/core/v1/permission"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "../../src/config/config"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
+import { BackgroundJob } from "@/background/job"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
 import { MessageID, SessionID } from "../../src/session/schema"
@@ -28,6 +29,7 @@ const it = testEffect(
         Config.node,
         Agent.node,
         RuntimeFlags.node,
+        BackgroundJob.node,
         Permission.node,
       ]),
     ),

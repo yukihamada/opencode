@@ -17,6 +17,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MessageID, SessionID } from "@/session/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { BackgroundJob } from "@/background/job"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { ModelV2 } from "@sente-ai/core/model"
 import { MCP } from "@/mcp"
@@ -50,7 +51,7 @@ const brokenPluginLayer = Layer.succeed(
   }),
 )
 
-const root = LayerNode.group([ToolRegistry.node, Agent.node])
+const root = LayerNode.group([ToolRegistry.node, Agent.node, BackgroundJob.node])
 const replacements = [
   [Config.node, configLayer],
   [RuntimeFlags.node, RuntimeFlags.layer()],
@@ -106,6 +107,35 @@ describe("tool.registry", () => {
       const ids = yield* registry.ids()
 
       expect(ids).not.toContain("task_status")
+    }),
+  )
+
+  it.instance("offers wait only to a session that has a background shell command", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const jobs = yield* BackgroundJob.Service
+      const agent = yield* agents.defaultInfo()
+      const has = (sessionID?: string) =>
+        registry
+          .tools({ providerID: ProviderV2.ID.sente, modelID: ModelV2.ID.make("test"), agent, sessionID })
+          .pipe(Effect.map((tools) => tools.some((tool) => tool.id === "wait")))
+      expect(yield* has()).toBe(false)
+      expect(yield* has("ses_wait_offer")).toBe(false)
+      // Another kind of job, or another session's shell job, does not count.
+      yield* jobs.start({ type: "task", metadata: { sessionId: "ses_wait_offer" }, run: Effect.never })
+      yield* jobs.start({ type: "bash", metadata: { sessionId: "ses_other" }, run: Effect.never })
+      expect(yield* has("ses_wait_offer")).toBe(false)
+      yield* jobs.start({ type: "bash", metadata: { sessionId: "ses_wait_offer" }, run: Effect.never })
+      expect(yield* has("ses_wait_offer")).toBe(true)
+      const wait = (yield* registry.tools({
+        providerID: ProviderV2.ID.sente,
+        modelID: ModelV2.ID.make("test"),
+        agent,
+        sessionID: "ses_wait_offer",
+      })).find((tool) => tool.id === "wait")
+      // The job-only variant: no GitHub wording in what the model is sent.
+      expect(wait?.description).not.toContain("GitHub")
     }),
   )
 

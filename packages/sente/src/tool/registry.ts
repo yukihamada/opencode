@@ -10,6 +10,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { WaitTool } from "./wait"
 import { Database } from "@sente-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -78,6 +79,8 @@ export interface Interface {
     modelID: ModelV2.ID
     agent: Agent.Info
     permission?: PermissionV1.Ruleset
+    /** Lets session-dependent tools (wait) appear only where they apply. */
+    sessionID?: string
   }) => Effect.Effect<Tool.Def[]>
 }
 
@@ -103,6 +106,8 @@ const layer = Layer.effect(
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
+    const waittool = yield* WaitTool
+    const background = yield* BackgroundJob.Service
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
     const edit = yield* EditTool
@@ -218,6 +223,7 @@ const layer = Layer.effect(
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          wait: Tool.init(waittool),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
         })
 
@@ -238,6 +244,8 @@ const layer = Layer.effect(
             tool.search,
             tool.skill,
             tool.patch,
+            // Timed-out shell commands move to the background; this is how the model collects their result.
+            ...(flags.shellTimeoutBackground ? [tool.wait] : []),
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
@@ -284,7 +292,14 @@ const layer = Layer.effect(
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+      // wait is offered only once this session has a shell command that moved to the background.
+      const waitable =
+        input.sessionID !== undefined &&
+        (yield* background.list()).some(
+          (job) => job.type === ShellTool.id && job.metadata?.sessionId === input.sessionID,
+        )
       const filtered = (yield* all()).filter((tool) => {
+        if (tool.id === WaitTool.id) return waitable
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }

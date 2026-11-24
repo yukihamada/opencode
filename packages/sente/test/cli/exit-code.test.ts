@@ -12,12 +12,15 @@ describe("cli.exit-code", () => {
       Conflict: 5,
       Quota: 6,
       PermissionDenied: 7,
+      // 8 is GoalUnmet (#75, /goal); both sit side by side once the two land.
+      Unfinished: 9,
       Restart: 75,
     })
   })
 
   test("never restarts an unattended run that its policy refused", () => {
     expect(shouldRestart(ExitCode.PermissionDenied)).toBe(false)
+    expect(shouldRestart(ExitCode.Unfinished)).toBe(false)
   })
 
   test("classifies auth failures as 3 so callers do not retry", () => {

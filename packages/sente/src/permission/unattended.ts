@@ -125,6 +125,8 @@ export const BUILTIN: Policy = {
     todoread: ["*"],
     skill: ["*"],
     bash: READONLY_BASH,
+    // Collecting (or stopping) this session's own background shell jobs; the tool rejects other sessions' jobs.
+    wait: ["job_*"],
     // The engine's own scratch/truncation files live in the temp dir.
     external_directory: [path.join(Global.Path.tmp, "*")],
   },

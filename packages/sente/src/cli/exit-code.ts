@@ -43,6 +43,15 @@ export const ExitCode = {
    */
   PermissionDenied: 7,
   /**
+   * `sente run --attach` ended while background shell commands its own turn started had not finished:
+   * in a session it created it stopped them (interrupting that session); in one it joined (-s/-c) they
+   * keep running on the server until they end or reach the background time limit. Either way the
+   * answer may describe work that is not done. Restarting would only run it twice.
+   *
+   * 9, not 8: 8 is GoalUnmet (the /goal work, #75).
+   */
+  Unfinished: 9,
+  /**
    * The TUI asks to be relaunched with --resume (after a compaction).
    *
    * Deliberately outside 0-5 and matches `SENTE_RESTART_EXIT_CODE` in the
