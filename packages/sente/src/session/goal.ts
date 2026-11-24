@@ -59,6 +59,8 @@ export type State = {
   stoppedBy?: "budget"
   /** When the goal ended (completed or stopped); `updatedAt` also moves with spend writes. */
   endedAt?: number
+  /** How many times an ambiguous review (a fenced "done" next to other text) was asked again. */
+  reasked?: number
   /** USD this goal may spend on turns and reviews together. */
   budget: number
   /** The session's recorded turn cost when the goal started; turns after it count. */
@@ -69,8 +71,11 @@ export type State = {
   spent: number
   /** Set while the goal waits on background work; the round does not count. */
   waitingSince?: number
-  /** The process driving the goal. */
-  owner?: { pid: number; boot: string }
+  /**
+   * The process driving the goal: its pid, a per-boot random id, and when the process started.
+   * The start time tells a live process from another one that reused the pid.
+   */
+  owner?: { pid: number; boot: string; started?: number }
   /** A standing caveat shown with the goal, e.g. that a $0 model makes the budget moot. */
   note?: string
 }
@@ -174,6 +179,7 @@ export function read(metadata: Record<string, unknown> | undefined): State | und
     ...(typeof goal.startedAt === "number" ? { startedAt: goal.startedAt } : {}),
     ...(goal.stoppedBy === "budget" ? { stoppedBy: "budget" as const } : {}),
     ...(typeof goal.endedAt === "number" ? { endedAt: goal.endedAt } : {}),
+    ...(typeof goal.reasked === "number" ? { reasked: goal.reasked } : {}),
     budget: num(goal.budget, 0) > 0 ? num(goal.budget, 0) : DEFAULT_BUDGET_USD,
     baseCost: num(goal.baseCost, 0),
     judgeCost: num(goal.judgeCost, 0),
@@ -181,7 +187,13 @@ export function read(metadata: Record<string, unknown> | undefined): State | und
     ...(typeof goal.waitingSince === "number" ? { waitingSince: goal.waitingSince } : {}),
     ...(typeof goal.note === "string" ? { note: goal.note } : {}),
     ...(owner && typeof owner.pid === "number" && typeof owner.boot === "string"
-      ? { owner: { pid: owner.pid, boot: owner.boot } }
+      ? {
+          owner: {
+            pid: owner.pid,
+            boot: owner.boot,
+            ...(typeof owner.started === "number" ? { started: owner.started } : {}),
+          },
+        }
       : {}),
   }
 }
@@ -212,7 +224,7 @@ export function create(
     baseCost: input.baseCost ?? 0,
     judgeCost: 0,
     spent: 0,
-    owner: { pid: process.pid, boot: boot() },
+    owner: ownerNow(),
   }
 }
 
@@ -221,11 +233,38 @@ export function create(
  * process id, or a process that has exited. A goal owned by another live process
  * (a TUI next to a `sente run`) is left alone.
  */
-export function orphaned(goal: State, alive: (pid: number) => boolean = pidAlive): boolean {
+/** This process as the owner of a goal. */
+export function ownerNow() {
+  return { pid: process.pid, boot: boot(), started: processStarted() }
+}
+
+// When this process started, in epoch milliseconds (to the second).
+const processStarted = () => Math.round(Date.now() - process.uptime() * 1000)
+
+/** Start times of two processes this close are the same process (ps reports whole seconds). */
+const START_TOLERANCE_MS = 5_000
+
+/**
+ * A goal left active by a process that is no longer driving it: an earlier boot of this
+ * process id, a process that has exited, or a live process that only reuses the pid (its start
+ * time differs from the one recorded). A goal owned by another live process (a TUI next to a
+ * `sente run`) is left alone. Without a recorded or readable start time, a live pid counts as
+ * the owner.
+ */
+export function orphaned(
+  goal: State,
+  probe: { alive: (pid: number) => boolean; started: (pid: number) => number | undefined } = {
+    alive: pidAlive,
+    started: pidStarted,
+  },
+): boolean {
   if (goal.status !== "active") return false
   if (!goal.owner) return true
   if (goal.owner.pid === process.pid) return goal.owner.boot !== boot()
-  return !alive(goal.owner.pid)
+  if (!probe.alive(goal.owner.pid)) return true
+  if (goal.owner.started === undefined) return false
+  const started = probe.started(goal.owner.pid)
+  return started !== undefined && Math.abs(started - goal.owner.started) > START_TOLERANCE_MS
 }
 
 function pidAlive(pid: number) {
@@ -235,6 +274,24 @@ function pidAlive(pid: number) {
   } catch (error) {
     return (error as { code?: string }).code === "EPERM"
   }
+}
+
+// Start time of another process from `ps -o etime=` ([[dd-]hh:]mm:ss, on macOS and Linux).
+// Undefined where ps is unavailable (Windows) or the output cannot be read.
+function pidStarted(pid: number): number | undefined {
+  if (process.platform === "win32") return undefined
+  const result = Bun.spawnSync(["ps", "-o", "etime=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" })
+  if (result.exitCode !== 0) return undefined
+  const elapsed = parseElapsed(result.stdout.toString().trim())
+  return elapsed === undefined ? undefined : Date.now() - elapsed * 1000
+}
+
+/** `ps` elapsed time `[[dd-]hh:]mm:ss` in seconds. */
+export function parseElapsed(text: string): number | undefined {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(text)
+  if (!match) return undefined
+  const [, days, hours, minutes, seconds] = match
+  return ((Number(days ?? 0) * 24 + Number(hours ?? 0)) * 60 + Number(minutes)) * 60 + Number(seconds)
 }
 
 export type Command =

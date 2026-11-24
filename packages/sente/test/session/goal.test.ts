@@ -145,9 +145,43 @@ describe("session goal", () => {
   test("a goal of an exited process or an earlier boot is orphaned; a live owner's is not", () => {
     expect(SessionGoal.orphaned(goal())).toBe(false)
     expect(SessionGoal.orphaned(goal({ owner: { pid: process.pid, boot: "earlier" } }))).toBe(true)
-    expect(SessionGoal.orphaned(goal({ owner: { pid: 999_999, boot: "x" } }), () => false)).toBe(true)
-    expect(SessionGoal.orphaned(goal({ owner: { pid: 999_999, boot: "x" } }), () => true)).toBe(false)
+    const probe = (alive: boolean, started?: number) => ({ alive: () => alive, started: () => started })
+    expect(SessionGoal.orphaned(goal({ owner: { pid: 999_999, boot: "x" } }), probe(false))).toBe(true)
+    expect(SessionGoal.orphaned(goal({ owner: { pid: 999_999, boot: "x" } }), probe(true))).toBe(false)
     expect(SessionGoal.orphaned(goal({ status: "paused", owner: undefined }))).toBe(false)
+  })
+
+  test("a live pid that started at another time is a reused pid, so the goal is orphaned", () => {
+    const owner = { pid: 999_999, boot: "x", started: 1_000_000 }
+    const probe = (started?: number) => ({ alive: () => true, started: () => started })
+    // Same process: its start time matches (ps reports whole seconds).
+    expect(SessionGoal.orphaned(goal({ owner }), probe(1_002_000))).toBe(false)
+    // The pid now belongs to a process that started later.
+    expect(SessionGoal.orphaned(goal({ owner }), probe(9_000_000))).toBe(true)
+    // Start time unreadable (Windows, no ps): a live pid still counts as the owner.
+    expect(SessionGoal.orphaned(goal({ owner }), probe(undefined))).toBe(false)
+    // New goals record this process's start time, and this process is never its own orphan.
+    const mine = SessionGoal.create({ objective: "x" })
+    expect(mine.owner?.started).toBeNumber()
+    expect(Math.abs(mine.owner!.started! - (Date.now() - process.uptime() * 1000))).toBeLessThan(2_000)
+    expect(SessionGoal.orphaned(mine)).toBe(false)
+  })
+
+  test("ps elapsed times are read in seconds", () => {
+    expect(SessionGoal.parseElapsed("05:03")).toBe(303)
+    expect(SessionGoal.parseElapsed("2:05:03")).toBe(7503)
+    expect(SessionGoal.parseElapsed("3-02:05:03")).toBe(266_703)
+    expect(SessionGoal.parseElapsed("garbage")).toBeUndefined()
+  })
+
+  test("the start time of a real live process is read with ps", () => {
+    if (process.platform === "win32") return
+    // A child process started now is alive and its start time is read close to now.
+    const child = Bun.spawn(["sleep", "5"])
+    const owner = { pid: child.pid, boot: "x", started: Date.now() }
+    expect(SessionGoal.orphaned(goal({ owner }))).toBe(false)
+    expect(SessionGoal.orphaned(goal({ owner: { ...owner, started: Date.now() - 3_600_000 } }))).toBe(true)
+    child.kill()
   })
 
   test("done completes, blocked pauses, continue counts a round", () => {

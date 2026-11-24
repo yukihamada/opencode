@@ -54,7 +54,7 @@ import { Ripgrep } from "@sente-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { httpError, reply, TestLLMServer } from "../lib/llm-server"
+import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@sente-ai/core/provider"
 import { ModelV2 } from "@sente-ai/core/model"
@@ -3954,5 +3954,55 @@ it.instance("the second question counts against the goal's budget", () =>
     expect(goal?.spent).toBeCloseTo(0.25, 5)
     expect(goal?.status).toBe("paused")
     expect(workHits(yield* llm.hits)).toHaveLength(1)
+  }),
+)
+
+it.instance("a review request that fails part way still counts what it used", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => goalCfg(url, { input: 1, output: 1 }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const chunk = (body: Record<string, unknown>) => ({ id: "chatcmpl-test", object: "chat.completion.chunk", ...body })
+    yield* work(llm, "did it")
+    // The first review streams its answer and usage ($0.10), then the connection fails.
+    yield* llm.pushMatch(
+      isReview,
+      raw({
+        head: [chunk({ choices: [{ delta: { role: "assistant" } }] })],
+        tail: [
+          chunk({ choices: [{ delta: { content: "VERDICT: do" } }] }),
+          chunk({
+            choices: [{ delta: {}, finish_reason: "stop" }],
+            usage: { prompt_tokens: 100_000, completion_tokens: 0, total_tokens: 100_000 },
+          }),
+        ],
+        error: "connection dropped",
+      }),
+    )
+    yield* review(llm, "VERDICT: done\nREASON: verified\nNEXT: -", { input: 100_000, output: 0 })
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "task", agent: "build" })
+
+    const goal = yield* goalOf(chat.id)
+    expect(reviewHits(yield* llm.hits)).toHaveLength(2)
+    expect(goal?.status).toBe("complete")
+    expect(goal?.judgeCost).toBeCloseTo(0.2, 5)
+  }),
+)
+
+it.instance("asking an ambiguous review again is counted on the goal", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(goalCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* work(llm, "did it")
+    yield* review(llm, "Tests are still failing.\n```\nVERDICT: done\nREASON: fine\n```")
+    yield* review(llm, "VERDICT: done\nREASON: all pass\nNEXT: -")
+
+    yield* prompt.command({ sessionID: chat.id, command: "goal", arguments: "task", agent: "build" })
+
+    expect((yield* goalOf(chat.id))?.reasked).toBe(1)
   }),
 )

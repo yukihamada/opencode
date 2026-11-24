@@ -79,6 +79,37 @@ export type Deps = {
 /** Spend shown under the prompt is written at most this often while a turn runs. */
 const SPEND_WRITE_MS = 3_000
 
+/**
+ * Reads a review's streamed answer and what it cost. A request that fails part way still
+ * reports the cost of the steps it finished (they are billed), with the failure; an
+ * interrupt is passed on.
+ */
+export function readReview<E, R>(
+  events: Stream.Stream<LLMEvent, E, R>,
+  cost: (event: { usage?: Usage; providerMetadata?: unknown }) => number,
+): Effect.Effect<{ text: string; cost: number; error?: Cause.Cause<E> }, never, R> {
+  const acc = { text: "", cost: 0, steps: 0, finish: 0 }
+  const used = () => (acc.steps > 0 ? acc.cost : acc.finish)
+  return events.pipe(
+    Stream.runForEach((event) =>
+      Effect.sync(() => {
+        if (LLMEvent.is.textDelta(event)) acc.text += event.text
+        if (LLMEvent.is.stepFinish(event)) {
+          acc.steps++
+          acc.cost += cost(event)
+        }
+        if (LLMEvent.is.finish(event)) acc.finish = cost(event)
+      }),
+    ),
+    Effect.map(() => ({ text: acc.text, cost: used() })),
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.interrupt
+        : Effect.succeed({ text: acc.text, cost: used(), error: cause }),
+    ),
+  )
+}
+
 export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
   const sessions = deps.sessions
   /*
@@ -324,64 +355,54 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
     if (!ag || !mdl) return { verdict: undefined, cost: 0, missing: true }
     const work = SessionGoal.transcript(input.messages, input.goal, yield* deps.todo.get(input.sessionID))
     const ask = (retry: boolean) =>
-      Effect.gen(function* () {
-        const acc = { text: "", cost: 0, steps: 0, finish: 0 }
-        const cost = (event: { usage?: Usage; providerMetadata?: unknown }) =>
+      readReview(
+        deps.llm.stream({
+          agent: ag,
+          user: input.user,
+          system: [],
+          small: true,
+          tools: {},
+          model: mdl,
+          sessionID: input.sessionID,
+          retries: 0,
+          messages: [
+            {
+              role: "user",
+              content: retry
+                ? SessionGoal.judgeRetryPrompt(input.goal, work)
+                : SessionGoal.judgePrompt(input.goal, work),
+            },
+          ],
+        }),
+        (event) =>
           Session.getUsage({
             model: mdl,
             usage: event.usage ?? new Usage({}),
             metadata: event.providerMetadata as Parameters<typeof Session.getUsage>[0]["metadata"],
-          }).cost
-        yield* deps.llm
-          .stream({
-            agent: ag,
-            user: input.user,
-            system: [],
-            small: true,
-            tools: {},
-            model: mdl,
-            sessionID: input.sessionID,
-            retries: 0,
-            messages: [
-              {
-                role: "user",
-                content: retry
-                  ? SessionGoal.judgeRetryPrompt(input.goal, work)
-                  : SessionGoal.judgePrompt(input.goal, work),
-              },
-            ],
-          })
-          .pipe(
-            Stream.runForEach((event) =>
-              Effect.sync(() => {
-                if (LLMEvent.is.textDelta(event)) acc.text += event.text
-                if (LLMEvent.is.stepFinish(event)) {
-                  acc.steps++
-                  acc.cost += cost(event)
-                }
-                if (LLMEvent.is.finish(event)) acc.finish = cost(event)
-              }),
-            ),
-          )
-        return { verdict: SessionGoal.parseVerdict(acc.text), cost: acc.steps > 0 ? acc.cost : acc.finish }
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.interrupt
-            : Effect.logWarning("goal review failed", {
+          }).cost,
+      ).pipe(
+        Effect.tap((read) =>
+          read.error
+            ? Effect.logWarning("goal review failed", {
                 "session.id": input.sessionID,
-                cause: Cause.pretty(cause),
-              }).pipe(Effect.as({ verdict: undefined, cost: 0 })),
+                cause: Cause.pretty(read.error),
+              })
+            : Effect.void,
         ),
+        Effect.map((read) => ({
+          verdict: read.error ? undefined : SessionGoal.parseVerdict(read.text),
+          cost: read.cost,
+        })),
       )
     // Two requests at most: a clear first answer is used; an unusable one is asked again; an
     // ambiguous one (a fenced "done" next to prose) is asked to answer in plain lines, and a
     // second ambiguous answer counts as no verdict.
     const first = yield* ask(false)
     if (first.verdict && !first.verdict.ambiguous) return { ...first, missing: false }
-    const second = yield* ask(first.verdict?.ambiguous === true)
+    const reasked = first.verdict?.ambiguous === true
+    const second = yield* ask(reasked)
     const verdict = second.verdict && !second.verdict.ambiguous ? second.verdict : undefined
-    return { verdict, cost: first.cost + second.cost, missing: false }
+    return { verdict, cost: first.cost + second.cost, missing: false, reasked }
   })
 
   // Background jobs (background subagents, shells) started from this session that still run.
@@ -614,7 +635,12 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
       yield* settle(sessionID, { status: "paused", reason: yield* noJudgeModel(language) }, current)
       return "break" as const
     }
-    const reviewed = { ...current, judgeCost: current.judgeCost + judged.cost, spent: current.spent + judged.cost }
+    const reviewed = {
+      ...current,
+      judgeCost: current.judgeCost + judged.cost,
+      spent: current.spent + judged.cost,
+      ...("reasked" in judged && judged.reasked ? { reasked: (current.reasked ?? 0) + 1 } : {}),
+    }
     // The reviewer took a while: the user may have typed, cleared the goal or set a new one.
     const latest = yield* readGoal(sessionID)
     const newest = yield* sessions
@@ -840,7 +866,7 @@ export const make = Effect.fn("SessionGoalRunner.make")(function* (deps: Deps) {
               baseCost,
               judgeCost: 0,
               spent: 0,
-              owner: { pid: process.pid, boot: SessionGoal.boot() },
+              owner: SessionGoal.ownerNow(),
               updatedAt: Date.now(),
               ...(free ? { note: free } : {}),
             }
