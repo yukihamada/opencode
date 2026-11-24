@@ -2335,3 +2335,79 @@ test("parseManagedPlist handles empty config", async () => {
   )
   expect(config.$schema).toBe("https://teai.io/sente/config.json")
 })
+
+it.effect("tracks where hooks come from: user config, project files", () =>
+  withConfigTree(
+    {
+      global: { hooks: { PreToolUse: [{ matcher: "bash", hooks: [{ type: "command", command: "echo global" }] }] } },
+      project: { hooks: { Stop: [{ hooks: [{ type: "command", command: "echo project", timeout: 5 }] }] } },
+      local: {
+        hooks: {
+          PostToolUse: [
+            {
+              hooks: [
+                { type: "command", command: "echo local" },
+                { type: "prompt", command: "ignored" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    Effect.gen(function* () {
+      const origins = (yield* Config.use.get()).hook_origins ?? []
+      const find = (command: string) => origins.filter((item) => item.command === command)
+      expect(find("echo global").length).toBeGreaterThan(0)
+      expect(
+        find("echo global").every(
+          (item) => item.kind === "user" && item.event === "PreToolUse" && item.matcher === "bash",
+        ),
+      ).toBe(true)
+      expect(find("echo project")).toEqual([expect.objectContaining({ event: "Stop", kind: "project", timeout: 5 })])
+      expect(find("echo project")[0].source.endsWith("sente.json")).toBe(true)
+      expect(find("echo local")).toEqual([expect.objectContaining({ event: "PostToolUse", kind: "project" })])
+      expect(find("ignored")).toEqual([])
+    }),
+  ),
+)
+
+const remoteHooks = wellKnown({
+  config: { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo from-org-server" }] }] } },
+})
+
+remoteHooks.it.instance("hooks from a remote well-known config are marked remote, not user config", () =>
+  Effect.gen(function* () {
+    const origins = (yield* Config.use.get()).hook_origins ?? []
+    expect(origins.filter((item) => item.command === "echo from-org-server")).toEqual([
+      expect.objectContaining({ kind: "remote", source: "https://example.com/.well-known/sente" }),
+    ])
+  }),
+)
+
+const orgHooksIt = configIt({
+  account: Layer.mock(Account.Service)({
+    active: () =>
+      Effect.succeed(
+        Option.some({
+          id: AccountID.make("account-1"),
+          email: "user@example.com",
+          url: "https://control.example.com",
+          active_org_id: OrgID.make("org-1"),
+        }),
+      ),
+    config: () =>
+      Effect.succeed(
+        Option.some({ hooks: { Stop: [{ hooks: [{ type: "command", command: "echo from-org-api" }] }] } }),
+      ),
+    token: () => Effect.succeed(Option.none()),
+  }),
+})
+
+orgHooksIt.instance("hooks from the organization's /api/config are marked remote", () =>
+  Effect.gen(function* () {
+    const origins = (yield* Config.use.get()).hook_origins ?? []
+    expect(origins.filter((item) => item.command === "echo from-org-api")).toEqual([
+      expect.objectContaining({ kind: "remote", source: "https://control.example.com/api/config" }),
+    ])
+  }),
+)

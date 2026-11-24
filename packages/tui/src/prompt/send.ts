@@ -10,10 +10,39 @@ export async function deliverPrompt(
   return sendPrompt(client, input).then(
     (result) => ({ sent: true as const, ...result }),
     (error: unknown) => {
+      // A UserPromptSubmit hook refused the prompt on purpose: nothing was lost in transit, so it is not a recovery
+      // case for the stash. The prompt stays in history.
+      const blocked = hookBlockReason(error)
+      if (blocked !== undefined) return { sent: false as const, error, blocked }
       stash.push({ ...input.prompt, recovery: { id: crypto.randomUUID(), sessionID: input.sessionID } })
-      return { sent: false as const, error }
+      return { sent: false as const, error, blocked }
     },
   )
+}
+
+// The server answers a prompt refused by a UserPromptSubmit hook with a HookBlockedError body. The SDK throws an Error
+// carrying that body in `cause.body`; accept the bare body too.
+export function hookBlockReason(error: unknown) {
+  const body = errorBody(error)
+  if (!body || body.name !== "HookBlockedError") return
+  const data = body.data && typeof body.data === "object" ? body.data : {}
+  const message = "message" in data && typeof data.message === "string" ? data.message : ""
+  return message.replace(/^UserPromptSubmit hook blocked this prompt: /, "")
+}
+
+function errorBody(error: unknown): { name?: unknown; data?: unknown } | undefined {
+  if (!error || typeof error !== "object") return
+  if ("name" in error && error.name === "HookBlockedError") return error
+  const cause = "cause" in error ? error.cause : undefined
+  if (!cause || typeof cause !== "object" || !("body" in cause)) return
+  const body = cause.body
+  return body && typeof body === "object" ? body : undefined
+}
+
+export function hookBlockedText(reason: string, locale = Intl.DateTimeFormat().resolvedOptions().locale) {
+  if (locale.toLowerCase().startsWith("ja"))
+    return { title: "フックにより送信を止めました", message: `${reason}\n入力は履歴に残っています。` }
+  return { title: "A hook stopped this prompt", message: `${reason}\nYour input is kept in history.` }
 }
 
 export async function sendPrompt(

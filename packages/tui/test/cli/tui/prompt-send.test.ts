@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createSenteClient } from "@sente-ai/sdk/v2"
-import { promptUnchanged, sendFailureText, sendPrompt } from "../../../src/prompt/send"
+import { deliverPrompt, hookBlockedText, promptUnchanged, sendFailureText, sendPrompt } from "../../../src/prompt/send"
 import type { PromptInfo } from "../../../src/prompt/history"
 
 const attachment = {
@@ -131,4 +131,42 @@ test("recovery guidance is available in Japanese and English", () => {
   expect(sendFailureText("ja-JP").retained).toContain("入力は残っています")
   expect(sendFailureText("en-US").saved).toContain("Check the conversation")
   expect(sendFailureText("fr-FR").recover).toEqual(sendFailureText("en-US").recover)
+})
+
+describe("prompt refused by a UserPromptSubmit hook", () => {
+  test("is reported with the hook's reason and not stashed for recovery", async () => {
+    using server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch() {
+        return Response.json(
+          { name: "HookBlockedError", data: { message: "UserPromptSubmit hook blocked this prompt: no secrets" } },
+          { status: 400 },
+        )
+      },
+    })
+    const stashed: unknown[] = []
+    const result = await deliverPrompt(createSenteClient({ baseUrl: server.url.toString() }), submission(), {
+      push: (entry) => stashed.push(entry),
+    })
+    expect(result).toMatchObject({ sent: false, blocked: "no secrets" })
+    expect(stashed).toEqual([])
+    expect(hookBlockedText("no secrets", "ja-JP").title).toBe("フックにより送信を止めました")
+  })
+
+  test("other failures are still stashed", async () => {
+    using server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch() {
+        return Response.json({ name: "UnknownError", data: { message: "down" } }, { status: 503 })
+      },
+    })
+    const stashed: unknown[] = []
+    const result = await deliverPrompt(createSenteClient({ baseUrl: server.url.toString() }), submission(), {
+      push: (entry) => stashed.push(entry),
+    })
+    expect(result).toMatchObject({ sent: false, blocked: undefined })
+    expect(stashed.length).toBe(1)
+  })
 })
