@@ -71,8 +71,8 @@ function tokens(command: string, scope: Scope) {
     .map((token) =>
       token
         .replace(/['"]/g, "")
-        // Shell escapes such as `a\.sh` name the same file as `a.sh`.
-        .replace(/\\(.)/g, "$1"),
+        // POSIX shell escapes such as `a\.sh` name the same file as `a.sh` (on Windows, `\` separates paths).
+        .replace(process.platform === "win32" ? /(?!)/g : /\\(.)/g, "$1"),
     )
     .filter((token) => token && !token.startsWith("-"))
 }

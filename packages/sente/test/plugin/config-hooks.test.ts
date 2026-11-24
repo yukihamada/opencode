@@ -407,15 +407,19 @@ describe("trust", () => {
     expect(after.trusted).toBe(false)
   })
 
-  test("$PWD and shell escapes resolve to the same script; other variables are reported as not covered", async () => {
-    await using tmp = await tmpdir()
-    const local = { projectDir: tmp.path, cwd: tmp.path }
-    await Bun.write(path.join(tmp.path, ".sente", "hooks", "a.sh"), "exit 0\n")
-    const file = path.join(tmp.path, ".sente", "hooks", "a.sh")
-    expect(ConfigHooks.referencedFiles("sh $PWD/.sente/hooks/a.sh", local)).toEqual([file])
-    expect(ConfigHooks.referencedFiles("sh .sente/hooks/a\\.sh", local)).toEqual([file])
-    expect(ConfigHooks.unresolved('sh "$HOOK_DIR"/a.sh $(pwd)/b.sh', local)).toEqual(["$HOOK_DIR/a.sh", "$"])
-  })
+  // POSIX shell syntax; on Windows `\` is a path separator.
+  test.skipIf(process.platform === "win32")(
+    "$PWD and shell escapes resolve to the same script; other variables are reported as not covered",
+    async () => {
+      await using tmp = await tmpdir()
+      const local = { projectDir: tmp.path, cwd: tmp.path }
+      await Bun.write(path.join(tmp.path, ".sente", "hooks", "a.sh"), "exit 0\n")
+      const file = path.join(tmp.path, ".sente", "hooks", "a.sh")
+      expect(ConfigHooks.referencedFiles("sh $PWD/.sente/hooks/a.sh", local)).toEqual([file])
+      expect(ConfigHooks.referencedFiles("sh .sente/hooks/a\\.sh", local)).toEqual([file])
+      expect(ConfigHooks.unresolved('sh "$HOOK_DIR"/a.sh $(pwd)/b.sh', local)).toEqual(["$HOOK_DIR/a.sh", "$"])
+    },
+  )
 
   test("only files inside the project can be trusted from it", () => {
     const ctx = { directory: "/work/app", worktree: "/" }
@@ -461,8 +465,8 @@ describe("tool input", () => {
       "*** End Patch",
     ]
     expect(ConfigHooksRunner.toolInput("apply_patch", { patchText: patch.join("\n") }, "/repo")).toMatchObject({
-      file_path: "/repo/src/a.ts",
-      file_paths: ["/repo/src/a.ts", "/repo/src/b.ts", "/abs/c.ts"],
+      file_path: path.resolve("/repo", "src/a.ts"),
+      file_paths: [path.resolve("/repo", "src/a.ts"), path.resolve("/repo", "src/b.ts"), path.resolve("/abs/c.ts")],
     })
   })
 
@@ -637,7 +641,7 @@ posix("hooks never outlive Sente, and Sente's signal handling is left alone", ()
       expect(await waitFor(async () => !(await groupAlive(pidfile)))).toBe(true)
     })
 
-  test("a running hook is killed when the worker that started it is terminated (TUI server worker)", async () => {
+  test("a running hook is killed when the TUI server worker shuts down", async () => {
     await using tmp = await tmpdir()
     const pidfile = path.join(tmp.path, "pgid")
     const proc = Bun.spawn([process.execPath, fixture, "worker", pidfile], { stdout: "pipe", stderr: "ignore" })

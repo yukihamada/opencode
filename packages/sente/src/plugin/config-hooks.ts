@@ -111,6 +111,13 @@ export function hookEnv(extra: Record<string, string | undefined> = {}) {
 const live = new Set<ChildProcess>()
 const exitWatch = { installed: false }
 
+// Kills every hook process still running. Called when the TUI server worker shuts down: terminating a worker does not
+// close the pipes it opened on every platform (Linux keeps them until the process exits), so the lifeline alone would
+// only fire once the whole TUI process ends.
+export function killAll() {
+  live.forEach((item) => killTree(item, true))
+}
+
 function killTree(child: ChildProcess, sync = false) {
   if (!child.pid || child.exitCode !== null) return
   try {
@@ -211,7 +218,7 @@ export function exec(
     live.add(child)
     if (!exitWatch.installed) {
       exitWatch.installed = true
-      process.on("exit", () => live.forEach((item) => killTree(item, true)))
+      process.on("exit", killAll)
     }
     // The lifeline pipe must not keep Sente's event loop alive.
     const lifeline = child.stdio[3]
@@ -582,6 +589,9 @@ export function ConfigHooksPlugin(
           output.output = `${output.output ?? ""}\n\n<hook-feedback>\n${notes.join("\n\n")}\n</hook-feedback>`
       },
       async dispose() {
+        // Hooks guarding a turn are pointless once the instance goes away; Stop/Notification hooks may finish (they
+        // are bounded by their own timeout) so `sente run` does not exit under them.
+        running.forEach((set) => set.forEach((controller) => controller.abort()))
         await Promise.allSettled([...pending])
       },
     }

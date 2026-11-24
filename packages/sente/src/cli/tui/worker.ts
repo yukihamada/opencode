@@ -92,6 +92,9 @@ export const rpc = {
     await rpc.reload()
   },
   async shutdown() {
+    // Stop running config hooks first: terminating this worker does not close their lifeline pipe on every platform.
+    const { ConfigHooksRunner } = await import("@/plugin/config-hooks")
+    ConfigHooksRunner.killAll()
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
     process.off("unhandledRejection", onUnhandledRejection)
