@@ -8,7 +8,7 @@ import { useLanguage } from "./language"
 import { Loop } from "../util/loop"
 import { loopText } from "../util/loop-text"
 import { sendPrompt } from "../prompt/send"
-import { sessionCostWithSubagents } from "../util/spend"
+import { Identifier } from "@sente-ai/core/id/id"
 
 const COST_LIMIT_METADATA_KEY = "cost_limit_usd"
 
@@ -28,18 +28,29 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     let timer: ReturnType<typeof setInterval> | undefined
     // 費用確認(request_cost)の依頼ID → 会話。回答が来たら承認/拒否をループへ伝える。
     const costRequests = new Map<string, string>()
-    // 会話の費用はメッセージIDごとに台帳へ。同期データの「直近100件」とは別に、捨てずに覚える。
+    // ループのある会話(と子セッション)のメッセージだけを台帳へ。ループが無くなったら消す。
     const ledger = Loop.createLedger()
-    ledger.seed(sync.data.message)
+    // 会話ごとの、ループが送ったメッセージID(本人の依頼と見分ける)。
+    const loopMessages = new Map<string, Set<string>>()
+    function release() {
+      const active = new Set(manager.list().map((item) => item.target.sessionID))
+      ;[...loopMessages.keys()].filter((sessionID) => !active.has(sessionID)).forEach((sessionID) => {
+        loopMessages.delete(sessionID)
+        ledger.unwatch(sessionID)
+      })
+    }
 
     const manager = Loop.create({
       now: () => Date.now(),
       session: (sessionID) => Loop.sessionState(sync.data, sessionID),
-      cost: (sessionID) => ledger.total(sessionID, sync.data.session),
+      runCost: (sessionID, run) => ledger.runCost(sessionID, run, loopMessages.get(sessionID) ?? new Set(), sync.data.session),
+      newMessageID: () => Identifier.ascending("message"),
       abort: (sessionID) => void sdk.client.session.abort({ sessionID }).catch(() => {}),
       lastTyped: () => typedAt,
-      send: (item) =>
-        sendPrompt(sdk.client, {
+      send: (item, messageID) => {
+        loopMessages.get(item.target.sessionID)?.add(messageID)
+        return sendPrompt(sdk.client, {
+          messageID,
           sessionID: item.target.sessionID,
           prompt: { input: item.prompt, parts: [] },
           text: item.prompt,
@@ -48,7 +59,8 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
           variant: item.target.variant,
           commands: sync.data.command.map((command) => command.name),
           editorParts: [],
-        }),
+        })
+      },
       notify: (event) => {
         const t = text()
         if (event.type === "paused" && !event.repeat)
@@ -62,11 +74,16 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
         if (event.type === "finished" && event.reason !== "stopped")
           toast.show({
             variant: "info",
-            message: event.aborted ? t.abortedBudget(event.item.id, event.item.spent) : t.finished(event.item.id, event.reason, event.item.spent),
+            message: event.aborted
+              ? t.abortedBudget(event.item.id, event.item.spent)
+              : event.interjected
+                ? t.interjectedBudget(event.item.id, event.item.spent)
+                : t.finished(event.item.id, event.reason, event.item.spent),
             duration: 10_000,
           })
       },
       change: () => {
+        release()
         setVersion((value) => value + 1)
         schedule()
       },
@@ -86,7 +103,7 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
     }
 
     const unsubscribe = [
-      event.on("message.updated", (event) => ledger.record(event.properties.info)),
+      event.on("message.updated", (event) => ledger.record(event.properties.info, sync.data.session)),
       event.on("permission.asked", (event) => {
         if (event.properties.permission === Loop.COST_PERMISSION)
           costRequests.set(event.properties.id, event.properties.sessionID)
@@ -127,24 +144,23 @@ export const { use: useLoop, provider: LoopProvider, context: LoopContext } = cr
         const paused = items.find((item) => item.pauseReason)?.pauseReason
         return text().footer(items.length, next === undefined ? undefined : Loop.countdown(next - now()), spent, paused)
       },
-      /** 会話の累計が費用確認ラインを超えていれば、そのライン(USD)。開始時の注意に使う。 */
-      costLine(sessionID: string) {
-        const info = sync.session.get(sessionID)
+      /** 会話の累計が費用確認ラインを超えていれば、そのライン(USD)。開始時の注意に使う(判定はサーバーと同じ規則)。 */
+      costLine(input: { sessionID: string; agent: string; model: string }) {
+        const info = sync.session.get(input.sessionID)
         const root = info?.parentID ? sync.session.get(info.parentID) : info
-        const permission = sync.data.config.permission
-        const rootID = root?.id ?? sessionID
         return Loop.costLineExceeded({
           own: info?.metadata?.[COST_LIMIT_METADATA_KEY],
           root: root?.metadata?.[COST_LIMIT_METADATA_KEY],
-          spent: Math.max(
-            sessionCostWithSubagents({ sessionID: rootID, sessions: sync.data.session }),
-            ledger.total(rootID, sync.data.session),
-          ),
-          allow: typeof permission === "object" && permission !== null && "request_cost" in permission && permission.request_cost === "allow",
+          env: process.env.SENTE_COST_LIMIT_USD,
+          // サーバーは親会話のメッセージ費用で数える。画面ではサーバー集計の会話費用(補助処理込み・やや多め)で近似する。
+          spent: root?.cost ?? info?.cost ?? 0,
+          rules: sync.data.agent.find((agent) => agent.name === input.agent)?.permission ?? [],
+          model: input.model,
         })
       },
       start(input: Parameters<typeof manager.start>[0]) {
-        ledger.seed(sync.data.message)
+        ledger.watch(input.target.sessionID)
+        if (!loopMessages.has(input.target.sessionID)) loopMessages.set(input.target.sessionID, new Set())
         const result = manager.start(input)
         if (result.item) setNow(Date.now())
         return result

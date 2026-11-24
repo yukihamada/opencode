@@ -74,7 +74,10 @@ async function setup() {
   await Bun.write(path.join(tmp.path, "kv.json"), JSON.stringify({ language: "ja" }))
   await Bun.write(path.join(tmp.path, "model.json"), JSON.stringify({ recent: [{ providerID: "teai", modelID: "auto" }] }))
   const provider = { id: "teai", name: "teai", env: [], models: { auto: model("auto") } }
-  const prompts: Array<{ at: number; text: string }> = []
+  const prompts: Array<{ at: number; text: string; messageID?: string }> = []
+  const aborts: string[] = []
+  // 本物のサーバーと同じく、prompt の応答は生成が終わるまで返さない(hold=true の間)
+  const server = { hold: false, release: [] as (() => void)[] }
   const base = createFetch((url) => {
     if (url.pathname === "/config/providers") return json({ providers: [provider], default: { teai: "auto" } })
     if (url.pathname === "/provider") return json({ all: [provider], default: { teai: "auto" }, connected: ["teai"] })
@@ -88,8 +91,13 @@ async function setup() {
     const method = request ? request.method : init?.method
     if (method === "POST" && url.pathname === `/session/${sessionID}/message`) {
       const body = request ? await request.clone().json() : JSON.parse(String(init?.body))
-      prompts.push({ at: Date.now(), text: body.parts.find((part: { type: string }) => part.type === "text")?.text })
+      prompts.push({ at: Date.now(), text: body.parts.find((part: { type: string }) => part.type === "text")?.text, messageID: body.messageID })
+      if (server.hold) await new Promise<void>((resolve) => server.release.push(resolve))
       return json({})
+    }
+    if (method === "POST" && url.pathname === `/session/${sessionID}/abort`) {
+      aborts.push(sessionID)
+      return json(true)
     }
     return base.fetch(input as RequestInfo, init)
   }) as typeof globalThis.fetch
@@ -172,7 +180,8 @@ async function setup() {
     app.renderer.destroy()
     await tmp[Symbol.asyncDispose]()
   }
-  return { app, ctx, prompts, submit, emit, teardown, prompt: () => prompt }
+  const finishRun = () => server.release.splice(0).forEach((resolve) => resolve())
+  return { app, ctx, prompts, aborts, server, finishRun, submit, emit, teardown, prompt: () => prompt }
 }
 
 test("/loop is handled locally: registers, clears the input, shows the footer and sends ~5s later", async () => {
@@ -292,23 +301,68 @@ test("/loop list opens the list (renders under the dialog layer) and resumes fro
   }
 })
 
-test("loop budget counts cost from message.updated events (not the trimmed screen list)", async () => {
+const assistant = (id: string, parentID: string, cost: number) => ({
+  id,
+  sessionID,
+  role: "assistant",
+  cost,
+  parentID,
+  time: { created: Date.now() },
+  modelID: "auto",
+  providerID: "teai",
+  mode: "build",
+  agent: "build",
+  path: { cwd: "/", root: "/" },
+  tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+})
+
+test("loop budget counts only replies to the loop's own message (message.updated events)", async () => {
   const s = await setup()
   try {
+    s.server.hold = true
     await s.submit("/loop 1m --budget 0.05 状況確認")
     const item = s.ctx.loop.list()[0]
     await wait(() => s.prompts.length > 0, 8000)
-    // ループの回の応答(費用 $0.08)が届く
-    s.emit({
-      type: "message.updated",
-      properties: {
-        sessionID,
-        info: { id: "msg_loop_reply", sessionID, role: "assistant", cost: 0.08, time: { created: Date.now() }, parentID: "x", modelID: "auto", providerID: "teai", mode: "build", agent: "build", path: { cwd: "/", root: "/" }, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } },
-      },
-    })
+    const loopMessage = s.prompts[0].messageID!
+    expect(loopMessage).toStartWith("msg_")
+    // 本人の別の依頼への高い応答は数えない
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_other_reply", "msg_someone_else", 3) } })
+    await Bun.sleep(1500)
+    expect(s.ctx.loop.list().length).toBe(1)
+    // ループの回への応答(費用 $0.08)で、生成中に上限を超える → ループの回だけなので会話を中断して終わる
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_loop_reply", loopMessage, 0.08) } })
     await wait(() => s.ctx.loop.list().length === 0, 4000)
     expect(item.spent).toBeCloseTo(0.08)
-    expect(s.ctx.toast.currentToast?.message).toContain("上限に達したため")
+    await wait(() => s.aborts.length === 1, 2000)
+    expect(s.ctx.toast.currentToast?.message).toContain("中断して終了")
+    expect(s.ctx.toast.currentToast?.message).toContain("途中のまま")
+    s.finishRun()
+  } finally {
+    await s.teardown()
+  }
+}, 20_000)
+
+test("a user request during a loop run is never interrupted: the loop ends alone", async () => {
+  const s = await setup()
+  try {
+    s.server.hold = true
+    await s.submit("/loop 1m --budget 0.05 状況確認")
+    await wait(() => s.prompts.length > 0, 8000)
+    const loopMessage = s.prompts[0].messageID!
+    // 回の最中に本人が同じ会話へ依頼(user メッセージが会話に入る)
+    s.emit({
+      type: "message.updated",
+      properties: { sessionID, info: { id: "msg_user_mid", sessionID, role: "user", time: { created: Date.now() + 1 }, agent: "build", model: { providerID: "teai", modelID: "auto" } } },
+    })
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_user_reply", "msg_user_mid", 2) } })
+    await Bun.sleep(1500)
+    expect(s.ctx.loop.list().length).toBe(1)
+    s.emit({ type: "message.updated", properties: { sessionID, info: assistant("msg_loop_reply2", loopMessage, 0.08) } })
+    await wait(() => s.ctx.loop.list().length === 0, 4000)
+    await Bun.sleep(500)
+    expect(s.aborts).toEqual([])
+    expect(s.ctx.toast.currentToast?.message).toContain("会話は止めていません")
+    s.finishRun()
   } finally {
     await s.teardown()
   }

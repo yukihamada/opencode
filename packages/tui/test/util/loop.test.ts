@@ -13,7 +13,7 @@ function harness(input: { respondMs?: number; costPerRun?: number } = {}) {
   const clock = { now: 1_000_000 }
   const busy = new Map<string, boolean>()
   const gate = new Map<string, boolean>()
-  const spend = new Map<string, number>()
+  const runCosts = new Map<string, number>()
   const sent: Loop.Item[] = []
   const events: Loop.Event[] = []
   const pending: { at: number; sessionID: string; resolve: () => void; reject: () => void }[] = []
@@ -22,9 +22,9 @@ function harness(input: { respondMs?: number; costPerRun?: number } = {}) {
   const manager = Loop.create({
     now: () => clock.now,
     session: (sessionID) => ({ busy: busy.get(sessionID) ?? false, costGate: gate.get(sessionID) ?? false }),
-    cost: (sessionID) => spend.get(sessionID) ?? 0,
+    runCost: (_sessionID, run) => ({ cost: runCosts.get(run.messageID) ?? 0, interjected: false }),
     lastTyped: () => typed.at,
-    send: (item) => {
+    send: (item, messageID) => {
       sent.push(structuredClone(item))
       const sessionID = item.target.sessionID
       if (fail.next) return Promise.reject(new Error("offline"))
@@ -35,7 +35,7 @@ function harness(input: { respondMs?: number; costPerRun?: number } = {}) {
           sessionID,
           resolve: () => {
             busy.set(sessionID, false)
-            spend.set(sessionID, (spend.get(sessionID) ?? 0) + (input.costPerRun ?? 0))
+            runCosts.set(messageID, input.costPerRun ?? 0)
             resolve()
           },
           reject: () => {
@@ -66,7 +66,61 @@ function harness(input: { respondMs?: number; costPerRun?: number } = {}) {
     }
   }
   const count = (prompt: string) => sent.filter((item) => item.prompt === prompt).length
-  return { clock, busy, gate, spend, sent, events, pending, typed, fail, manager, advance, flush, count }
+  return { clock, busy, gate, sent, events, pending, typed, fail, manager, advance, flush, count }
+}
+
+// 本物の台帳を使う偽の会話。ループの回(メッセージID指定)と本人の依頼・応答・子セッションを時刻つきで記録する。
+function world() {
+  const clock = { now: 1_000_000 }
+  const sessions: { id: string; parentID?: string; time: { created: number; updated: number } }[] = [
+    { id: "s", time: { created: 0, updated: 0 } },
+  ]
+  const ledger = Loop.createLedger()
+  const loopIDs = new Set<string>()
+  const state = { busy: false, seq: 0 }
+  const aborted: string[] = []
+  const events: Loop.Event[] = []
+  const pending: (() => void)[] = []
+  const record = (message: { id: string; role: string; parentID?: string; cost?: number; sessionID?: string }) =>
+    ledger.record({ sessionID: "s", ...message, time: { created: clock.now } }, sessions)
+  const manager = Loop.create({
+    now: () => clock.now,
+    session: () => ({ busy: state.busy, costGate: false }),
+    lastTyped: () => undefined,
+    runCost: (sessionID, run) => ledger.runCost(sessionID, run, loopIDs, sessions),
+    newMessageID: () => `msg_loop${++state.seq}`,
+    abort: (sessionID) => {
+      aborted.push(sessionID)
+      state.busy = false
+    },
+    notify: (event) => events.push(event),
+    send: (_item, messageID) => {
+      loopIDs.add(messageID)
+      record({ id: messageID, role: "user" })
+      state.busy = true
+      return new Promise<void>((resolve) => pending.push(resolve))
+    },
+  })
+  const tick = (ms = 1000) => {
+    const end = clock.now + ms
+    while (clock.now < end) {
+      clock.now += 1000
+      manager.tick()
+    }
+  }
+  const lastLoop = () => `msg_loop${state.seq}`
+  let reply = 0
+  // ループの回(または本人の依頼)への応答ステップ
+  const step = (parentID: string, cost: number, sessionID = "s") => record({ id: `msg_r${++reply}`, role: "assistant", parentID, cost, sessionID })
+  // 本人の依頼(応答も同じ会話で続く)
+  const userAsks = (id: string) => record({ id, role: "user" })
+  const endRun = async () => {
+    state.busy = false
+    pending.splice(0).forEach((resolve) => resolve())
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+  return { clock, sessions, ledger, state, aborted, events, manager, tick, lastLoop, step, userAsks, endRun, loopIDs }
 }
 
 describe("util.loop parse", () => {
@@ -119,6 +173,10 @@ describe("util.loop parse", () => {
     expect(Loop.parseCommand("/loop 5分デプロイ確認")).toEqual({ type: "invalid", reason: "interval" })
     expect(Loop.parseCommand("/loop 2日間 毎日の確認")).toEqual({ type: "invalid", reason: "interval" })
     expect(Loop.parseCommand("/loop 1時間半確認")).toEqual({ type: "invalid", reason: "interval" })
+    // 単独の「毎」は受け付けない(「5分毎日の…」を「日の…」と取り違えない)。「毎に」は可
+    expect(Loop.parseCommand("/loop 5分毎日の売上を確認")).toEqual({ type: "invalid", reason: "interval" })
+    expect(Loop.parseCommand("/loop 5分毎 確認")).toEqual({ type: "invalid", reason: "interval" })
+    expect(Loop.parseCommand("/loop 5分毎に確認")).toEqual(start(300_000, "確認"))
     expect(Loop.parseCommand("/loop every 5m check deploy")).toEqual(start(300_000, "check deploy"))
     expect(Loop.parseCommand("/loop 5mcheck")).toEqual({ type: "invalid", reason: "interval" })
     expect(Loop.parseCommand("/loop 1h30 x")).toEqual({ type: "invalid", reason: "interval" })
@@ -273,49 +331,12 @@ describe("util.loop scheduler", () => {
 
   test("stops at the per-loop budget, independent of server cost settings", async () => {
     const h = harness({ costPerRun: 0.4 })
-    h.spend.set("ses_a", 3) // 会話の既存の費用は数えない
     const item = h.manager.start({ target: target(), prompt: "hi", interval: 60_000, budget: 1 }).item!
     await h.advance(600_000)
     expect(h.count("hi")).toBe(3)
     expect(item.spent).toBeCloseTo(1.2)
     expect(h.events.some((event) => event.type === "finished" && event.reason === "budget")).toBe(true)
     expect(h.manager.list()).toEqual([])
-  })
-
-  test("budget is checked while a run is generating: the run is interrupted once exceeded", async () => {
-    const aborted: string[] = []
-    const cost = { v: 0 }
-    const busy = { v: false }
-    const clock = { now: 0 }
-    const events: Loop.Event[] = []
-    const manager = Loop.create({
-      now: () => clock.now,
-      session: () => ({ busy: busy.v, costGate: false }),
-      cost: () => cost.v,
-      lastTyped: () => undefined,
-      abort: (sessionID) => aborted.push(sessionID),
-      notify: (event) => events.push(event),
-      send: () => {
-        busy.v = true
-        return new Promise(() => {})
-      },
-    })
-    manager.start({ target: target(), prompt: "x", interval: 60_000, budget: 1 })
-    for (let i = 0; i < 6; i++) {
-      clock.now += 1000
-      manager.tick()
-    }
-    cost.v = 0.4 // 1ステップ目
-    clock.now += 1000
-    manager.tick()
-    expect(aborted).toEqual([])
-    cost.v = 7 // 次のステップで大きく超えた
-    clock.now += 1000
-    manager.tick()
-    expect(aborted).toEqual(["ses_a"])
-    expect(manager.list()).toEqual([])
-    const finished = events.find((event) => event.type === "finished")
-    expect(finished && finished.type === "finished" && [finished.reason, finished.aborted, finished.item.spent]).toEqual(["budget", true, 7])
   })
 
   test("caps expiry at 7 days and concurrent loops at the limit", () => {
@@ -434,83 +455,134 @@ describe("util.loop TUI state", () => {
     expect(Loop.sessionState(data, "none")).toEqual({ busy: false, costGate: false })
   })
 
-  test("ledger keeps per-message costs (incl. subagents) even after the screen drops old messages", () => {
+  test("ledger records only conversations with a loop (and their subagents), and forgets them on unwatch", () => {
     const time = { created: 0, updated: 0 }
-    const ledger = Loop.createLedger()
-    ledger.seed({
-      root: [
-        { id: "m1", sessionID: "root", role: "user", cost: 5 },
-        { id: "m2", sessionID: "root", role: "assistant", cost: 0.1 },
-      ],
-    })
-    ledger.record({ id: "m2", sessionID: "root", role: "assistant", cost: 0.2 }) // 同じIDは上書き
-    ledger.record({ id: "c1", sessionID: "child", role: "assistant", cost: 0.5 })
-    ledger.record({ id: "o1", sessionID: "other", role: "assistant", cost: 7 })
-    ledger.seed({ root: [] }) // 画面側から消えても台帳は減らない
     const sessions = [
-      { id: "root", time },
-      { id: "child", parentID: "root", time },
+      { id: "s", time },
+      { id: "child", parentID: "s", time },
       { id: "other", time },
     ]
-    expect(ledger.total("root", sessions)).toBeCloseTo(0.7)
+    const ledger = Loop.createLedger()
+    ledger.record({ id: "m0", sessionID: "s", role: "assistant", cost: 1 }, sessions)
+    expect(ledger.size()).toBe(0)
+    ledger.watch("s")
+    ledger.record({ id: "m1", sessionID: "s", role: "assistant", cost: 1 }, sessions)
+    ledger.record({ id: "c1", sessionID: "child", role: "assistant", cost: 1 }, sessions)
+    ledger.record({ id: "o1", sessionID: "other", role: "assistant", cost: 1 }, sessions)
+    expect(ledger.size()).toBe(2)
+    ledger.unwatch("s")
+    expect(ledger.size()).toBe(0)
   })
 
-  test("--budget works in a long conversation where the screen keeps only the latest 100 messages", async () => {
-    // round2 と同じ条件: 既存100件の高い会話・1回 $0.09(3ステップ×$0.03)・上限 $0.5 → 6回で終了
-    const time = { created: 0, updated: 0 }
-    const sessions = [{ id: "s", cost: 50, time }]
-    const screen = Array.from({ length: 100 }, (_, i) => ({ id: `old${i}`, sessionID: "s", role: i % 2 ? "assistant" : "user", cost: i % 2 ? 0.05 : 0 }))
-    const ledger = Loop.createLedger()
-    ledger.seed({ s: screen })
-    const clock = { now: 1_000_000 }
-    const busy = { v: false }
-    const pending: (() => void)[] = []
-    const events: Loop.Event[] = []
-    let seq = 0
-    const manager = Loop.create({
-      now: () => clock.now,
-      session: () => ({ busy: busy.v, costGate: false }),
-      lastTyped: () => undefined,
-      cost: (id) => ledger.total(id, sessions),
-      notify: (event) => events.push(event),
-      send: () => {
-        busy.v = true
-        return new Promise<void>((resolve) =>
-          pending.push(() => {
-            const added = [
-              { id: `n${++seq}`, sessionID: "s", role: "user", cost: 0 },
-              ...[1, 2, 3].map(() => ({ id: `n${++seq}`, sessionID: "s", role: "assistant", cost: 0.03 })),
-            ]
-            added.forEach(ledger.record)
-            screen.push(...added)
-            screen.splice(0, screen.length - 100)
-            busy.v = false
-            resolve()
-          }),
-        )
-      },
-    })
-    const item = manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.5 }).item!
-    for (let i = 0; i < 3600; i++) {
-      clock.now += 1000
-      if (pending.length && i % 60 === 30) pending.splice(0).forEach((fn) => fn())
-      await Promise.resolve()
-      await Promise.resolve()
-      manager.tick()
+  test("--budget in a long conversation (round2 conditions): ends after 6 runs at $0.54", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.5 }).item!
+    for (let run = 0; run < 10 && w.manager.list().length; run++) {
+      w.tick(Loop.SETTLE_MS + 1000)
+      const id = w.lastLoop()
+      ;[1, 2, 3].forEach(() => w.step(id, 0.03))
+      await w.endRun()
+      w.tick(60_000 - Loop.SETTLE_MS - 1000)
     }
     expect(item.runs).toBe(6)
     expect(item.spent).toBeCloseTo(0.54)
-    expect(manager.list()).toEqual([])
-    expect(events.some((event) => event.type === "finished" && event.reason === "budget")).toBe(true)
+    expect(w.events.some((event) => event.type === "finished" && event.reason === "budget")).toBe(true)
   })
 
-  test("costLineExceeded warns only when the conversation is past its approval line", () => {
-    expect(Loop.costLineExceeded({ own: undefined, root: undefined, spent: 1.2, allow: false })).toBe(1)
-    expect(Loop.costLineExceeded({ own: undefined, root: undefined, spent: 0.5, allow: false })).toBeUndefined()
-    expect(Loop.costLineExceeded({ own: 0.1, root: 5, spent: 0.5, allow: false })).toBe(0.1)
-    expect(Loop.costLineExceeded({ own: undefined, root: 5, spent: 2, allow: false })).toBeUndefined()
-    expect(Loop.costLineExceeded({ own: "none", root: undefined, spent: 99, allow: false })).toBeUndefined()
-    expect(Loop.costLineExceeded({ own: undefined, root: undefined, spent: 99, allow: true })).toBeUndefined()
+  test("budget is checked while a run generates; the session is interrupted only when the loop alone is running", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 1 })
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.4)
+    w.tick()
+    expect(w.aborted).toEqual([])
+    w.step(w.lastLoop(), 7)
+    w.tick()
+    expect(w.aborted).toEqual(["s"])
+    const finished = w.events.find((event) => event.type === "finished")
+    expect(finished && finished.type === "finished" && [finished.reason, finished.aborted, finished.item.spent]).toEqual(["budget", true, 7.4])
+  })
+
+  test("case C: the user asks during a loop run — their cost is not counted and the conversation is never interrupted", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    const run = w.lastLoop()
+    w.step(run, 0.02)
+    w.tick()
+    w.userAsks("msg_user1") // 回の最中に本人が依頼
+    w.tick()
+    w.step("msg_user1", 0.3)
+    w.step("msg_user1", 0.3)
+    w.tick(3000)
+    expect(w.aborted).toEqual([])
+    expect(w.manager.list()).toEqual([item])
+    // ループ自身の応答が上限を超えても、本人の依頼が入っているので会話は止めずループだけ終える
+    w.step(run, 0.09)
+    w.tick()
+    expect(w.aborted).toEqual([])
+    expect(w.manager.list()).toEqual([])
+    const finished = w.events.find((event) => event.type === "finished")
+    expect(finished && finished.type === "finished" && [finished.reason, finished.aborted, finished.interjected]).toEqual(["budget", false, true])
+    expect(item.spent).toBeCloseTo(0.11)
+  })
+
+  test("case B: the user asks within a second after a run — only the loop's own $0.02 is counted", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 0.1 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.02)
+    await w.endRun()
+    w.clock.now += 500
+    w.userAsks("msg_user2")
+    w.state.busy = true // 本人の依頼で会話がまた動く(静かにならないまま)
+    // 本人の依頼の中でサブエージェントも動く
+    w.sessions.push({ id: "child_user", parentID: "s", time: { created: w.clock.now, updated: w.clock.now } })
+    w.step("msg_user2", 0.09)
+    w.step("msg_user2", 0.09)
+    w.step("x", 0.5, "child_user")
+    w.tick(5000)
+    w.state.busy = false
+    w.tick(3000)
+    expect(w.aborted).toEqual([])
+    expect(item.spent).toBeCloseTo(0.02)
+    expect(w.manager.list()).toEqual([item])
+  })
+
+  test("subagent sessions created during the loop's own run count toward its budget", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    const item = w.manager.start({ target: target("s"), prompt: "x", interval: 60_000, budget: 5 }).item!
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.1)
+    w.sessions.push({ id: "child_loop", parentID: "s", time: { created: w.clock.now, updated: w.clock.now } })
+    w.step("y", 0.25, "child_loop")
+    await w.endRun()
+    w.tick(2000)
+    expect(item.spent).toBeCloseTo(0.35)
+  })
+
+  test("costLineExceeded follows the server rules (metadata, numeric strings, env, agent request_cost)", () => {
+    const base = { own: undefined, root: undefined, rules: [], model: "teai/auto" }
+    expect(Loop.costLineExceeded({ ...base, spent: 1.2 })).toBe(1)
+    expect(Loop.costLineExceeded({ ...base, spent: 0.5 })).toBeUndefined()
+    expect(Loop.costLineExceeded({ ...base, own: 0.1, root: 5, spent: 0.5 })).toBe(0.1)
+    expect(Loop.costLineExceeded({ ...base, root: 5, spent: 2 })).toBeUndefined()
+    expect(Loop.costLineExceeded({ ...base, own: "2", spent: 1.5 })).toBeUndefined()
+    expect(Loop.costLineExceeded({ ...base, own: "2", spent: 2.5 })).toBe(2)
+    expect(Loop.costLineExceeded({ ...base, own: "none", spent: 99 })).toBeUndefined()
+    expect(Loop.costLineExceeded({ ...base, env: "3", spent: 2 })).toBeUndefined()
+    expect(Loop.costLineExceeded({ ...base, env: "none", spent: 99 })).toBeUndefined()
+    expect(Loop.costLineExceeded({ ...base, own: "abc", env: "0.5", spent: 0.6 })).toBe(0.5)
+    const rule = (pattern: string, action: string) => ({ permission: "request_cost", pattern, action })
+    expect(Loop.costLineExceeded({ ...base, rules: [rule("*", "allow")], spent: 99 })).toBeUndefined()
+    expect(Loop.costLineExceeded({ ...base, rules: [rule("*", "allow"), rule("teai/*", "ask")], spent: 99 })).toBe(1)
+    expect(Loop.costLineExceeded({ ...base, rules: [rule("openai/*", "allow")], spent: 99 })).toBe(1)
+    expect(Loop.costLineExceeded({ ...base, rules: [{ permission: "*", pattern: "*", action: "allow" }], spent: 99 })).toBe(1)
   })
 
   test("prepareStart: needs a session and a model; '/' prompts go through unless they are local commands", () => {

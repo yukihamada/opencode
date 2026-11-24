@@ -49,7 +49,8 @@ const UNITS: Record<string, number> = {
 }
 
 const DURATION = String.raw`(?:\d+(?:\.\d+)?\s*(?:時間|秒|分|日|[a-z]+)半?)+`
-const SUFFIX = "(?:ごとに|ごと|毎に|毎|おきに|おき|間隔で)"
+// 単独の「毎」は「5分毎日の…」を「5分毎」+「日の…」と取り違えるので受け付けない(「毎に」は可)。
+const SUFFIX = "(?:ごとに|ごと|毎に|おきに|おき|間隔で)"
 
 /** `30s` `5m` `1h30m` `90秒` `2時間` `1時間半` を ms に。解釈できなければ undefined。 */
 export function parseDuration(value: string): number | undefined {
@@ -201,19 +202,27 @@ export type Event =
   | { type: "skipped"; item: Item }
   | { type: "paused"; sessionID: string; items: Item[]; reason: PauseReason; repeat: boolean }
   | { type: "resumed"; items: Item[]; auto: boolean }
-  | { type: "finished"; item: Item; reason: FinishReason; aborted?: boolean }
+  | { type: "finished"; item: Item; reason: FinishReason; aborted?: boolean; interjected?: boolean }
 
 export type Session = { busy: boolean; costGate: boolean }
+
+/** ループの1回分: 送ったメッセージのIDと送信時刻。 */
+export type Run = { messageID: string; sentAt: number }
 
 export type ManagerOptions = {
   now: () => number
   /** 対象セッションの現在の状態(生成中か / 費用承認待ちか)。 */
   session: (sessionID: string) => Session
-  /** 対象セッションのここまでの費用(USD・子セッション込み)。ループの1回分は送信前後の差で数える。 */
-  cost?: (sessionID: string) => number
+  /**
+   * ループの1回分の費用(USD)と、その回の後に本人(ループ以外)の依頼が会話に入ったか。
+   * 回の費用は「ループが送ったメッセージを親とする応答」と、その回の間に作られた子セッションだけで数える。
+   */
+  runCost?: (sessionID: string, run: Run) => { cost: number; interjected: boolean }
+  /** ループが送るメッセージのID(回の応答を見分けるために送信時に指定する)。 */
+  newMessageID?: () => string
   /** 書きかけのある入力欄を最後に触った時刻(書きかけがなければ undefined)。 */
   lastTyped: () => number | undefined
-  send: (item: Item) => Promise<unknown>
+  send: (item: Item, messageID: string) => Promise<unknown>
   /** 上限超えでループの回を中断する(セッションの生成を止める)。 */
   abort?: (sessionID: string) => void
   notify?: (event: Event) => void
@@ -225,16 +234,18 @@ type SessionState = {
   idle?: number
   /** 送信中(HTTP 応答待ち)。 */
   inflight: boolean
-  /** いま会話を動かしているループの回(送信時の費用つき)。本人・/goal の依頼なら undefined。 */
-  owner?: { id: string; start: number }
+  /** 最後に送ったループの回(静かになるまで保つ)。本人・/goal の依頼だけなら undefined。 */
+  owner?: { id: string; run: Run }
   costNoticeAt?: number
 }
 
 export function create(options: ManagerOptions) {
   const items = new Map<string, Item>()
   const sessions = new Map<string, SessionState>()
-  const cost = (sessionID: string) => options.cost?.(sessionID) ?? 0
+  const runCost = (sessionID: string, run: Run) => options.runCost?.(sessionID, run) ?? { cost: 0, interjected: false }
   let seq = 0
+  let messageSeq = 0
+  const newMessageID = options.newMessageID ?? (() => `msg_loop_${(++messageSeq).toString().padStart(8, "0")}`)
 
   function state(sessionID: string) {
     const existing = sessions.get(sessionID)
@@ -272,21 +283,25 @@ export function create(options: ManagerOptions) {
     session.owner = undefined
     const item = items.get(owner.id)
     if (!item) return
-    item.spent += Math.max(0, cost(sessionID) - owner.start)
+    item.spent += runCost(sessionID, owner.run).cost
     if (item.spent >= item.budget) finish(item, "budget")
   }
 
-  // 生成中もループの回の累計を見て、上限を超えたらその回を中断して終える(1ステップ分は超えうる)。
+  // 生成中もループの回の累計を見て、上限を超えたら終える(1ステップ分は超えうる)。
+  // 会話を中断するのはループの回だけが会話を動かしている時に限る。本人の依頼が入っていたら
+  // 会話には触らず、ループだけ終えて知らせる。
   function watchRun(session: SessionState, sessionID: string) {
     const owner = session.owner
     const item = owner && items.get(owner.id)
     if (!owner || !item) return
-    const running = item.spent + Math.max(0, cost(sessionID) - owner.start)
+    const current = runCost(sessionID, owner.run)
+    const running = item.spent + current.cost
     if (running < item.budget) return
     item.spent = running
     session.owner = undefined
-    options.abort?.(sessionID)
-    if (items.delete(item.id)) emit({ type: "finished", item, reason: "budget", aborted: true })
+    if (!current.interjected) options.abort?.(sessionID)
+    if (items.delete(item.id))
+      emit({ type: "finished", item, reason: "budget", aborted: !current.interjected, interjected: current.interjected })
   }
 
   function observe(sessionID: string, now: number, status: Session) {
@@ -318,7 +333,8 @@ export function create(options: ManagerOptions) {
     item.nextAt = advance(item.nextAt, item.interval, now)
     session.inflight = true
     session.idle = undefined
-    session.owner = { id: item.id, start: cost(sessionID) }
+    const messageID = newMessageID()
+    session.owner = { id: item.id, run: { messageID, sentAt: now } }
     emit({ type: "sent", item })
     const done = (ok: boolean) => {
       session.inflight = false
@@ -331,7 +347,7 @@ export function create(options: ManagerOptions) {
       }
       options.change?.()
     }
-    options.send(item).then(
+    options.send(item, messageID).then(
       () => done(true),
       () => done(false),
     )
@@ -488,29 +504,68 @@ export function sessionState(data: StatusData, sessionID: string): Session {
 }
 
 type Tree = readonly { id: string; parentID?: string; time: { created: number; updated: number } }[]
+type LedgerMessage = { id: string; sessionID: string; role: string; parentID?: string; cost?: number; time?: { created: number } }
+type Entry = { sessionID: string; role: string; parentID?: string; cost: number; created: number }
 
 /**
- * 会話ごとの費用台帳。assistant メッセージの費用をメッセージIDごとに覚え、会話(+子セッション)の合計を返す。
- * 画面の同期データは会話あたり直近100件しか持たない(古いものは捨てる)ので、その合計の差分では
- * 長い会話でループの費用が数えられない。台帳は捨てないので、送信前後の差分が正しく出る。
+ * ループの回の費用台帳。ループのある会話(と子セッション)のメッセージだけを、メッセージIDごとに覚える。
+ * 画面の同期データは会話あたり直近100件しか持たないので、そこからは長い会話の費用を数えられない。
+ * ループが無くなった会話は unwatch で消す(全会話を記録し続けない)。
  */
 export function createLedger() {
-  const costs = new Map<string, Map<string, number>>()
-  function record(message: { id: string; sessionID: string; role: string; cost?: number }) {
-    if (message.role !== "assistant") return
-    const session = costs.get(message.sessionID) ?? new Map<string, number>()
-    costs.set(message.sessionID, session)
-    session.set(message.id, positive(message.cost))
+  const watched = new Map<string, Map<string, Entry>>()
+  function rootOf(sessionID: string, sessions: Tree) {
+    const seen = new Set<string>()
+    for (let id: string | undefined = sessionID; id && !seen.has(id); id = sessions.find((session) => session.id === id)?.parentID) {
+      if (watched.has(id)) return id
+      seen.add(id)
+    }
+    return undefined
   }
-  const one = (sessionID: string) => [...(costs.get(sessionID)?.values() ?? [])].reduce((sum, value) => sum + value, 0)
   return {
-    record,
-    /** 読み込み済みのメッセージをまとめて覚える(同じIDは上書きなので何度呼んでもよい)。 */
-    seed(messages: Readonly<Record<string, readonly { id: string; sessionID: string; role: string; cost?: number }[] | undefined>>) {
-      Object.values(messages).forEach((list) => list?.forEach(record))
+    watch(sessionID: string) {
+      if (!watched.has(sessionID)) watched.set(sessionID, new Map())
     },
-    total(sessionID: string, sessions: Tree) {
-      return descendantIDs(sessions, sessionID).reduce((sum, id) => sum + one(id), one(sessionID))
+    unwatch(sessionID: string) {
+      watched.delete(sessionID)
+    },
+    /** 覚えているメッセージの件数(テスト・確認用)。 */
+    size: () => [...watched.values()].reduce((sum, entries) => sum + entries.size, 0),
+    record(message: LedgerMessage, sessions: Tree) {
+      const root = rootOf(message.sessionID, sessions)
+      if (!root) return
+      watched.get(root)!.set(message.id, {
+        sessionID: message.sessionID,
+        role: message.role,
+        parentID: message.parentID,
+        cost: positive(message.cost),
+        created: message.time?.created ?? 0,
+      })
+    },
+    /**
+     * ループの1回分の費用: その回のメッセージを親とする応答と、その回の間(次の本人の依頼まで)に作られた子セッション。
+     * interjected: 回の後に、ループ以外(本人・/goal)の依頼が会話に入った。
+     */
+    runCost(sessionID: string, run: Run, loopMessages: ReadonlySet<string>, sessions: Tree) {
+      const entries = [...(watched.get(sessionID)?.entries() ?? [])]
+      const start = entries.find(([id]) => id === run.messageID)?.[1].created || run.sentAt
+      const own = entries
+        .filter(([, entry]) => entry.sessionID === sessionID && entry.role === "assistant" && entry.parentID === run.messageID)
+        .reduce((sum, [, entry]) => sum + entry.cost, 0)
+      const later = entries.filter(
+        ([id, entry]) => entry.sessionID === sessionID && entry.role === "user" && entry.created > start && !loopMessages.has(id),
+      )
+      const end = Math.min(...later.map(([, entry]) => entry.created), Infinity)
+      const children = new Set(
+        descendantIDs(sessions, sessionID).filter((id) => {
+          const created = sessions.find((session) => session.id === id)?.time.created ?? 0
+          return created >= start && created < end
+        }),
+      )
+      const child = entries
+        .filter(([, entry]) => children.has(entry.sessionID) && entry.role === "assistant")
+        .reduce((sum, [, entry]) => sum + entry.cost, 0)
+      return { cost: own + child, interjected: later.length > 0 }
     },
   }
 }
@@ -521,24 +576,47 @@ function positive(value: number | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0
 }
 
-/**
- * 会話の累計が費用確認ライン(/cost・既定 $1)を既に超えているなら、そのラインを返す。
- * 超えていると、ループの毎回(のモデル呼び出しごと)に承認が必要になる。request_cost: allow なら確認は出ないので undefined。
- */
-export function costLineExceeded(input: { own: unknown; root: unknown; spent: number; allow: boolean }) {
-  if (input.allow) return undefined
-  const raw = input.own === undefined ? input.root : input.own
-  const limit =
-    typeof raw === "number" && Number.isFinite(raw) && raw > 0
-      ? raw
-      : typeof raw === "string" && raw.trim().toLowerCase() === "none"
-        ? Infinity
-        : DEFAULT_COST_LINE_USD
-  return Number.isFinite(limit) && input.spent >= limit ? limit : undefined
+// サーバーの依頼ごとの費用確認ライン(session/escalation.ts の costLimit / sessionCostLimit と同じ解釈)。
+export const DEFAULT_COST_LINE_USD = 1
+export function costLimit(value: string | undefined) {
+  if (value === undefined || value.trim() === "") return DEFAULT_COST_LINE_USD
+  if (value.trim().toLowerCase() === "none") return Infinity
+  const limit = Number(value)
+  return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_COST_LINE_USD
+}
+export function sessionCostLimit(value: unknown, fallback: number) {
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : fallback
+  if (typeof value === "string") {
+    if (value.trim().toLowerCase() === "none") return Infinity
+    const limit = Number(value)
+    return Number.isFinite(limit) && limit > 0 ? limit : fallback
+  }
+  return fallback
 }
 
-// サーバーの依頼ごとの費用確認ラインの既定(session/escalation.ts の DEFAULT_COST_LIMIT_USD と同じ)。
-export const DEFAULT_COST_LINE_USD = 1
+function wildcard(value: string, pattern: string) {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")
+  return new RegExp(`^${escaped}$`, "s").test(value)
+}
+
+/**
+ * 会話の累計が費用確認ラインを既に超えているなら、そのラインを返す(超えていると毎回承認が必要になる)。
+ * サーバー(session/llm.ts)と同じく、会話の metadata.cost_limit_usd(数値・数値文字列・"none")→ 親会話 →
+ * SENTE_COST_LIMIT_USD → $1 の順で決め、エージェントの request_cost ルール(最後に一致したもの)が allow なら確認は出ない。
+ */
+export function costLineExceeded(input: {
+  own: unknown
+  root: unknown
+  env?: string
+  spent: number
+  rules: readonly { permission: string; pattern: string; action: string }[]
+  model: string
+}) {
+  const rule = input.rules.findLast((item) => item.permission === COST_PERMISSION && wildcard(input.model, item.pattern))
+  if (rule?.action === "allow") return undefined
+  const limit = sessionCostLimit(input.own === undefined ? input.root : input.own, costLimit(input.env))
+  return Number.isFinite(limit) && input.spent >= limit ? limit : undefined
+}
 
 export type StartError = "needSession" | "needModel" | "localCommand"
 

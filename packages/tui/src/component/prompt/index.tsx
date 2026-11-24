@@ -1638,7 +1638,11 @@ export function Prompt(props: PromptProps) {
       minute: "2-digit",
     })
     // 会話の累計が費用確認ラインを超えていると、毎回承認が必要になるので先に知らせる。
-    const line = loop.costLine(prepared.input.target.sessionID)
+    const line = loop.costLine({
+      sessionID: prepared.input.target.sessionID,
+      agent: prepared.input.target.agent,
+      model: `${prepared.input.target.model.providerID}/${prepared.input.target.model.modelID}`,
+    })
     toast.show({
       variant: line === undefined ? "info" : "warning",
       message: [
