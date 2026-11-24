@@ -172,7 +172,11 @@ export async function holdOneShot(input: HoldInput) {
       // their turn, subagents and jobs. There the commands end on their own or at the lifetime limit.
       if (input.owned) {
         await input.client.session.abort({ sessionID: input.sessionID }).catch(() => undefined)
-        return { unfinished: [] }
+        input.warn(
+          `stopped ${running.length} background command(s) this run left running (${running.join(", ")}) by interrupting the session it created; their work did not finish`,
+        )
+        // Still unfinished work: the caller exits non-zero.
+        return { unfinished: running }
       }
       input.warn(
         `${running.length} background command(s) started by this run may still be running on the server (${running.join(", ")}); they end on their own, at the background time limit, or when the session is interrupted`,

@@ -12,6 +12,7 @@ describe("cli.exit-code", () => {
       Conflict: 5,
       Quota: 6,
       PermissionDenied: 7,
+      // 8 is GoalUnmet (#75, /goal); both sit side by side once the two land.
       Unfinished: 9,
       Restart: 75,
     })

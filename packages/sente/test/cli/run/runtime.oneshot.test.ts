@@ -291,12 +291,14 @@ describe("sente run --attach one-shot lease", () => {
     },
   )
 
-  test("in its own session nothing unfinished is reported (it aborts instead)", async () => {
+  test("in its own session it stops leftovers, says so, and still reports them unfinished", async () => {
+    const warnings: string[] = []
     const server = fakeServer()
-    const held = await hold(server)
+    const held = await hold(server, { warn: (text) => void warnings.push(text) })
     server.state.messages.push(user(TURN), reply(TURN, bash("job_a")))
-    expect((await held.release()).unfinished).toEqual([])
+    expect((await held.release()).unfinished).toEqual(["job_a"])
     expect(server.calls.abort).toBe(1)
+    expect(warnings.join("\n")).toContain("stopped 1 background command(s)")
   })
 
   test("a lease that never sticks (overwritten each time) stops the run with LeaseError", async () => {

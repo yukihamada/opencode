@@ -43,9 +43,10 @@ export const ExitCode = {
    */
   PermissionDenied: 7,
   /**
-   * `sente run --attach` in a session it joined (-s/-c) ended while background shell commands its own
-   * turn started were still running on the server. The answer may describe work that has not finished;
-   * the commands end on their own or at the background time limit. Restarting would only run it twice.
+   * `sente run --attach` ended while background shell commands its own turn started had not finished:
+   * in a session it created it stopped them (interrupting that session); in one it joined (-s/-c) they
+   * keep running on the server until they end or reach the background time limit. Either way the
+   * answer may describe work that is not done. Restarting would only run it twice.
    *
    * 9, not 8: 8 is GoalUnmet (the /goal work, #75).
    */

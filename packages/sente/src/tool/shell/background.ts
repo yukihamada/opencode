@@ -46,6 +46,14 @@ type MessageLike = { info: { id: string; role: string }; parts: { type: string; 
  * A user message the server added on its own: a continuation after the output limit, a todo
  * follow-up, a compaction marker or its "continue" prompt, a background notification. Its turn still
  * belongs to the message a person (or `sente run`) sent before it.
+ *
+ * Assumptions:
+ * - A user message whose parts are all synthetic counts as automatic even when a person caused it:
+ *   the TUI's `!command` (shell run by the user) is recorded that way. That is harmless here: it runs
+ *   the command directly, with no model turn and no background job, so it never needs to start a turn.
+ * - A user message with no parts is treated as sent (not automatic). Parts are written right after
+ *   the message, so a part-less user message is only a transient state; counting it as a new turn is
+ *   the safe side (it never extends a one-shot run's turn to someone else's message).
  */
 export function automatic(message: MessageLike) {
   return (

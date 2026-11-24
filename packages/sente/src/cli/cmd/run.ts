@@ -996,7 +996,8 @@ export const RunCommand = effectCmd({
               : undefined
           const release = async () => {
             const result = await hold?.release()
-            // Left its own background commands running in a session it joined: not finished.
+            // Left its own background commands unfinished (stopped them in its own session, or left them
+            // running in a joined one): the run's work is not done.
             if (result?.unfinished.length && !process.exitCode) process.exitCode = ExitCode.Unfinished
           }
           // Whatever ends the run (an error thrown by a request included), drop the lease.
