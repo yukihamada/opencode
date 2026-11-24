@@ -26,6 +26,7 @@ import { useEvent } from "./event"
 import { useSDK } from "./sdk"
 import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
+import { SideSpend } from "@sente-ai/core/session/side-spend"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
@@ -280,6 +281,19 @@ export const {
               }),
             )
           }
+          break
+        }
+        case "session.side_spent": {
+          // A /btw cost: the server only changes metadata.btw_spend, the same way here.
+          const result = search(store.session, event.properties.sessionID, (s) => s.id)
+          if (!result.found) break
+          const current = store.session[result.index]!
+          setStore(
+            "session",
+            result.index,
+            "metadata",
+            SideSpend.add(current.metadata, event.properties.usd, event.properties.time),
+          )
           break
         }
         case "session.updated": {
@@ -579,20 +593,6 @@ export const {
         },
         query() {
           return sessionListQuery()
-        },
-        /** Inserts or replaces one session (e.g. re-read after a /btw cost, which emits no session event). */
-        put(info: Session) {
-          const match = search(store.session, info.id, (s) => s.id)
-          if (match.found) {
-            setStore("session", match.index, reconcile(info))
-            return
-          }
-          setStore(
-            "session",
-            produce((draft) => {
-              draft.splice(match.index, 0, info)
-            }),
-          )
         },
         async refresh() {
           const list = await listSessions()

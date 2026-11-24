@@ -162,16 +162,13 @@ const STOP = new Set([
  * identifiers and file names (ASCII runs of 3+), and runs of 2+ katakana or
  * kanji. Hiragana particles and common question words are skipped.
  */
-// Japanese words whose matches in tool input/output are usually English.
+// Japanese words whose matches in tool output are usually English. Only words
+// that are rare in ordinary output (not "file", "error", "pass", "fail").
 const ALIASES: Record<string, string[]> = {
   テスト: ["test"],
-  ファイル: ["file"],
-  エラー: ["error"],
   ビルド: ["build"],
   デプロイ: ["deploy"],
   コミット: ["commit"],
-  失敗: ["fail"],
-  成功: ["pass"],
 }
 
 export function terms(question: string) {

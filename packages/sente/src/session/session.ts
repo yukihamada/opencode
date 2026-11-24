@@ -800,9 +800,10 @@ const layer: Layer.Layer<
       ).pipe(Effect.orDie)
     })
 
-    // Updates only metadata.btw_spend in SQL (json_set), never the rest of the
-    // row: cost/tokens written concurrently by the running prompt stay intact,
-    // and time.updated is untouched so the session list keeps its order.
+    // A durable `session.side_spent` event: its projector updates only
+    // metadata.btw_spend (json_set) and keeps time_updated, so it replays and
+    // syncs with the session and reaches other clients, without rewriting
+    // cost/tokens. Serialized with `patch` so neither drops the other's change.
     const addSideSpend = Effect.fn("Session.addSideSpend")(function* (input: {
       sessionID: SessionID
       usd: number
@@ -811,24 +812,12 @@ const layer: Layer.Layer<
       if (!(Number.isFinite(input.usd) && input.usd > 0)) return
       yield* metadataLock.withPermits(1)(
         Effect.gen(function* () {
-          const row = yield* db
-            .select({ metadata: SessionTable.metadata })
-            .from(SessionTable)
-            .where(eq(SessionTable.id, input.sessionID))
-            .get()
-            .pipe(Effect.orDie)
-          if (!row) return yield* new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-          const next = SideSpend.add(row.metadata ?? undefined, input.usd, input.time)[SideSpend.KEY]
-          yield* db
-            .update(SessionTable)
-            .set({
-              metadata: sql`json_set(coalesce(${SessionTable.metadata}, '{}'), ${"$." + SideSpend.KEY}, json(${JSON.stringify(next)}))`,
-              // Keep it: the column's $onUpdate would otherwise bump it.
-              time_updated: sql`${SessionTable.time_updated}`,
-            })
-            .where(eq(SessionTable.id, input.sessionID))
-            .run()
-            .pipe(Effect.orDie)
+          yield* get(input.sessionID)
+          yield* events.publish(SessionV1.Event.SideSpent, {
+            sessionID: input.sessionID,
+            usd: input.usd,
+            time: Math.max(0, Math.floor(input.time)),
+          })
         }),
       )
     })
@@ -862,18 +851,24 @@ const layer: Layer.Layer<
     }) {
       if (input.terms.length === 0 || input.limit <= 0) return []
       const escape = (term: string) => "%" + term.replace(/[\\%_]/g, (char) => "\\" + char) + "%"
+      // Only what was said or returned: visible text (not synthetic/ignored) and
+      // tool output/error. Never JSON keys, ids or tool input.
+      const haystack = sql`(case json_extract(${PartTable.data}, '$.type')
+        when 'text' then case when coalesce(json_extract(${PartTable.data}, '$.synthetic'), 0) = 0
+          and coalesce(json_extract(${PartTable.data}, '$.ignored'), 0) = 0
+          then json_extract(${PartTable.data}, '$.text') end
+        when 'tool' then coalesce(json_extract(${PartTable.data}, '$.state.output'), json_extract(${PartTable.data}, '$.state.error'))
+        end)`
+      // Ranked in SQL before the limit: parts matching more of the words first, then newest.
+      const score = sql.join(
+        input.terms.map((term) => sql`(case when ${haystack} like ${escape(term)} escape '\\' then 1 else 0 end)`),
+        sql` + `,
+      )
       const rows = yield* db
         .select({ id: PartTable.id, message_id: PartTable.message_id, session_id: PartTable.session_id, time: PartTable.time_created, data: PartTable.data })
         .from(PartTable)
-        .where(
-          and(
-            eq(PartTable.session_id, input.sessionID),
-            lt(PartTable.time_created, input.before),
-            sql`json_extract(${PartTable.data}, '$.type') in ('text', 'tool')`,
-            or(...input.terms.map((term) => sql`${PartTable.data} like ${escape(term)} escape '\\'`)),
-          ),
-        )
-        .orderBy(desc(PartTable.time_created))
+        .where(and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before), sql`(${score}) > 0`))
+        .orderBy(sql`(${score}) desc`, desc(PartTable.time_created))
         .limit(input.limit)
         .all()
         .pipe(Effect.orDie)

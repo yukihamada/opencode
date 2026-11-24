@@ -288,7 +288,8 @@ export function Prompt(props: PromptProps) {
   })
 
   // /btw spend since local midnight across the project, from the server: it
-  // also covers sessions too old for the session list. Re-read after each /btw.
+  // also covers sessions too old for the session list. Re-read whenever a
+  // /btw cost is recorded (any session, any client) and when the day changes.
   const [sideToday, setSideToday] = createSignal({ usd: 0, partial: false })
   const refreshSideToday = () =>
     sdk.client.session
@@ -298,6 +299,19 @@ export function Prompt(props: PromptProps) {
       })
       .catch(() => {})
   onMount(() => void refreshSideToday())
+  onCleanup(event.on("session.side_spent", () => void refreshSideToday()))
+  let midnight: ReturnType<typeof setTimeout> | undefined
+  const scheduleMidnight = () => {
+    midnight = setTimeout(
+      () => {
+        void refreshSideToday()
+        scheduleMidnight()
+      },
+      startOfDay(Date.now()) + 24 * 60 * 60 * 1000 - Date.now() + 1000,
+    )
+  }
+  scheduleMidnight()
+  onCleanup(() => clearTimeout(midnight))
 
   const usage = createMemo(() => {
     if (!props.sessionID) return
@@ -1710,17 +1724,7 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
       dialog.replace(() => (
-        <DialogBtw
-          client={sdk.client}
-          sessionID={sessionID}
-          question={btwCommand.question}
-          main={local.model.current()}
-          onDone={() => {
-            // The cost is written without a session event; re-read it for the sidebar and turn total.
-            void sdk.client.session.get({ sessionID }).then((result) => result.data && sync.session.put(result.data))
-            void refreshSideToday()
-          }}
-        />
+        <DialogBtw client={sdk.client} sessionID={sessionID} question={btwCommand.question} main={local.model.current()} />
       ))
       return true
     }

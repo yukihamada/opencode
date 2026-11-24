@@ -21,8 +21,6 @@ export function DialogBtw(props: {
   sessionID: string
   question: string
   main?: BtwModelRef
-  /** Called after each finished request (answer, empty, error), i.e. whenever a cost may have been recorded. */
-  onDone?: () => void
 }) {
   const dialog = useDialog()
   const { theme, syntax } = useTheme()
@@ -47,7 +45,6 @@ export function DialogBtw(props: {
       approve,
       signal: current.signal,
     }).then((next) => {
-      if (next.type !== "approval") props.onDone?.()
       if (!current.signal.aborted) setResult(next)
     })
   }
@@ -56,11 +53,7 @@ export function DialogBtw(props: {
     dialog.setSize("large")
     run()
   })
-  onCleanup(() => {
-    // Closing mid-request still records an estimate on the server.
-    if (controller && !result()) setTimeout(() => props.onDone?.(), 500)
-    controller?.abort()
-  })
+  onCleanup(() => controller?.abort())
 
   useBindings(() => ({
     bindings: [

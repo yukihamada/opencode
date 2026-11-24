@@ -14,6 +14,7 @@ describe("public event manifest", () => {
     expect(SessionV1.Event.Definitions).toEqual([
       SessionV1.Event.Created,
       SessionV1.Event.Updated,
+      SessionV1.Event.SideSpent,
       SessionV1.Event.Deleted,
       SessionV1.Event.MessageUpdated,
       SessionV1.Event.MessageRemoved,

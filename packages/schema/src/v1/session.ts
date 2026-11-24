@@ -585,6 +585,20 @@ const events = {
       info: SessionInfo,
     },
   }),
+  /**
+   * One /btw side answer's cost. Projected into metadata.btw_spend only (not
+   * the rest of the row, not time_updated), so it replays and syncs like any
+   * other session event without racing writes to cost/tokens.
+   */
+  SideSpent: define({
+    type: "session.side_spent",
+    ...options,
+    schema: {
+      sessionID: SessionID,
+      usd: Schema.Finite,
+      time: NonNegativeInt,
+    },
+  }),
   Deleted: define({
     type: "session.deleted",
     ...options,
@@ -664,6 +678,7 @@ export const Event = {
   Definitions: inventory(
     events.Created,
     events.Updated,
+    events.SideSpent,
     events.Deleted,
     events.MessageUpdated,
     events.MessageRemoved,

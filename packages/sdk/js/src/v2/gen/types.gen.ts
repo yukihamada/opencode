@@ -11,6 +11,7 @@ export type Event =
   | EventCatalogUpdated
   | EventSessionCreated
   | EventSessionUpdated
+  | EventSessionSideSpent
   | EventSessionDeleted
   | EventMessageUpdated
   | EventMessageRemoved
@@ -774,6 +775,15 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           info: Session
+        }
+      }
+    | {
+        id: string
+        type: "session.side_spent"
+        properties: {
+          sessionID: string
+          usd: number
+          time: number
         }
       }
     | {
@@ -1603,6 +1613,7 @@ export type GlobalEvent = {
     | EventServerInstanceDisposed
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
+    | SyncEventSessionSideSpent
     | SyncEventSessionDeleted
     | SyncEventMessageUpdated
     | SyncEventMessageRemoved
@@ -2896,6 +2907,7 @@ export type V2Event =
   | CatalogUpdated
   | SessionCreated
   | SessionUpdated
+  | SessionSideSpent
   | SessionDeleted
   | MessageUpdated
   | MessageRemoved
@@ -3254,6 +3266,22 @@ export type SyncEventSessionUpdated = {
     data: {
       sessionID: string
       info: Session
+    }
+  }
+}
+
+export type SyncEventSessionSideSpent = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.side_spent.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      usd: number
+      time: number
     }
   }
 }
@@ -5162,6 +5190,25 @@ export type SessionUpdated = {
   }
 }
 
+export type SessionSideSpent = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.side_spent"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    usd: number
+    time: number
+  }
+}
+
 export type SessionDeleted = {
   id: string
   metadata?: {
@@ -6235,6 +6282,16 @@ export type EventSessionUpdated = {
   properties: {
     sessionID: string
     info: Session
+  }
+}
+
+export type EventSessionSideSpent = {
+  id: string
+  type: "session.side_spent"
+  properties: {
+    sessionID: string
+    usd: number
+    time: number
   }
 }
 

@@ -7,6 +7,7 @@ import { EventV2 } from "../event"
 import { makeGlobalNode } from "../effect/app-node"
 import { SessionEvent } from "./event"
 import { SessionV1 } from "../v1/session"
+import { SideSpend } from "./side-spend"
 import { WorkspaceTable } from "../control-plane/workspace.sql"
 import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
@@ -238,6 +239,28 @@ const layer = Layer.effectDiscard(
         .where(eq(SessionTable.id, event.data.sessionID))
         .run()
         .pipe(Effect.orDie),
+    )
+    yield* events.project(SessionV1.Event.SideSpent, (event) =>
+      Effect.gen(function* () {
+        const row = yield* db
+          .select({ metadata: SessionTable.metadata })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        if (!row) return
+        const next = SideSpend.add(row.metadata ?? undefined, event.data.usd, event.data.time)[SideSpend.KEY]
+        yield* db
+          .update(SessionTable)
+          .set({
+            metadata: sql`json_set(coalesce(${SessionTable.metadata}, '{}'), ${"$." + SideSpend.KEY}, json(${JSON.stringify(next)}))`,
+            // Not a session change for ordering: keep time_updated ($onUpdate would bump it).
+            time_updated: sql`${SessionTable.time_updated}`,
+          })
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+      }),
     )
     yield* events.project(SessionEvent.Moved, (event) =>
       Effect.gen(function* () {
