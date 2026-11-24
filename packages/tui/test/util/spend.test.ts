@@ -200,26 +200,9 @@ describe("util.spend /btw side cost (session metadata btw_spend)", () => {
     expect(sessionCostWithSubagents({ sessionID: "root", sessions })).toBeCloseTo(3.75)
   })
 
-  test("today counts only /btw entries since midnight, also for sessions started earlier", () => {
-    const sessions = [
-      {
-        id: "old",
-        cost: 5,
-        time: { created: YESTERDAY, updated: NOW },
-        metadata: side([
-          { usd: 0.3, time: YESTERDAY },
-          { usd: 0.2, time: NOW - 1000 },
-        ]),
-      },
-    ]
-    const result = todayCost({ sessions, messages: { old: [assistant(YESTERDAY, 5)] }, now: NOW })
-    expect(result.usd).toBeCloseTo(0.2)
-    expect(result.partial).toBe(false)
-  })
-
-  test("today counts /btw spend even when the session was not otherwise updated today", () => {
-    const sessions = [{ id: "s", cost: 5, time: { created: YESTERDAY, updated: YESTERDAY }, metadata: side([{ usd: 0.2, time: NOW }]) }]
-    expect(todayCost({ sessions, messages: {}, now: NOW }).usd).toBeCloseTo(0.2)
+  test("today leaves /btw out (the server totals it for the whole project)", () => {
+    const sessions = [{ id: "s", cost: 1, time: { created: TODAY, updated: NOW }, metadata: side([{ usd: 0.2, time: NOW }]) }]
+    expect(todayCost({ sessions, messages: {}, now: NOW }).usd).toBeCloseTo(1)
   })
 
   test("this turn counts /btw entries since the latest user message", () => {

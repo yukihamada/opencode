@@ -2554,6 +2554,11 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type SessionBtwSpend = {
+  usd: number
+  partial: boolean
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
@@ -9573,6 +9578,35 @@ export type SessionStatusResponses = {
 }
 
 export type SessionStatusResponse = SessionStatusResponses[keyof SessionStatusResponses]
+
+export type SessionBtwSpendData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    since: string
+  }
+  url: "/session/btw-spend"
+}
+
+export type SessionBtwSpendErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SessionBtwSpendError = SessionBtwSpendErrors[keyof SessionBtwSpendErrors]
+
+export type SessionBtwSpendResponses = {
+  /**
+   * Side question spend
+   */
+  200: SessionBtwSpend
+}
+
+export type SessionBtwSpendResponse = SessionBtwSpendResponses[keyof SessionBtwSpendResponses]
 
 export type SessionDeleteData = {
   body?: never

@@ -15,6 +15,9 @@ import { Project } from "../../src/project/project"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { SessionBtw } from "@/session/btw"
+import { MessageID, PartID } from "@/session/schema"
+import { ModelV2 } from "@sente-ai/core/model"
+import { ProviderV2 } from "@sente-ai/core/provider"
 import { Session } from "@/session/session"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideInstanceEffect, tmpdirScoped } from "../fixture/fixture"
@@ -372,6 +375,105 @@ describe("session /btw", () => {
       const ran = yield* post(SessionPaths.btw.replace(":sessionID", allowed.id), directory, { question: "hi" }).pipe(Effect.flatMap(answer))
       expect(ran.approval).toBeUndefined()
       expect(ran.text).toBe("allowed answer")
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live("btw-spend totals /btw cost since a time across the project's sessions, old ones included", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const other = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const now = Date.now()
+      const day = 24 * 60 * 60 * 1000
+      // An old session (not in a 30-day client list) that got a /btw today, plus an entry from 40 days ago.
+      const old = yield* Session.use.create({}).pipe(provideInstanceEffect(directory))
+      yield* Session.use.addSideSpend({ sessionID: old.id, usd: 0.3, time: now - 40 * day }).pipe(provideInstanceEffect(directory))
+      yield* Session.use.addSideSpend({ sessionID: old.id, usd: 0.2, time: now }).pipe(provideInstanceEffect(directory))
+      const recent = yield* Session.use.create({}).pipe(provideInstanceEffect(directory))
+      yield* Session.use.addSideSpend({ sessionID: recent.id, usd: 0.05, time: now }).pipe(provideInstanceEffect(directory))
+      const foreign = yield* Session.use.create({}).pipe(provideInstanceEffect(other))
+      yield* Session.use.addSideSpend({ sessionID: foreign.id, usd: 9, time: now }).pipe(provideInstanceEffect(other))
+
+      const url = new URL(`${SessionPaths.btwSpend}?directory=${encodeURIComponent(directory)}&since=${now - day}`, "http://localhost")
+      const response = yield* HttpClientRequest.fromWeb(new Request(url)).pipe(
+        HttpClientRequest.setUrl(url.pathname),
+        HttpClient.execute,
+      )
+      expect(response.status).toBe(200)
+      const body = (yield* response.json) as { usd: number; partial: boolean }
+      expect(body.usd).toBeCloseTo(0.25, 10)
+      expect(body.partial).toBe(false)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.live("answers from tool output older than the 40-message excerpt by searching the question's words", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const session = yield* Session.use.create({ title: "Long session" }).pipe(provideInstanceEffect(directory))
+      const svc = (fn: (s: Session.Interface) => Effect.Effect<unknown, unknown>) =>
+        Session.Service.use(fn).pipe(provideInstanceEffect(directory), Effect.orDie)
+      const model = { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") }
+      const key = "te_" + "Zx9Yw8Vu".repeat(4)
+      // Early in the session: a test run whose result is only in the tool output.
+      const user = yield* svc((s) =>
+        s.updateMessage({ id: MessageID.ascending(), role: "user", sessionID: session.id, agent: "build", model, time: { created: Date.now() } }),
+      )
+      const assistant = yield* svc((s) =>
+        s.updateMessage({
+          id: MessageID.ascending(),
+          role: "assistant",
+          parentID: (user as { id: MessageID }).id,
+          sessionID: session.id,
+          mode: "build",
+          agent: "build",
+          path: { cwd: directory, root: directory },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: model.modelID,
+          providerID: model.providerID,
+          time: { created: Date.now() },
+        }),
+      )
+      yield* svc((s) =>
+        s.updatePart({
+          id: PartID.ascending(),
+          messageID: (assistant as { id: MessageID }).id,
+          sessionID: session.id,
+          type: "tool",
+          callID: "call_1",
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: { command: "bun test" },
+            output: `noise\nTOKEN=${key}\n 11 pass\n 3 fail\nRan 14 tests across 2 files.`,
+            title: "bun test",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+        }),
+      )
+      yield* Effect.sleep("30 millis")
+      // 45 later messages push it out of the excerpt.
+      for (let i = 0; i < 45; i++) {
+        const info = yield* svc((s) =>
+          s.updateMessage({ id: MessageID.ascending(), role: "user", sessionID: session.id, agent: "build", model, time: { created: Date.now() + i } }),
+        )
+        yield* svc((s) =>
+          s.updatePart({ id: PartID.ascending(), sessionID: session.id, messageID: (info as { id: MessageID }).id, type: "text", text: `later message ${i}` }),
+        )
+      }
+      yield* llm.textMatch(isSide, "最初のテストは14件(11成功・3失敗)でした。")
+      const side = yield* post(SessionPaths.btw.replace(":sessionID", session.id), directory, {
+        question: "最初の頃のテストは何件だった?",
+      }).pipe(Effect.flatMap(answer))
+      expect(side.error).toBeUndefined()
+      const body = JSON.stringify((yield* llm.hits).find(isSide)!.body)
+      expect(body).toContain("earlier_matches")
+      expect(body).toContain("Ran 14 tests across 2 files.")
+      expect(body).not.toContain(key)
+      expect(body).not.toContain("later message 0")
+      expect(body).toContain("later message 44")
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
   )
 })

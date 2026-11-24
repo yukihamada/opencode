@@ -40,7 +40,7 @@ export const withSpend = SideSpend.add
 const INSTRUCTIONS = [
   "You answer a quick side question (/btw) about a coding session that is still running.",
   "The session excerpt below is read-only context. You cannot call tools, read files, run commands or change anything; do not offer to.",
-  "Answer directly and concisely in markdown, from the excerpt only. Tool outputs in the excerpt are shortened to their last lines.",
+  "Answer directly and concisely in markdown, from the excerpt only. Tool outputs in the excerpt are shortened to their last lines. <earlier_matches>, when present, holds older parts of the session found by the question's words.",
   "If the answer is not in the excerpt, say exactly that it is not in the part of the session you can see (in Japanese: 「その内容は今見えている範囲にありません」) and do not guess.",
   "Reply in the language of the question.",
 ].join("\n")
@@ -148,12 +148,104 @@ export function transcript(messages: readonly SessionV1.WithParts[], limit = CON
     .join("\n\n")
 }
 
+const EARLIER_CHARS = 3_000
+const EARLIER_SNIPPET = 500
+/** How many older parts the SQL search may return before ranking. */
+export const EARLIER_LIMIT = 30
+const STOP = new Set([
+  "what", "which", "when", "where", "does", "did", "the", "this", "that", "with", "from", "have", "how", "many", "was", "were", "are", "and", "for", "you",
+  "何件", "何回", "なに", "どれ", "どの", "いつ", "さっき", "最初", "最近", "教えて", "ですか", "だった", "でした", "ありました",
+])
+
+/**
+ * Words from the question worth looking up in older messages: numbers,
+ * identifiers and file names (ASCII runs of 3+), and runs of 2+ katakana or
+ * kanji. Hiragana particles and common question words are skipped.
+ */
+// Japanese words whose matches in tool input/output are usually English.
+const ALIASES: Record<string, string[]> = {
+  テスト: ["test"],
+  ファイル: ["file"],
+  エラー: ["error"],
+  ビルド: ["build"],
+  デプロイ: ["deploy"],
+  コミット: ["commit"],
+  失敗: ["fail"],
+  成功: ["pass"],
+}
+
+export function terms(question: string) {
+  const found = [
+    ...(question.match(/[A-Za-z0-9_][A-Za-z0-9_./-]{2,}|\d{2,}/g) ?? []),
+    ...(question.match(/[\p{Script=Katakana}ー]{2,}|\p{Script=Han}{2,}/gu) ?? []),
+  ]
+    .map((term) => term.replace(/[./-]+$/, ""))
+    .filter((term) => term.length >= 2 && !STOP.has(term.toLowerCase()))
+    .flatMap((term) => [term, ...(ALIASES[term] ?? [])])
+  return [...new Set(found)].slice(0, 8)
+}
+
+function partText(part: SessionV1.Part) {
+  if (part.type === "text") return part.synthetic ? "" : part.text
+  if (part.type !== "tool") return ""
+  const input = JSON.stringify(part.state.input ?? {})
+  if (part.state.status === "completed") return `[tool ${part.tool}] ${input}\n${part.state.time.compacted ? "" : part.state.output}`
+  if (part.state.status === "error") return `[tool ${part.tool} failed] ${input}\n${part.state.error}`
+  return `[tool ${part.tool}] ${input}`
+}
+
+// Tool results usually end with the summary (counts, exit status), so a tool
+// match shows its call and the end of its output; text shows the words around the match.
+function snippet(part: SessionV1.Part, text: string, lower: string, hit: string) {
+  if (part.type === "tool") {
+    const head = text.split("\n")[0]!.slice(0, 200)
+    const rest = text.slice(text.indexOf("\n") + 1)
+    return `${head}\n${tail(rest, EARLIER_SNIPPET - head.length)}`
+  }
+  const at = Math.max(0, lower.indexOf(hit.toLowerCase()) - EARLIER_SNIPPET / 2)
+  return (at > 0 ? "…" : "") + text.slice(at, at + EARLIER_SNIPPET).trim() + (at + EARLIER_SNIPPET < text.length ? "…" : "")
+}
+
+/**
+ * Snippets of older parts (before the excerpt) that mention the question's
+ * terms, most matching first, oldest first among equals, within a small budget.
+ */
+export function earlier(found: readonly { time: number; part: SessionV1.Part }[], words: readonly string[]) {
+  const scored = found
+    .map((item) => {
+      const text = partText(item.part)
+      const lower = text.toLowerCase()
+      const hits = words.filter((word) => lower.includes(word.toLowerCase()))
+      return { ...item, text, lower, hits }
+    })
+    .filter((item) => item.text && item.hits.length > 0)
+    .toSorted((a, b) => b.hits.length - a.hits.length || a.time - b.time)
+  const out: { time: number; text: string }[] = []
+  let size = 0
+  for (const item of scored) {
+    const piece = snippet(item.part, item.text, item.lower, item.hits[0]!)
+    if (size + piece.length > EARLIER_CHARS) break
+    out.push({ time: item.time, text: piece })
+    size += piece.length
+  }
+  return out.toSorted((a, b) => a.time - b.time).map((item) => item.text)
+}
+
 /** The user content of the side request. Secrets are masked in all of it, including pasted text and tool input. */
-export function request(input: { title?: string; messages: readonly SessionV1.WithParts[]; question: string }) {
+export function request(input: {
+  title?: string
+  messages: readonly SessionV1.WithParts[]
+  question: string
+  /** Snippets from before the excerpt that match the question (see `earlier`). */
+  earlier?: readonly string[]
+}) {
   const excerpt = transcript(input.messages)
   return SecretRedact.redact(
     [
       ...(input.title && !Session.isDefaultTitle(input.title) ? [`<session_goal>\n${input.title}\n</session_goal>`] : []),
+      ...(input.earlier?.length
+        ? [`<earlier_matches note="older parts of the session that mention the question's words, oldest first">\n${input.earlier.join("\n---\n")}\n</earlier_matches>`]
+        : []),
       `<session_excerpt>\n${excerpt || "(no messages yet)"}\n</session_excerpt>`,
       `<side_question>\n${clip(input.question, QUESTION_CHARS)}\n</side_question>`,
     ].join("\n\n"),
@@ -289,6 +381,7 @@ export const ask = Effect.fn("SessionBtw.ask")(function* (input: {
   session: Pick<Session.Info, "id" | "title">
   messages: readonly SessionV1.WithParts[]
   question: string
+  earlier?: readonly string[]
   model: Provider.Model
   fallback?: boolean
   stream: LLM.Interface["stream"]
@@ -299,7 +392,12 @@ export const ask = Effect.fn("SessionBtw.ask")(function* (input: {
   // checked by the caller (`budget`) against the real session.
   const sessionID = SessionID.descending()
   const base = { providerID: input.model.providerID, modelID: input.model.id }
-  const content = request({ title: input.session.title, messages: input.messages, question: input.question })
+  const content = request({
+    title: input.session.title,
+    messages: input.messages,
+    question: input.question,
+    earlier: input.earlier,
+  })
   const events: LLMEvent[] = []
   const usage = () =>
     events

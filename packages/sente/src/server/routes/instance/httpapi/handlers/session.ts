@@ -27,6 +27,7 @@ import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/htt
 import { InstanceHttpApi } from "../api"
 import {
   BtwPayload,
+  BtwSpendQuery,
   CommandPayload,
   DiffQuery,
   ForkPayload,
@@ -313,6 +314,16 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const messages = yield* SessionError.mapStorageNotFound(
         session.messages({ sessionID: ctx.params.sessionID, limit: SessionBtw.MESSAGE_LIMIT }),
       )
+      // Older than the excerpt: look up the question's words in SQL instead of loading the whole session.
+      const oldest = messages[0]?.info.time.created
+      const words = SessionBtw.terms(question)
+      const earlier =
+        messages.length >= SessionBtw.MESSAGE_LIMIT && oldest !== undefined && words.length > 0
+          ? SessionBtw.earlier(
+              yield* session.searchParts({ sessionID: info.id, before: oldest, terms: words, limit: SessionBtw.EARLIER_LIMIT }),
+              words,
+            )
+          : []
       const empty = { text: "", providerID: "", modelID: "", cost: 0, tokens: { input: 0, output: 0 } }
       const resolved = yield* SessionBtw.resolveModel({
         explicit: ctx.payload.model,
@@ -334,7 +345,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         rootHistory: yield* session.messages({ sessionID: root.id }).pipe(Effect.orElseSucceed(() => [])),
         sameRoot: root.id === info.id,
         model,
-        content: SessionBtw.request({ title: info.title, messages, question }),
+        content: SessionBtw.request({ title: info.title, messages, question, earlier }),
       })
       if (check.needsApproval) {
         // The same request_cost rules as the main run's cost gate (llm.ts):
@@ -362,11 +373,17 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         session: info,
         messages,
         question,
+        earlier,
         model,
         fallback: resolved.success.fallback,
         stream: llm.stream,
         record,
       })
+    })
+
+    const btwSpend = Effect.fn("SessionHttpApi.btwSpend")(function* (ctx: { query: typeof BtwSpendQuery.Type }) {
+      const instance = yield* InstanceState.context
+      return yield* session.sideSpendSince({ projectID: instance.project.id, since: ctx.query.since })
     })
 
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
@@ -506,6 +523,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("unshare", unshare)
       .handle("summarize", summarize)
       .handle("btw", btw)
+      .handle("btwSpend", btwSpend)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
       .handle("command", command)

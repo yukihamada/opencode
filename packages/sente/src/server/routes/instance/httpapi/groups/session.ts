@@ -78,6 +78,13 @@ export const BtwPayload = Schema.Struct({
   /** The user approved crossing the session's cost limit for this one call. */
   approve: Schema.optional(Schema.Boolean),
 })
+export const BtwSpendQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  since: Schema.NumberFromString,
+})
+export const BtwSpend = Schema.Struct({ usd: Schema.Finite, partial: Schema.Boolean }).annotate({
+  identifier: "SessionBtwSpend",
+})
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
@@ -104,6 +111,7 @@ export const SessionPaths = {
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
   btw: `${root}/:sessionID/btw`,
+  btwSpend: `${root}/btw-spend`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
@@ -139,6 +147,17 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.status",
             summary: "Get session status",
             description: "Retrieve the current status of all sessions, including active, idle, and completed states.",
+          }),
+        ),
+        HttpApiEndpoint.get("btwSpend", SessionPaths.btwSpend, {
+          query: BtwSpendQuery,
+          success: described(BtwSpend, "Side question spend"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.btwSpend",
+            summary: "Side question spend",
+            description:
+              "Total /btw side-question cost recorded since a time, across all sessions of the project (old sessions included).",
           }),
         ),
         HttpApiEndpoint.get("get", SessionPaths.get, {

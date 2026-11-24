@@ -72,7 +72,7 @@ import {
   type VoiceSettings,
 } from "../../util/dictation"
 import { stopSpeaking } from "../../util/voice"
-import { spendLabel, todayCost, turnCostWithSubagents } from "../../util/spend"
+import { spendLabel, startOfDay, todayCost, turnCostWithSubagents } from "../../util/spend"
 import { btwText, parseBtwCommand } from "../../util/btw"
 import { DialogBtw } from "../dialog-btw"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
@@ -287,6 +287,18 @@ export function Prompt(props: PromptProps) {
     return messages.findLast((m): m is UserMessage => m.role === "user")
   })
 
+  // /btw spend since local midnight across the project, from the server: it
+  // also covers sessions too old for the session list. Re-read after each /btw.
+  const [sideToday, setSideToday] = createSignal({ usd: 0, partial: false })
+  const refreshSideToday = () =>
+    sdk.client.session
+      .btwSpend({ since: String(startOfDay(Date.now())) })
+      .then((result) => {
+        if (result.data) setSideToday(result.data)
+      })
+      .catch(() => {})
+  onMount(() => void refreshSideToday())
+
   const usage = createMemo(() => {
     if (!props.sessionID) return
     const msg = sync.data.message[props.sessionID] ?? []
@@ -311,7 +323,10 @@ export function Prompt(props: PromptProps) {
               messages: sync.data.message,
             })
           : undefined,
-        today: todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() }),
+        today: (() => {
+          const today = todayCost({ sessions: sync.data.session, messages: sync.data.message, now: Date.now() })
+          return { usd: today.usd + sideToday().usd, partial: today.partial || sideToday().partial }
+        })(),
       }),
     }
   })
@@ -1695,7 +1710,17 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
       dialog.replace(() => (
-        <DialogBtw client={sdk.client} sessionID={sessionID} question={btwCommand.question} main={local.model.current()} />
+        <DialogBtw
+          client={sdk.client}
+          sessionID={sessionID}
+          question={btwCommand.question}
+          main={local.model.current()}
+          onDone={() => {
+            // The cost is written without a session event; re-read it for the sidebar and turn total.
+            void sdk.client.session.get({ sessionID }).then((result) => result.data && sync.session.put(result.data))
+            void refreshSideToday()
+          }}
+        />
       ))
       return true
     }

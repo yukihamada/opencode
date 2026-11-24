@@ -29,6 +29,17 @@ export function spentOn(metadata: Metadata) {
   return read(metadata).total
 }
 
+/**
+ * /btw cost recorded at or after `since`. `partial` when the session kept only
+ * its latest entries and older ones from the window may have been dropped.
+ */
+export function since(metadata: Metadata, time: number) {
+  const value = read(metadata)
+  const usd = value.recent.reduce((sum, item) => sum + (item.time >= time && item.usd > 0 ? item.usd : 0), 0)
+  const partial = value.recent.length >= RECENT && (value.recent[0]?.time ?? 0) >= time
+  return { usd, partial }
+}
+
 /** Metadata with one more /btw cost added. Other keys are kept. */
 export function add(metadata: Metadata, usd: number, time: number): Record<string, unknown> {
   const current = read(metadata)

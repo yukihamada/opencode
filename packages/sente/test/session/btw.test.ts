@@ -347,3 +347,41 @@ describe("SideSpend", () => {
     expect(SideSpend.drop(undefined)).toBeUndefined()
   })
 })
+
+describe("SessionBtw search of older messages", () => {
+  test("terms keep numbers, identifiers, file names and katakana/kanji words, with English aliases", () => {
+    expect(SessionBtw.terms("最初の頃のテストは何件だった?")).toEqual(["テスト", "test"])
+    const words = SessionBtw.terms("what did src/session/btw.ts return for issue 4521?")
+    expect(words).toContain("src/session/btw.ts")
+    expect(words).toContain("4521")
+    expect(words).not.toContain("what")
+  })
+
+  test("earlier snippets show a tool call with the end of its output, best matches first, oldest first", () => {
+    const tool = (time: number, output: string) => ({
+      time,
+      part: {
+        type: "tool",
+        tool: "bash",
+        state: { status: "completed", input: { command: "bun test" }, output, title: "t", time: { start: 1, end: 2 }, metadata: {} },
+      } as unknown as SessionV1.Part,
+    })
+    const text = (time: number, value: string) => ({ time, part: { type: "text", text: value } as unknown as SessionV1.Part })
+    const result = SessionBtw.earlier(
+      [tool(5, "x\n".repeat(400) + "Ran 9 tests"), text(1, "unrelated words"), text(3, "the test plan was agreed")],
+      ["test"],
+    )
+    expect(result).toHaveLength(2)
+    expect(result[0]).toContain("the test plan")
+    expect(result[1]).toContain("Ran 9 tests")
+    expect(result[1]).toContain('{"command":"bun test"}')
+  })
+
+  test("earlier matches go into the request and are redacted too", () => {
+    const key = "te_" + "Q1w2E3r4".repeat(4)
+    const content = SessionBtw.request({ title: "Goal", messages: [], question: "q", earlier: [`TOKEN=${key} Ran 9 tests`] })
+    expect(content).toContain("<earlier_matches")
+    expect(content).toContain("Ran 9 tests")
+    expect(content).not.toContain(key)
+  })
+})

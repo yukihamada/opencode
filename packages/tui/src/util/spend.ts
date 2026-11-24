@@ -144,7 +144,8 @@ export function sessionCostWithSubagents(input: {
 }
 
 /**
- * Today's spend across the sessions this screen knows about.
+ * Today's model spend across the sessions this screen knows about (without
+ * /btw side answers; add `session.btwSpend` from the server for those).
  *
  * - started today: the session total is all today's.
  * - started earlier, messages loaded: only the calls made since midnight.
@@ -160,8 +161,8 @@ export function todayCost(input: {
   let usd = 0
   let partial = false
   for (const session of input.sessions) {
-    // /btw costs do not bump time.updated (they must not reorder the session list), so count them first.
-    usd += sideCost(session, since)
+    // /btw costs are not counted here: the server totals them for the whole
+    // project (`session.btwSpend`), including sessions too old for this list.
     if (session.time.updated < since) continue
     if (session.time.created >= since) {
       usd += cost(session.cost)
