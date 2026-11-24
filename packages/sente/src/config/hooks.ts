@@ -61,17 +61,28 @@ export function deduplicate(items: Origin[]) {
 export type Scope = { projectDir: string; cwd: string }
 
 const PROJECT_VARS = /\$\{?(?:CLAUDE_PROJECT_DIR|SENTE_PROJECT_DIR)\}?/g
+const PWD_VAR = /\$\{?PWD\}?/g
 
-// Files a command names directly: `./check.sh`, `node scripts/lint.js`, `"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py`.
-// Only regular files inside the project count. What those files load in turn (a script that sources another one,
-// `npm run x`, a glob) is not followed: `sente hooks list` says so.
-export function referencedFiles(command: string, scope: Scope) {
-  const tokens = command
+function tokens(command: string, scope: Scope) {
+  return command
     .replace(PROJECT_VARS, scope.projectDir)
+    .replace(PWD_VAR, scope.cwd)
     .split(/[\s;&|()<>`]+/)
-    .map((token) => token.replace(/^['"]+|['"]+$/g, "").replace(/['"]/g, ""))
-    .filter((token) => token && !token.startsWith("-") && !token.includes("$"))
-  const files = tokens
+    .map((token) =>
+      token
+        .replace(/['"]/g, "")
+        // Shell escapes such as `a\.sh` name the same file as `a.sh`.
+        .replace(/\\(.)/g, "$1"),
+    )
+    .filter((token) => token && !token.startsWith("-"))
+}
+
+// Files a command names directly: `./check.sh`, `node scripts/lint.js`, `"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py`,
+// `$PWD/x.sh`. Only regular files inside the project count. What those files load in turn (a script that sources
+// another one, `npm run x`, a glob) is not followed: `sente hooks list` says so.
+export function referencedFiles(command: string, scope: Scope) {
+  const files = tokens(command, scope)
+    .filter((token) => !token.includes("$"))
     .map((token) => (path.isAbsolute(token) ? token : path.resolve(scope.cwd, token)))
     .filter((file) => {
       const relative = path.relative(scope.projectDir, file)
@@ -85,9 +96,23 @@ export function referencedFiles(command: string, scope: Scope) {
   return [...new Set(files)].toSorted()
 }
 
+// Parts of a command Sente cannot resolve to a file (other variables, command substitution): a script named that way
+// is not covered by the fingerprint, and `sente hooks list` warns about it.
+export function unresolved(command: string, scope: Scope) {
+  return [...new Set(tokens(command, scope).filter((token) => token.includes("$")))]
+}
+
+// File hashes are cached by size and mtime, so checking trust before every hook run stays cheap.
+const hashes = new Map<string, { size: number; mtimeMs: number; hash: string }>()
+
 function hashFile(file: string) {
   try {
-    return createHash("sha256").update(readFileSync(file)).digest("hex")
+    const stat = statSync(file)
+    const cached = hashes.get(file)
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.hash
+    const hash = createHash("sha256").update(readFileSync(file)).digest("hex")
+    hashes.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, hash })
+    return hash
   } catch {
     return "unreadable"
   }
@@ -118,6 +143,28 @@ export async function readTrust(): Promise<Record<string, string>> {
   return Object.fromEntries(
     Object.entries(data).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
   )
+}
+
+const trustCache = { mtimeMs: -1, size: -1, value: {} as Record<string, string> }
+
+// Synchronous, mtime-cached read of the trust file for the check right before each project/remote hook runs, so an
+// `untrust` in another terminal takes effect without restarting.
+export function readTrustSync(): Record<string, string> {
+  try {
+    const stat = statSync(trustFile())
+    if (stat.mtimeMs === trustCache.mtimeMs && stat.size === trustCache.size) return trustCache.value
+    const data: unknown = JSON.parse(readFileSync(trustFile(), "utf8"))
+    const value =
+      data && typeof data === "object" && !Array.isArray(data)
+        ? Object.fromEntries(
+            Object.entries(data).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+          )
+        : {}
+    Object.assign(trustCache, { mtimeMs: stat.mtimeMs, size: stat.size, value })
+    return value
+  } catch {
+    return {}
+  }
 }
 
 export async function writeTrust(next: Record<string, string>) {
@@ -180,4 +227,15 @@ export function inProject(source: string, ctx: { directory: string; worktree: st
   const root = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
   const relative = path.relative(root, source)
   return !relative.startsWith("..") && !path.isAbsolute(relative)
+}
+
+// Checked right before a project or remote hook runs: the trust given at startup is not enough, because the hook's
+// scripts (or the trust file) can change while Sente is running. Returns why the hook must not run, if it must not.
+export function recheck(
+  source: Origin[],
+  scope: Scope,
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  const current = status(source, readTrustSync(), scope, env)[0]
+  return current && !current.trusted ? current.reason : undefined
 }

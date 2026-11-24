@@ -61,6 +61,8 @@ export type Result = {
   stderr: string
   timedOut: boolean
   aborted?: boolean
+  // Set when the command was ended by a signal it did not expect (not Sente's timeout or cancel).
+  signal?: string
   error?: string
 }
 
@@ -82,24 +84,32 @@ export function matches(matcher: string | undefined, names: string[]) {
   return !!re && names.some((name) => re.test(name))
 }
 
-// Sente's own credentials are not the hook's business: a project hook the user trusted for linting should not be able
-// to read the teai console token or the server password. Other variables (including provider API keys the user put in
-// their shell) are passed through, as with any command the user runs; the docs say so.
+// Sente's own credentials are kept out of the hook's environment: a project hook the user trusted for linting should not
+// get the teai console token, the server password or inline auth/config content for free. This is one layer of defence,
+// not a boundary: a trusted hook runs as the user and can still read credential files such as auth.json. Other
+// variables (including provider API keys the user put in their shell) are passed through; the docs say so.
 const SENTE_CREDENTIAL = /^(SENTE|OPENCODE|TEAI)_\w*(TOKEN|KEY|SECRET|PASSWORD|PASS|CREDENTIAL)S?$/i
+const SENTE_PRIVATE = new Set([
+  "SENTE_AUTH_CONTENT",
+  "SENTE_CONFIG_CONTENT",
+  "OPENCODE_AUTH_CONTENT",
+  "OPENCODE_CONFIG_CONTENT",
+])
 
 export function hookEnv(extra: Record<string, string | undefined> = {}) {
   return Object.fromEntries(
     Object.entries({ ...process.env, ...extra }).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string" && !SENTE_CREDENTIAL.test(entry[0]),
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" && !SENTE_CREDENTIAL.test(entry[0]) && !SENTE_PRIVATE.has(entry[0]),
     ),
   )
 }
 
-// Hook processes still running. If Sente exits (normally, Ctrl-C, or an uncaught error) they are killed with it, so a
-// detached process group does not outlive the session. A SIGKILL of Sente itself cannot be caught; the hook's timeout
-// is then the only bound, which the docs mention.
+// Hook processes still running, killed on a normal exit of Sente ("exit" event). Sente installs no signal handlers for
+// this: a handler would change what SIGHUP/SIGTERM do to Sente itself (for example undo `nohup`). Abnormal ends are
+// covered by the lifeline below on POSIX instead.
 const live = new Set<ChildProcess>()
-let exitHandler = false
+const exitWatch = { installed: false }
 
 function killTree(child: ChildProcess, sync = false) {
   if (!child.pid || child.exitCode !== null) return
@@ -121,26 +131,21 @@ function killTree(child: ChildProcess, sync = false) {
   }
 }
 
-// Kill running hooks when Sente goes away. "exit" covers normal exits; a signal with no handler ends the process without
-// "exit", so for SIGINT/SIGTERM/SIGHUP the hooks are killed first and the signal is re-raised when nobody else handles
-// it (Sente's own handlers, when present, keep working as before).
-function watchExit() {
-  const killAll = () => live.forEach((item) => killTree(item, true))
-  process.once("exit", killAll)
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    const handler = () => {
-      killAll()
-      process.off(signal, handler)
-      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal)
-    }
-    process.on(signal, handler)
-  }
-}
+// POSIX wrapper around the hook command. The hook runs in its own process group (detached) so a timeout can kill
+// everything it started. Fd 3 is a pipe whose other end only Sente holds: a background watcher in the group blocks
+// reading it, and when it reaches end-of-file (Sente closed it after the hook finished, or Sente died in any way,
+// SIGKILL and a terminated TUI worker included) it kills the whole group. So hook processes never outlive the hook run
+// or Sente, without Sente touching its own signal handling.
+const LIFELINE = [
+  "( read _ <&3; kill -s KILL 0 ) </dev/null >/dev/null 2>&1 &",
+  "exec 3<&-",
+  'sente_hook_command=$SENTE_HOOK_COMMAND; unset SENTE_HOOK_COMMAND; eval "$sente_hook_command"',
+].join("\n")
 
 // node:child_process rather than the Effect CrossSpawnSpawner: plugin hooks are plain promises with no Effect services
-// in reach, and a hook must stop being awaited as soon as the command exits even if something it started in the
-// background keeps stdout open (CrossSpawnSpawner waits for "close"). The kill strategy matches CrossSpawnSpawner:
-// process group on POSIX, taskkill /T on Windows.
+// in reach, a hook must stop being awaited as soon as the command exits even if something it started keeps stdout open
+// (CrossSpawnSpawner waits for "close"), and the lifeline needs an extra pipe. The kill strategy matches
+// CrossSpawnSpawner: process group on POSIX, taskkill /T on Windows.
 export function exec(
   command: string,
   input: unknown,
@@ -148,27 +153,42 @@ export function exec(
 ): Promise<Result> {
   return new Promise((resolve) => {
     const out = { stdout: "", stderr: "" }
-    let done = false
+    const state = {
+      done: false,
+      ended: 0,
+      exit: undefined as { code: number | null; signal: string | null } | undefined,
+    }
     let grace: ReturnType<typeof setTimeout> | undefined
+    const posix = process.platform !== "win32"
     const finish = (result: Omit<Result, "command" | "stdout" | "stderr">) => {
-      if (done) return
-      done = true
+      if (state.done) return
+      state.done = true
       clearTimeout(timer)
       clearTimeout(grace)
       options.signal?.removeEventListener("abort", abort)
-      if (!(child instanceof Error)) live.delete(child)
+      if (!(child instanceof Error)) {
+        live.delete(child)
+        // Closing the lifeline also stops anything the hook left running in the background.
+        child.stdio[3]?.destroy()
+      }
       resolve({ command, stdout: out.stdout, stderr: out.stderr, ...result })
     }
     const child = (() => {
       try {
-        return spawn(command, {
-          shell: true,
+        const env = options.env ?? hookEnv()
+        if (!posix)
+          return spawn(command, {
+            shell: true,
+            cwd: options.cwd,
+            env,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          })
+        return spawn("/bin/sh", ["-c", LIFELINE], {
           cwd: options.cwd,
-          env: options.env ?? hookEnv(),
-          stdio: ["pipe", "pipe", "pipe"],
-          // Own process group, so a timeout also kills whatever the command started.
-          detached: process.platform !== "win32",
-          windowsHide: true,
+          env: { ...env, SENTE_HOOK_COMMAND: command },
+          stdio: ["pipe", "pipe", "pipe", "pipe"],
+          detached: true,
         })
       } catch (error) {
         return error instanceof Error ? error : new Error(String(error))
@@ -189,9 +209,16 @@ export function exec(
     if (options.signal?.aborted) return abort()
     options.signal?.addEventListener("abort", abort, { once: true })
     live.add(child)
-    if (!exitHandler) {
-      exitHandler = true
-      watchExit()
+    if (!exitWatch.installed) {
+      exitWatch.installed = true
+      process.on("exit", () => live.forEach((item) => killTree(item, true)))
+    }
+    // The lifeline pipe must not keep Sente's event loop alive.
+    const lifeline = child.stdio[3]
+    if (lifeline && "unref" in lifeline && typeof lifeline.unref === "function") lifeline.unref()
+    const settle = () => {
+      if (!state.exit || state.ended < 2) return
+      finish({ exitCode: state.exit.code, timedOut: false, signal: state.exit.signal ?? undefined })
     }
     // Decode as UTF-8 per stream so a multi-byte character split across chunks is not mangled.
     child.stdout?.setEncoding("utf8")
@@ -201,12 +228,18 @@ export function exec(
     }
     child.stdout?.on("data", append("stdout"))
     child.stderr?.on("data", append("stderr"))
+    for (const stream of [child.stdout, child.stderr])
+      stream?.on("end", () => {
+        state.ended++
+        settle()
+      })
     child.on("error", (error) => finish({ exitCode: null, timedOut: false, error: error.message }))
-    child.on("close", (code) => finish({ exitCode: code, timedOut: false }))
-    // A command that leaves a background process holding stdout open would never "close"; stop waiting shortly after
-    // the command itself exits.
-    child.on("exit", (code) => {
-      grace = setTimeout(() => finish({ exitCode: code, timedOut: false }), 200)
+    child.on("exit", (code, signal) => {
+      state.exit = { code, signal }
+      settle()
+      // A command that leaves a background process holding stdout open never ends the stream; stop waiting shortly
+      // after the command itself exits.
+      grace = setTimeout(() => finish({ exitCode: code, timedOut: false, signal: signal ?? undefined }), 200)
     })
     // Hooks are free to ignore stdin; a closed pipe must not surface as an uncaught EPIPE.
     child.stdin?.on("error", () => {})
@@ -239,6 +272,20 @@ function parse(stdout: string) {
 export function interpret(event: string, results: Result[]): Outcome {
   return results.reduce<Outcome>(
     (acc, result) => {
+      // Fail closed for the checks that guard an action: a PreToolUse or UserPromptSubmit hook that did not finish
+      // (timed out, cancelled, killed by a signal, or could not start) blocks instead of letting the action through.
+      if (result.exitCode === null && (event === "PreToolUse" || event === "UserPromptSubmit")) {
+        acc.block = true
+        const why = result.timedOut
+          ? "timed out"
+          : result.aborted
+            ? "was cancelled"
+            : result.signal
+              ? `was stopped by ${result.signal}`
+              : `could not start${result.error ? ` (${result.error})` : ""}`
+        acc.reasons.push(`hook ${why}: ${result.command}`)
+        return acc
+      }
       if (result.exitCode === 2) {
         acc.block = true
         acc.reasons.push(result.stderr.trim() || `hook exited with code 2: ${result.command}`)
@@ -278,10 +325,15 @@ export async function run(input: {
   env?: Record<string, string | undefined>
   signal?: AbortSignal
   warn?: (message: string) => void
+  // Returns why a hook must not run right now (project/remote trust no longer matches); it is then skipped.
+  verify?: (hook: ConfigHooks.Origin) => string | undefined
 }): Promise<Outcome> {
-  const selected = input.hooks.filter(
-    (hook) => hook.event === input.event && (!input.names || matches(hook.matcher, input.names)),
-  )
+  const selected = input.hooks.filter((hook) => {
+    if (hook.event !== input.event || (input.names && !matches(hook.matcher, input.names))) return false
+    const refused = input.verify?.(hook)
+    if (refused) input.warn?.(`${input.event} hook not run (${refused}): ${hook.command}`)
+    return !refused
+  })
   if (!selected.length) return { block: false, reasons: [], context: [], results: [] }
   const env = hookEnv(input.env)
   // Every matching hook runs, in parallel, like Claude Code.
@@ -292,6 +344,7 @@ export async function run(input: {
   )
   for (const result of results) {
     if (result.exitCode === 0 || result.exitCode === 2 || result.aborted) continue
+    if (result.exitCode === null && (input.event === "PreToolUse" || input.event === "UserPromptSubmit")) continue
     const why = result.timedOut
       ? "timed out"
       : result.error
@@ -354,6 +407,8 @@ export function ConfigHooksPlugin(
     warn?: (message: string) => void
     // Configured MCP server names, for `mcp__<server>__<tool>` matchers.
     mcpServers?: string[]
+    // Re-checks project/remote trust right before a hook runs (see ConfigHooks.recheck).
+    verify?: (hook: ConfigHooks.Origin) => string | undefined
     // Called once, on the first prompt of this process: by then the TUI is surely listening, so a warning about hooks
     // that were not run (untrusted project/remote hooks) is not lost in startup.
     notice?: (sessionID: string) => void
@@ -384,6 +439,7 @@ export function ConfigHooksPlugin(
         env: { SENTE_PROJECT_DIR: projectDir, CLAUDE_PROJECT_DIR: projectDir, SENTE_SESSION_ID: sessionID },
         signal: event === "Stop" || event === "Notification" ? undefined : controller.signal,
         warn: options.warn,
+        verify: options.verify,
         payload: {
           session_id: sessionID,
           transcript_path: "",

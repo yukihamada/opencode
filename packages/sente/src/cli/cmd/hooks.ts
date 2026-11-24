@@ -11,44 +11,41 @@ const load = Effect.fn("Cli.hooks.load")(function* () {
   const ctx = yield* InstanceState.context
   const config = yield* Config.Service.use((cfg) => cfg.get())
   const trust = yield* Effect.promise(() => ConfigHooks.readTrust())
-  return {
-    ConfigHooks,
-    ctx,
-    trust,
-    statuses: ConfigHooks.status(config.hook_origins ?? [], trust, ConfigHooks.scopeOf(ctx)),
+  const scope = ConfigHooks.scopeOf(ctx)
+  const statuses = ConfigHooks.status(config.hook_origins ?? [], trust, scope)
+  const describe = (item: (typeof statuses)[number]) => {
+    const where =
+      item.kind === "project" ? item.source : item.kind === "user" ? `user config: ${item.source}` : item.label
+    const lines = [`${item.trusted ? "on " : "OFF"} ${where} (${item.reason})`]
+    for (const hook of item.hooks)
+      lines.push(`    ${hook.event}${hook.matcher ? ` [${hook.matcher}]` : ""}: ${hook.command}`)
+    if (item.kind === "user") return lines.join(EOL)
+    lines.push(
+      item.files.length
+        ? `    fingerprint covers: ${item.files.join(", ")}`
+        : "    fingerprint covers: the commands only (no script file named in them)",
+    )
+    const unresolved = [...new Set(item.hooks.flatMap((hook) => ConfigHooks.unresolved(hook.command, scope)))]
+    if (unresolved.length) lines.push(`    warning: not resolved to files, so not covered: ${unresolved.join(" ")}`)
+    lines.push(
+      "    note: files those scripts load in turn (sourced scripts, npm scripts, imports) are not covered; review them too.",
+      "    trust is checked again right before each run; any change stops these hooks until trusted again.",
+    )
+    return lines.join(EOL)
   }
+  return { ConfigHooks, ctx, trust, statuses, describe }
 })
-
-type Loaded = Effect.Success<ReturnType<typeof load>>
-
-function describe(item: Loaded["statuses"][number]) {
-  const lines = [
-    `${item.trusted ? "on " : "OFF"} ${item.label === "project" ? item.source : item.label} (${item.reason})`,
-  ]
-  for (const hook of item.hooks)
-    lines.push(`    ${hook.event}${hook.matcher ? ` [${hook.matcher}]` : ""}: ${hook.command}`)
-  if (item.kind === "user") return lines.join(EOL)
-  lines.push(
-    item.files.length
-      ? `    fingerprint covers: ${item.files.join(", ")}`
-      : "    fingerprint covers: the commands only (no script file named in them)",
-  )
-  lines.push(
-    "    note: files those scripts load in turn (sourced scripts, npm scripts, imports) are not covered; review them too.",
-  )
-  return lines.join(EOL)
-}
 
 const ListCommand = effectCmd({
   command: "list",
   describe: "show configured hooks and whether they run",
   handler: Effect.fn("Cli.hooks.list")(function* () {
-    const { statuses } = yield* load()
+    const { statuses, describe } = yield* load()
     if (!statuses.length) {
       process.stdout.write("no hooks configured" + EOL)
       return
     }
-    process.stdout.write(statuses.map(describe).join(EOL) + EOL)
+    process.stdout.write(statuses.map((item) => describe(item)).join(EOL) + EOL)
   }),
 })
 
@@ -60,7 +57,7 @@ const TrustCommand = effectCmd({
       .positional("file", { type: "string", describe: "only this config file (or remote URL)" })
       .option("yes", { alias: "y", type: "boolean", default: false, describe: "trust without asking" }),
   handler: Effect.fn("Cli.hooks.trust")(function* (args) {
-    const { ConfigHooks, ctx, trust, statuses } = yield* load()
+    const { ConfigHooks, ctx, trust, statuses, describe } = yield* load()
     const wanted = args.file
       ? /^https?:\/\//.test(args.file)
         ? args.file
@@ -140,6 +137,10 @@ const UntrustCommand = effectCmd({
 export const HooksCommand = cmd({
   command: "hooks",
   describe: "manage shell-command hooks from the config",
-  builder: (yargs) => yargs.command(ListCommand).command(TrustCommand).command(UntrustCommand).demandCommand(),
+  builder: (yargs) => {
+    // Tells the plugin loader not to print its "hooks not run" warning on top of this command's own output.
+    process.env.SENTE_HOOKS_COMMAND = "1"
+    return yargs.command(ListCommand).command(TrustCommand).command(UntrustCommand).demandCommand()
+  },
   async handler() {},
 })

@@ -202,18 +202,41 @@ posix("config hooks plugin", () => {
     expect(String(error)).not.toContain(key)
   })
 
-  test("a failing or slow hook is logged and the tool still runs", async () => {
+  test("a failing hook (any exit code but 2) is logged and the tool still runs", async () => {
     await using tmp = await tmpdir()
-    const loaded = await load(
-      [
-        hook("PreToolUse", "exit 1"),
-        hook("PreToolUse", "sleep 5", { timeout: 0.2 }),
-        hook("PreToolUse", "nonexistent-cmd-xyz"),
-      ],
-      tmp.path,
-    )
+    const loaded = await load([hook("PreToolUse", "exit 1"), hook("PreToolUse", "nonexistent-cmd-xyz")], tmp.path)
     await loaded.hooks["tool.execute.before"]!({ tool: "bash", sessionID: "ses_1", callID: "c1" }, { args: {} })
-    expect(loaded.warnings.length).toBe(3)
+    expect(loaded.warnings.length).toBe(2)
+  })
+
+  test("fail closed: a PreToolUse hook that times out or is killed by a signal blocks the tool", async () => {
+    await using tmp = await tmpdir()
+    for (const item of [
+      hook("PreToolUse", "sleep 5", { timeout: 0.2 }),
+      hook("PreToolUse", "kill -TERM $$; sleep 1"),
+    ]) {
+      const loaded = await load([item], tmp.path)
+      await expect(
+        loaded.hooks["tool.execute.before"]!({ tool: "bash", sessionID: "ses_1", callID: "c1" }, { args: {} }),
+      ).rejects.toThrow(/hook (timed out|was stopped by SIGTERM)/)
+    }
+  })
+
+  test("fail closed: a UserPromptSubmit hook that does not finish stops the prompt", async () => {
+    await using tmp = await tmpdir()
+    const loaded = await load([hook("UserPromptSubmit", "sleep 5", { timeout: 0.2 })], tmp.path)
+    const error = await loaded.hooks["chat.message"]!({ sessionID: "ses_1" }, userMessage("ses_1")).catch(
+      (err: unknown) => err,
+    )
+    expect(ConfigHooksRunner.HookBlockedError.isInstance(error)).toBe(true)
+  })
+
+  test("PostToolUse and Stop hooks that time out do not block", async () => {
+    await using tmp = await tmpdir()
+    const loaded = await load([hook("PostToolUse", "sleep 5", { timeout: 0.2 })], tmp.path)
+    const output = { title: "t", output: "ok", metadata: {} }
+    await loaded.hooks["tool.execute.after"]!({ tool: "bash", sessionID: "ses_1", callID: "c1", args: {} }, output)
+    expect(output.output).toBe("ok")
     expect(loaded.warnings.some((item) => item.includes("timed out"))).toBe(true)
   })
 
@@ -384,6 +407,16 @@ describe("trust", () => {
     expect(after.trusted).toBe(false)
   })
 
+  test("$PWD and shell escapes resolve to the same script; other variables are reported as not covered", async () => {
+    await using tmp = await tmpdir()
+    const local = { projectDir: tmp.path, cwd: tmp.path }
+    await Bun.write(path.join(tmp.path, ".sente", "hooks", "a.sh"), "exit 0\n")
+    const file = path.join(tmp.path, ".sente", "hooks", "a.sh")
+    expect(ConfigHooks.referencedFiles("sh $PWD/.sente/hooks/a.sh", local)).toEqual([file])
+    expect(ConfigHooks.referencedFiles("sh .sente/hooks/a\\.sh", local)).toEqual([file])
+    expect(ConfigHooks.unresolved('sh "$HOOK_DIR"/a.sh $(pwd)/b.sh', local)).toEqual(["$HOOK_DIR/a.sh", "$"])
+  })
+
   test("only files inside the project can be trusted from it", () => {
     const ctx = { directory: "/work/app", worktree: "/" }
     expect(ConfigHooks.inProject("/work/app/sente.json", ctx)).toBe(true)
@@ -464,15 +497,25 @@ describe("hook environment", () => {
     const previous = { ...process.env }
     process.env.SENTE_CONSOLE_TOKEN = "secret-console"
     process.env.SENTE_SERVER_PASSWORD = "pw"
+    process.env.SENTE_AUTH_CONTENT = '{"teai":{"key":"x"}}'
+    process.env.SENTE_CONFIG_CONTENT = "{}"
     process.env.MY_TOOL_SETTING = "kept"
     try {
       const env = ConfigHooksRunner.hookEnv({ SENTE_PROJECT_DIR: "/repo" })
       expect(env.SENTE_CONSOLE_TOKEN).toBeUndefined()
       expect(env.SENTE_SERVER_PASSWORD).toBeUndefined()
+      expect(env.SENTE_AUTH_CONTENT).toBeUndefined()
+      expect(env.SENTE_CONFIG_CONTENT).toBeUndefined()
       expect(env.MY_TOOL_SETTING).toBe("kept")
       expect(env.SENTE_PROJECT_DIR).toBe("/repo")
     } finally {
-      for (const key of ["SENTE_CONSOLE_TOKEN", "SENTE_SERVER_PASSWORD", "MY_TOOL_SETTING"])
+      for (const key of [
+        "SENTE_CONSOLE_TOKEN",
+        "SENTE_SERVER_PASSWORD",
+        "SENTE_AUTH_CONTENT",
+        "SENTE_CONFIG_CONTENT",
+        "MY_TOOL_SETTING",
+      ])
         if (!(key in previous)) delete process.env[key]
     }
   })
@@ -544,5 +587,75 @@ describe.skipIf(process.platform !== "win32")("windows", () => {
     const result = await ConfigHooksRunner.exec("ping -n 30 127.0.0.1 >nul", {}, { cwd: tmp.path, timeout: 0.5 })
     expect(result.timedOut).toBe(true)
     expect(Date.now() - start).toBeLessThan(5000)
+  })
+})
+
+const fixture = path.join(import.meta.dir, "fixtures", "hook-lifeline.ts")
+
+async function groupAlive(pidfile: string) {
+  const pgid = Number((await Bun.file(pidfile).text()).trim())
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitFor(check: () => Promise<boolean>, ms = 3000) {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (await check()) return true
+    await Bun.sleep(50)
+  }
+  return false
+}
+
+posix("hooks never outlive Sente, and Sente's signal handling is left alone", () => {
+  test("running a hook adds no signal handlers", async () => {
+    await using tmp = await tmpdir()
+    const before = ["SIGHUP", "SIGINT", "SIGTERM"].map((signal) => process.listenerCount(signal))
+    await ConfigHooksRunner.exec("true", {}, { cwd: tmp.path })
+    expect(["SIGHUP", "SIGINT", "SIGTERM"].map((signal) => process.listenerCount(signal))).toEqual(before)
+  })
+
+  test("under nohup, SIGHUP still does not end the process after hooks ran", async () => {
+    const proc = Bun.spawn(["nohup", process.execPath, fixture, "sighup"], { stdout: "pipe", stderr: "pipe" })
+    expect(await proc.exited).toBe(0)
+    expect(await new Response(proc.stdout).text()).toContain("alive")
+  })
+
+  for (const signal of ["SIGKILL", "SIGTERM", "SIGHUP"] as const)
+    test(`a running hook is killed when Sente dies by ${signal}`, async () => {
+      await using tmp = await tmpdir()
+      const pidfile = path.join(tmp.path, "pgid")
+      const proc = Bun.spawn([process.execPath, fixture, "hang", pidfile], { stdout: "ignore", stderr: "ignore" })
+      expect(await waitFor(() => Bun.file(pidfile).exists())).toBe(true)
+      expect(await groupAlive(pidfile)).toBe(true)
+      proc.kill(signal)
+      await proc.exited
+      expect(await waitFor(async () => !(await groupAlive(pidfile)))).toBe(true)
+    })
+
+  test("a running hook is killed when the worker that started it is terminated (TUI server worker)", async () => {
+    await using tmp = await tmpdir()
+    const pidfile = path.join(tmp.path, "pgid")
+    const proc = Bun.spawn([process.execPath, fixture, "worker", pidfile], { stdout: "pipe", stderr: "ignore" })
+    try {
+      const reader = proc.stdout.getReader()
+      const first = await reader.read()
+      expect(new TextDecoder().decode(first.value)).toContain("terminated")
+      expect(await waitFor(async () => !(await groupAlive(pidfile)))).toBe(true)
+    } finally {
+      proc.kill("SIGKILL")
+    }
+  })
+
+  test("background processes a hook leaves behind are stopped when it finishes", async () => {
+    await using tmp = await tmpdir()
+    const pidfile = path.join(tmp.path, "pgid")
+    const result = await ConfigHooksRunner.exec(`echo $$ > ${pidfile}; (sleep 30 &) ; echo done`, {}, { cwd: tmp.path })
+    expect(result.stdout.trim()).toBe("done")
+    expect(await waitFor(async () => !(await groupAlive(pidfile)))).toBe(true)
   })
 })

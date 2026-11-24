@@ -250,11 +250,15 @@ const layer = Layer.effect(
         // arguments exactly as the tool will get them (no later plugin can rewrite them after the check). Project and
         // remote hooks only run once their exact content (and the scripts they name) is trusted.
         if (!flags.pure && cfg.hook_origins?.length) {
+          const scope = ConfigHooks.scopeOf(ctx)
           const statuses = ConfigHooks.status(
             cfg.hook_origins,
             yield* Effect.promise(() => ConfigHooks.readTrust()),
-            ConfigHooks.scopeOf(ctx),
+            scope,
           )
+          const sources = ConfigHooks.bySource(cfg.hook_origins)
+          // `sente hooks …` shows the same information itself; do not print it twice.
+          const quiet = process.env.SENTE_HOOKS_COMMAND === "1"
           const skipped = statuses
             .filter((item) => !item.trusted)
             .map(
@@ -269,13 +273,13 @@ const layer = Layer.effect(
                   .pipe(Effect.ignore),
               ),
             )
-          for (const message of skipped) {
+          for (const message of quiet ? [] : skipped) {
             yield* Effect.logWarning(message)
             // `sente run` / `sente serve` run the server on the main thread: say it on stderr, where it cannot be
             // missed. The TUI runs it in a worker, where stderr would draw over the screen; it gets toasts instead.
             if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
           }
-          if (skipped.length) {
+          if (skipped.length && !quiet) {
             // The TUI may not be subscribed yet while the instance boots: show it now, again shortly after, and on the
             // first prompt (see `notice`).
             notify()
@@ -291,6 +295,10 @@ const layer = Layer.effect(
                 if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
               },
               mcpServers: Object.keys(cfg.mcp ?? {}),
+              // Trust given at startup is re-checked before every project/remote hook run, so editing a hook script
+              // (or `sente hooks untrust`) while Sente runs stops it at once.
+              verify: (hook) =>
+                hook.kind === "user" ? undefined : ConfigHooks.recheck(sources.get(hook.source) ?? [hook], scope),
               notice: skipped.length ? notify : undefined,
             },
           )

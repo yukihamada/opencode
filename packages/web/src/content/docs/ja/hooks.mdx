@@ -38,7 +38,7 @@ description: ツールの実行前後・入力時・ターン終了時に、自�
 コマンドはセッションのディレクトリで、シェル(macOS/Linux は `/bin/sh`、Windows は `cmd.exe`)経由で動きます。標準入力に JSON(`session_id`・`cwd`・`hook_event_name`・`tool_name`・`tool_input`・`tool_use_id` など)が渡ります。
 
 - `tool_input` には Sente の引数に加え、`filePath` → `file_path` のような snake_case の写しが入ります。`apply_patch` では変更するファイルを `file_path`(先頭)と `file_paths`(全部・絶対パス)で渡します。
-- 環境変数: あなたの環境変数と、`SENTE_PROJECT_DIR`・`CLAUDE_PROJECT_DIR`・`SENTE_SESSION_ID`。Sente 自身の資格情報(`SENTE_CONSOLE_TOKEN`・`SENTE_SERVER_PASSWORD` などの `SENTE_*`/`TEAI_*` のトークン・鍵・パスワード)は除きます。**それ以外はシェルにある AI の API 鍵も含めて渡ります。** 普通に実行するコマンドと同じく、フックはそれを読めます。
+- 環境変数: あなたの環境変数と、`SENTE_PROJECT_DIR`・`CLAUDE_PROJECT_DIR`・`SENTE_SESSION_ID`。環境変数にある Sente 自身の資格情報(`SENTE_CONSOLE_TOKEN`・`SENTE_SERVER_PASSWORD`・`SENTE_AUTH_CONTENT`・`SENTE_CONFIG_CONTENT` などの `SENTE_*`/`TEAI_*` のトークン・鍵・パスワード)は除きます。**これは多層防御の1枚で、境界ではありません。** 信頼したフックはあなたの権限で動くので、Sente の `auth.json` などの資格情報をファイルとして読めます。つまり、フックを信頼することは資格情報に届きうることを意味します。それ以外の環境変数は、シェルにある AI の API 鍵も含めて渡ります。
 
 設定のフックはすべての[プラグイン](/docs/plugins)の後に動くので、`PreToolUse` はツールが実際に受け取る引数を見ます。
 
@@ -46,7 +46,8 @@ description: ツールの実行前後・入力時・ターン終了時に、自�
 
 - **終了コード 0**: 成功。標準出力の JSON を読みます(下表)。`UserPromptSubmit`/`SessionStart` では普通の標準出力が文脈になります。
 - **終了コード 2**: ブロック。標準エラーが理由です。
-- **それ以外・タイムアウト(既定60秒)・起動失敗**: 秘密をマスクしてログに残し、無視します。Sente は止まりません。
+- **それ以外の終了コード**: 秘密をマスクしてログに残し、無視します。Sente は止まりません。
+- **終了コードがない**(タイムアウト(既定60秒)・中断・シグナルで停止・起動失敗): 操作を守る `PreToolUse` と `UserPromptSubmit` は**安全側に倒してブロック**します。他のイベントはログに残して続けます。
 
 | JSON | 効果 |
 | --- | --- |
@@ -56,7 +57,7 @@ description: ツールの実行前後・入力時・ターン終了時に、自�
 | `hookSpecificOutput.updatedInput` | `PreToolUse` の引数を変更(マージ。snake_case は元の名前に戻します) |
 | `hookSpecificOutput.additionalContext` | 文脈を追加 |
 
-該当するフックは並列に動きます。タイムアウトしたフックは、起動したプロセスごと止めます。Esc(ターンの中断)で実行中のフックもすぐ止まり、ツールは実行されません。Sente の終了時に動いているフックも止めます(Sente 自体が `SIGKILL` された場合はタイムアウトだけが上限です)。モデルに渡る理由・文脈は、ツール出力と同じ秘密マスクを通ります。
+該当するフックは並列に動きます。タイムアウトしたフックは、起動したプロセスごと止めます。Esc(ターンの中断)で実行中のフックもすぐ止まり、ツールは実行されません。macOS/Linux ではフックを専用のプロセスグループで動かし、パイプで Sente とつないでいます。フックが終わると裏に残したプロセスも止まり、Sente がどんな形で終わっても(終了・`SIGTERM`・`SIGHUP`・`SIGKILL`・TUI を閉じる)フックのプロセスは止まります。そのために Sente はシグナルの扱いを変えないので、`nohup sente serve` は `SIGHUP` を無視したままです。Windows では、タイムアウト・中断・Sente の通常終了の時に止めます。モデルに渡る理由・文脈は、ツール出力と同じ秘密マスクを通ります。
 
 ## フックの出どころと信頼
 
@@ -76,7 +77,7 @@ sente hooks trust --yes        # 確認なしで信頼(何を信頼したかは�
 sente hooks untrust            # このプロジェクト(とリモート)の許可を取り消す
 ```
 
-信頼は出どころごとに、フックの内容と**コマンドが直接名指しするスクリプトの中身**(`./hooks/check.sh`・`node scripts/lint.js`・`"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py` など)の指紋とあわせて `~/.local/state/sente/hooks-trust.json` に保存します。どちらかが変わると(`git pull` の後など)、もう一度信頼するまで止まります。そのスクリプトがさらに読み込むファイル(source するスクリプト・npm スクリプト・import)は対象外で、`sente hooks list` に対象が表示されます。`sente hooks trust` が対象にするのは今のプロジェクト内(git の作業ツリー、git でなければ今のディレクトリ)のファイルだけで、親ディレクトリの設定は信頼しません。
+信頼は出どころごとに、フックの内容と**コマンドが直接名指しするスクリプトの中身**(`./hooks/check.sh`・`node scripts/lint.js`・`"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py` など)の指紋とあわせて `~/.local/state/sente/hooks-trust.json` に保存します。どちらかが変わると(`git pull` の後や、Sente の起動中の編集など)、もう一度信頼するまで止まります。プロジェクトとリモートのフックは**実行の直前に毎回**信頼を照合し(スクリプトのハッシュはサイズと更新時刻で再計算)、合わなければ実行せずに警告します。`$CLAUDE_PROJECT_DIR`・`$SENTE_PROJECT_DIR`・`$PWD` は解決しますが、それ以外の変数やコマンド置換は解決できないので、`sente hooks list` で警告します。そのスクリプトがさらに読み込むファイル(source するスクリプト・npm スクリプト・import)は対象外で、`sente hooks list` に対象が表示されます。`sente hooks trust` が対象にするのは今のプロジェクト内(git の作業ツリー、git でなければ今のディレクトリ)のファイルだけで、親ディレクトリの設定は信頼しません。
 
 信頼したフックは、あなたの権限と環境変数(上記)で動きます。
 
@@ -89,6 +90,7 @@ CI 用の `SENTE_TRUST_PROJECT_HOOKS=1` はすべてのプロジェクトのフ�
 ## Claude Code との違い
 
 - `Stop` はターンを続けさせられません(終了コード2・`decision: "block"` はログのみ)。`SubagentStop` はありません。
+- タイムアウトした `PreToolUse`/`UserPromptSubmit` はブロックします(Claude Code は通します)。
 - `continue: false` はセッション全体ではなく、その操作(ツール呼び出し・入力)だけを止めます。
 - `permissionDecision` は `"deny"` だけが効きます(`"allow"`/`"ask"` は許可確認を変えません)。
 - `systemMessage`・`suppressOutput` は無視します。`async` フックには対応していません(Stop と Notification は裏で待ちます)。

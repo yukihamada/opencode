@@ -2383,3 +2383,31 @@ remoteHooks.it.instance("hooks from a remote well-known config are marked remote
     ])
   }),
 )
+
+const orgHooksIt = configIt({
+  account: Layer.mock(Account.Service)({
+    active: () =>
+      Effect.succeed(
+        Option.some({
+          id: AccountID.make("account-1"),
+          email: "user@example.com",
+          url: "https://control.example.com",
+          active_org_id: OrgID.make("org-1"),
+        }),
+      ),
+    config: () =>
+      Effect.succeed(
+        Option.some({ hooks: { Stop: [{ hooks: [{ type: "command", command: "echo from-org-api" }] }] } }),
+      ),
+    token: () => Effect.succeed(Option.none()),
+  }),
+})
+
+orgHooksIt.instance("hooks from the organization's /api/config are marked remote", () =>
+  Effect.gen(function* () {
+    const origins = (yield* Config.use.get()).hook_origins ?? []
+    expect(origins.filter((item) => item.command === "echo from-org-api")).toEqual([
+      expect.objectContaining({ kind: "remote", source: "https://control.example.com/api/config" }),
+    ])
+  }),
+)
