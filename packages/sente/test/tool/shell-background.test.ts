@@ -747,3 +747,110 @@ describe("shell tool description", () => {
     }),
   )
 })
+
+// Windows: a timed-out PowerShell command that started a child keeps both alive in the background,
+// and every way of stopping it ends the whole tree (the spawner's `taskkill /pid <pid> /T /F` path).
+const powershell = (process.platform === "win32" && (Bun.which("powershell") ?? Bun.which("pwsh"))) || undefined
+const winAlive = (pid: number) => {
+  const out = Bun.spawnSync(["tasklist", "/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"]).stdout.toString()
+  return out.includes(`"${pid}"`)
+}
+const winGone = (pid: number, ms = 20_000) =>
+  Effect.promise(async () => {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      if (!winAlive(pid)) return true
+      await Bun.sleep(200)
+    }
+    return !winAlive(pid)
+  })
+const readPid = (file: string) =>
+  Effect.promise(async () => {
+    const until = Date.now() + 20_000
+    while (Date.now() < until) {
+      const text = await Bun.file(file)
+        .text()
+        .catch(() => "")
+      const pid = Number(text.trim())
+      if (pid > 0) return pid
+      await Bun.sleep(200)
+    }
+    throw new Error(`no child PID written to ${file}`)
+  })
+// Starts a child PowerShell (its parent is the command's own process) and then sleeps itself.
+const treeCommand = (marker: string) =>
+  `$c = Start-Process -FilePath '${powershell}' -ArgumentList '-NoProfile','-Command','Start-Sleep 120' -PassThru -WindowStyle Hidden; Set-Content -Path '${marker}' -Value $c.Id; Start-Sleep 120`
+
+describe.skipIf(!powershell)("tool.shell timeout → background on Windows: the process tree is stopped", () => {
+  const backgroundTree = (dir: string) =>
+    Effect.gen(function* () {
+      const marker = `${dir}\\child.pid`
+      const result = yield* execute({ command: treeCommand(marker), timeout: 4_000 })
+      const meta = result.metadata as { background?: boolean; jobId?: string; pid?: number }
+      expect(meta.background).toBe(true)
+      const child = yield* readPid(marker)
+      expect(winAlive(meta.pid!)).toBe(true)
+      expect(winAlive(child)).toBe(true)
+      return { job: meta.jobId!, pid: meta.pid!, child }
+    })
+
+  it.live(
+    "wait stop: true",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped({ config: { shell: powershell } })
+        yield* Effect.gen(function* () {
+          const tree = yield* backgroundTree(dir)
+          const stopped = yield* WaitTool.pipe(
+            Effect.flatMap((info) => info.init()),
+            Effect.flatMap((tool) => tool.execute({ job: tree.job, stop: true }, ctx)),
+          )
+          expect(JSON.parse(stopped.output).status).toBe("cancelled")
+          expect(yield* winGone(tree.pid)).toBe(true)
+          expect(yield* winGone(tree.child)).toBe(true)
+        }).pipe(provideInstance(dir))
+      }),
+    90_000,
+  )
+
+  it.live(
+    "lifetime limit",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped({ config: { shell: powershell } })
+        const jobs = yield* BackgroundJob.Service
+        yield* Effect.gen(function* () {
+          const tree = yield* backgroundTree(dir)
+          const done = yield* jobs.wait({ id: tree.job, timeout: 60_000 })
+          expect(done.info?.output).toContain("limit set by SENTE_SHELL_BACKGROUND_MAX_MS")
+          expect(yield* winGone(tree.pid)).toBe(true)
+          expect(yield* winGone(tree.child)).toBe(true)
+        }).pipe(provideInstance(dir), flags({ shellBackgroundMaxMs: 8_000 }))
+      }),
+    90_000,
+  )
+
+  it.live(
+    "session interrupt (job cancel) and instance disposal",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped({ config: { shell: powershell } })
+        const jobs = yield* BackgroundJob.Service
+        // Interrupting the session cancels its background jobs (SessionRunState.cancel → jobs.cancel).
+        const first = yield* Effect.gen(function* () {
+          const tree = yield* backgroundTree(dir)
+          yield* jobs.cancel(tree.job)
+          return tree
+        }).pipe(provideInstance(dir))
+        expect(yield* winGone(first.pid)).toBe(true)
+        expect(yield* winGone(first.child)).toBe(true)
+        // Disposing the instance (what `sente run` does on exit) closes every job's scope.
+        const second = yield* backgroundTree(dir).pipe(provideInstance(dir))
+        const store = yield* InstanceStore.Service
+        yield* store.dispose(yield* store.load({ directory: dir }))
+        expect(yield* winGone(second.pid)).toBe(true)
+        expect(yield* winGone(second.child)).toBe(true)
+      }),
+    120_000,
+  )
+})
