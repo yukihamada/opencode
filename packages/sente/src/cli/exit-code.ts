@@ -46,8 +46,10 @@ export const ExitCode = {
    * `sente run --attach` in a session it joined (-s/-c) ended while background shell commands its own
    * turn started were still running on the server. The answer may describe work that has not finished;
    * the commands end on their own or at the background time limit. Restarting would only run it twice.
+   *
+   * 9, not 8: 8 is GoalUnmet (the /goal work, #75).
    */
-  Unfinished: 8,
+  Unfinished: 9,
   /**
    * The TUI asks to be relaunched with --resume (after a compaction).
    *

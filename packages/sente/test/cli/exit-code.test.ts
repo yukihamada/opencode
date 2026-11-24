@@ -12,7 +12,7 @@ describe("cli.exit-code", () => {
       Conflict: 5,
       Quota: 6,
       PermissionDenied: 7,
-      Unfinished: 8,
+      Unfinished: 9,
       Restart: 75,
     })
   })
