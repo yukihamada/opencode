@@ -595,7 +595,7 @@ const events = {
     ...options,
     schema: {
       sessionID: SessionID,
-      usd: Schema.Finite,
+      usd: Schema.Finite.check(Schema.isGreaterThan(0)),
       time: NonNegativeInt,
     },
   }),

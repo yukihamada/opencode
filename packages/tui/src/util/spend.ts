@@ -51,6 +51,24 @@ function side(session: SpendSession | undefined) {
   return { total, recent }
 }
 
+/**
+ * Applies a `session.side_spent` event to a session's metadata, once per event
+ * id (a repeated delivery is ignored), and only for positive costs. Returns
+ * undefined when nothing changes. `seen` is bounded to the latest ids.
+ */
+export function applySideSpent(
+  metadata: Record<string, unknown> | undefined,
+  event: { id: string; properties: { usd: number; time: number } },
+  seen: Set<string>,
+  add: (metadata: Record<string, unknown> | undefined, usd: number, time: number) => Record<string, unknown>,
+) {
+  if (seen.has(event.id)) return undefined
+  if (!(Number.isFinite(event.properties.usd) && event.properties.usd > 0)) return undefined
+  seen.add(event.id)
+  if (seen.size > 1000) seen.delete(seen.values().next().value!)
+  return add(metadata, event.properties.usd, event.properties.time)
+}
+
 /** Recorded /btw cost of a session, all of it or only since `since`. */
 export function sideCost(session: SpendSession | undefined, since?: number) {
   const spend = side(session)

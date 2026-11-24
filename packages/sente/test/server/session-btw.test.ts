@@ -476,4 +476,61 @@ describe("session /btw", () => {
       expect(body).toContain("later message 44")
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
   )
+
+  it.live("searches subagent (child and grandchild) session output too", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: config(llm.url) })
+      const root = yield* Session.use.create({ title: "Parent" }).pipe(provideInstanceEffect(directory))
+      const child = yield* Session.use.create({ parentID: root.id, title: "Sub" }).pipe(provideInstanceEffect(directory))
+      const grandchild = yield* Session.use.create({ parentID: child.id, title: "Subsub" }).pipe(provideInstanceEffect(directory))
+      const model = { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") }
+      const svc = (fn: (s: Session.Interface) => Effect.Effect<unknown, unknown>) =>
+        Session.Service.use(fn).pipe(provideInstanceEffect(directory), Effect.orDie)
+      const toolIn = (sessionID: typeof root.id, output: string) =>
+        Effect.gen(function* () {
+          const user = (yield* svc((s) =>
+            s.updateMessage({ id: MessageID.ascending(), role: "user", sessionID, agent: "build", model, time: { created: Date.now() } }),
+          )) as { id: MessageID }
+          const assistant = (yield* svc((s) =>
+            s.updateMessage({
+              id: MessageID.ascending(),
+              role: "assistant",
+              parentID: user.id,
+              sessionID,
+              mode: "build",
+              agent: "build",
+              path: { cwd: directory, root: directory },
+              cost: 0,
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              modelID: model.modelID,
+              providerID: model.providerID,
+              time: { created: Date.now() },
+            }),
+          )) as { id: MessageID }
+          yield* svc((s) =>
+            s.updatePart({
+              id: PartID.ascending(),
+              messageID: assistant.id,
+              sessionID,
+              type: "tool",
+              callID: PartID.ascending(),
+              tool: "bash",
+              state: { status: "completed", input: { command: "bun test" }, output, title: "bun test", metadata: {}, time: { start: 1, end: 2 } },
+            }),
+          )
+        })
+      yield* toolIn(child.id, "Ran 21 tests across 4 files.")
+      yield* toolIn(grandchild.id, "Ran 3 tests across 1 file.")
+      yield* llm.textMatch(isSide, "21件と3件です。")
+      const side = yield* post(SessionPaths.btw.replace(":sessionID", root.id), directory, {
+        question: "サブエージェントのテストは何件だった?",
+      }).pipe(Effect.flatMap(answer))
+      expect(side.error).toBeUndefined()
+      const body = JSON.stringify((yield* llm.hits).find(isSide)!.body)
+      expect(body).toContain("[subagent]")
+      expect(body).toContain("Ran 21 tests across 4 files.")
+      expect(body).toContain("Ran 3 tests across 1 file.")
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
 })

@@ -448,9 +448,11 @@ export interface Interface {
   readonly searchParts: (input: {
     sessionID: SessionID
     before: number
+    /** More sessions searched in full (subagent sessions below this one). */
+    others?: readonly SessionID[]
     terms: readonly string[]
     limit: number
-  }) => Effect.Effect<{ time: number; part: SessionV1.Part }[]>
+  }) => Effect.Effect<{ time: number; sessionID: SessionID; part: SessionV1.Part }[]>
   readonly setAgentModel: (input: {
     sessionID: SessionID
     agent: string
@@ -846,6 +848,7 @@ const layer: Layer.Layer<
     const searchParts = Effect.fn("Session.searchParts")(function* (input: {
       sessionID: SessionID
       before: number
+      others?: readonly SessionID[]
       terms: readonly string[]
       limit: number
     }) {
@@ -867,13 +870,24 @@ const layer: Layer.Layer<
       const rows = yield* db
         .select({ id: PartTable.id, message_id: PartTable.message_id, session_id: PartTable.session_id, time: PartTable.time_created, data: PartTable.data })
         .from(PartTable)
-        .where(and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before), sql`(${score}) > 0`))
+        .where(
+          and(
+            input.others?.length
+              ? or(
+                  and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before)),
+                  inArray(PartTable.session_id, [...input.others]),
+                )
+              : and(eq(PartTable.session_id, input.sessionID), lt(PartTable.time_created, input.before)),
+            sql`(${score}) > 0`,
+          ),
+        )
         .orderBy(sql`(${score}) desc`, desc(PartTable.time_created))
         .limit(input.limit)
         .all()
         .pipe(Effect.orDie)
       return rows.map((row) => ({
         time: row.time,
+        sessionID: row.session_id,
         part: { ...row.data, id: row.id, messageID: row.message_id, sessionID: row.session_id } as SessionV1.Part,
       }))
     })

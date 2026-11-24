@@ -162,6 +162,32 @@ const STOP = new Set([
  * identifiers and file names (ASCII runs of 3+), and runs of 2+ katakana or
  * kanji. Hiragana particles and common question words are skipped.
  */
+/** At most this many subagent sessions are searched (breadth-first, nearest first). */
+export const DESCENDANT_LIMIT = 50
+
+/** Subagent sessions below `rootID`, breadth-first, capped at DESCENDANT_LIMIT. */
+export const descendants = Effect.fn("SessionBtw.descendants")(function* <ID extends string>(
+  rootID: ID,
+  children: (id: ID) => Effect.Effect<readonly { id: ID }[]>,
+) {
+  const out: ID[] = []
+  const seen = new Set<ID>([rootID])
+  let frontier: ID[] = [rootID]
+  while (frontier.length > 0 && out.length < DESCENDANT_LIMIT) {
+    const next: ID[] = []
+    for (const id of frontier) {
+      for (const child of yield* children(id)) {
+        if (seen.has(child.id) || out.length >= DESCENDANT_LIMIT) continue
+        seen.add(child.id)
+        out.push(child.id)
+        next.push(child.id)
+      }
+    }
+    frontier = next
+  }
+  return out
+})
+
 // Japanese words whose matches in tool output are usually English. Only words
 // that are rare in ordinary output (not "file", "error", "pass", "fail").
 const ALIASES: Record<string, string[]> = {
@@ -207,7 +233,11 @@ function snippet(part: SessionV1.Part, text: string, lower: string, hit: string)
  * Snippets of older parts (before the excerpt) that mention the question's
  * terms, most matching first, oldest first among equals, within a small budget.
  */
-export function earlier(found: readonly { time: number; part: SessionV1.Part }[], words: readonly string[]) {
+export function earlier(
+  found: readonly { time: number; part: SessionV1.Part; sessionID?: string }[],
+  words: readonly string[],
+  rootID?: string,
+) {
   const scored = found
     .map((item) => {
       const text = partText(item.part)
@@ -220,7 +250,9 @@ export function earlier(found: readonly { time: number; part: SessionV1.Part }[]
   const out: { time: number; text: string }[] = []
   let size = 0
   for (const item of scored) {
-    const piece = snippet(item.part, item.text, item.lower, item.hits[0]!)
+    const piece =
+      (rootID && item.sessionID && item.sessionID !== rootID ? "[subagent] " : "") +
+      snippet(item.part, item.text, item.lower, item.hits[0]!)
     if (size + piece.length > EARLIER_CHARS) break
     out.push({ time: item.time, text: piece })
     size += piece.length

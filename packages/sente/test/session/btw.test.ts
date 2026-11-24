@@ -385,3 +385,14 @@ describe("SessionBtw search of older messages", () => {
     expect(content).not.toContain(key)
   })
 })
+
+describe("SessionBtw.descendants", () => {
+  test("walks children breadth-first, skips cycles and stops at the cap", async () => {
+    const tree: Record<string, string[]> = { root: ["a", "b"], a: ["a1", "root"], b: ["b1"], a1: [], b1: [] }
+    const children = (id: string) => Effect.succeed((tree[id] ?? []).map((child) => ({ id: child })))
+    expect(await Effect.runPromise(SessionBtw.descendants("root", children))).toEqual(["a", "b", "a1", "b1"])
+    const wide = (id: string) =>
+      Effect.succeed(id === "root" ? Array.from({ length: 80 }, (_, i) => ({ id: `c${i}` })) : [])
+    expect(await Effect.runPromise(SessionBtw.descendants("root", wide))).toHaveLength(SessionBtw.DESCENDANT_LIMIT)
+  })
+})

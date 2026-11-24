@@ -317,11 +317,21 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // Older than the excerpt: look up the question's words in SQL instead of loading the whole session.
       const oldest = messages[0]?.info.time.created
       const words = SessionBtw.terms(question)
+      // Subagent sessions below this one: their work is never in the excerpt.
+      const descendants = words.length > 0 ? yield* SessionBtw.descendants(info.id, (id) => session.children(id)) : []
+      const before = messages.length >= SessionBtw.MESSAGE_LIMIT && oldest !== undefined ? oldest : 0
       const earlier =
-        messages.length >= SessionBtw.MESSAGE_LIMIT && oldest !== undefined && words.length > 0
+        words.length > 0 && (before > 0 || descendants.length > 0)
           ? SessionBtw.earlier(
-              yield* session.searchParts({ sessionID: info.id, before: oldest, terms: words, limit: SessionBtw.EARLIER_LIMIT }),
+              yield* session.searchParts({
+                sessionID: info.id,
+                before,
+                others: descendants,
+                terms: words,
+                limit: SessionBtw.EARLIER_LIMIT,
+              }),
               words,
+              info.id,
             )
           : []
       const empty = { text: "", providerID: "", modelID: "", cost: 0, tokens: { input: 0, output: 0 } }

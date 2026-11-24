@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Schema } from "effect"
 import { LegacyEvent } from "../src/legacy-event"
 import { PermissionV1 } from "../src/permission-v1"
 import { QuestionV1 } from "../src/question-v1"
@@ -50,5 +51,14 @@ describe("legacy public event schemas", () => {
       "project.updated",
       "command.executed",
     ])
+  })
+})
+
+describe("session.side_spent", () => {
+  test("accepts only a positive cost", () => {
+    const decode = Schema.decodeUnknownSync(SessionV1.Event.SideSpent.data)
+    expect(decode({ sessionID: "ses_1", usd: 0.01, time: 1 }).usd).toBe(0.01)
+    expect(() => decode({ sessionID: "ses_1", usd: 0, time: 1 })).toThrow()
+    expect(() => decode({ sessionID: "ses_1", usd: -1, time: 1 })).toThrow()
   })
 })

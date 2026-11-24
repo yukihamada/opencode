@@ -445,9 +445,15 @@ export const layerWith = (options?: LayerOptions) =>
         return Effect.gen(function* () {
           const definition = Durable.get(event.type)
           if (!definition?.durable) {
-            yield* Effect.die(
-              new InvalidDurableEventError({ type: event.type, message: `Unknown durable event type ${event.type}` }),
-            )
+            // A newer version may add durable event types. Dying here would stop
+            // every later event of the aggregate (workspace sync, startup import),
+            // so keep the event in the log, advance the sequence and skip it.
+            yield* Effect.logWarning("skipping unknown durable event type", {
+              type: event.type,
+              aggregateID: event.aggregateID,
+              seq: event.seq,
+            })
+            yield* skipUnknown(event, options)
           } else {
             const payload = {
               id: event.id,
@@ -475,6 +481,54 @@ export const layerWith = (options?: LayerOptions) =>
             }
           }
         })
+      }
+
+      function skipUnknown(event: SerializedEvent, options?: { readonly ownerID?: string; readonly strictOwner?: boolean }) {
+        return db
+          .transaction(
+            () =>
+              Effect.gen(function* () {
+                const row = yield* db
+                  .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+                  .from(EventSequenceTable)
+                  .where(eq(EventSequenceTable.aggregate_id, event.aggregateID))
+                  .get()
+                  .pipe(Effect.orDie)
+                const latest = row?.seq ?? -1
+                if (options?.strictOwner && row?.ownerID && row.ownerID !== options.ownerID) {
+                  return yield* Effect.die(
+                    new InvalidDurableEventError({
+                      type: event.type,
+                      message: `Replay owner mismatch for aggregate ${event.aggregateID}: expected ${row.ownerID}, got ${options.ownerID ?? "none"}`,
+                    }),
+                  )
+                }
+                // Already have it (a repeated sync): nothing to do.
+                if (event.seq <= latest) return
+                if (event.seq !== latest + 1) {
+                  return yield* Effect.die(
+                    new InvalidDurableEventError({
+                      type: event.type,
+                      message: `Sequence mismatch for aggregate ${event.aggregateID}: expected ${latest + 1}, got ${event.seq}`,
+                    }),
+                  )
+                }
+                yield* db
+                  .insert(EventSequenceTable)
+                  .values([{ aggregate_id: event.aggregateID, seq: event.seq, owner_id: options?.ownerID }])
+                  .onConflictDoUpdate({ target: EventSequenceTable.aggregate_id, set: { seq: event.seq } })
+                  .run()
+                  .pipe(Effect.orDie)
+                yield* db
+                  .insert(EventTable)
+                  .values([{ id: event.id, aggregate_id: event.aggregateID, seq: event.seq, type: event.type, data: event.data }])
+                  .onConflictDoNothing()
+                  .run()
+                  .pipe(Effect.orDie)
+              }),
+            { behavior: "immediate" },
+          )
+          .pipe(Effect.orDie)
       }
 
       function replayAll(
