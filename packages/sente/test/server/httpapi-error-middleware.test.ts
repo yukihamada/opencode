@@ -6,6 +6,7 @@ import { Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { errorLayer } from "../../src/server/routes/instance/httpapi/middleware/error"
 import { NotFoundError } from "../../src/storage/storage"
+import { ConfigHooksRunner } from "../../src/plugin/config-hooks"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))
@@ -19,6 +20,25 @@ function expectUnknownErrorBody(body: unknown) {
 }
 
 describe("HttpApi error middleware", () => {
+  it.live("returns a prompt refused by a hook as a 400 with the hook's reason", () =>
+    Effect.gen(function* () {
+      yield* HttpRouter.add(
+        "POST",
+        "/hook",
+        Effect.die(
+          new ConfigHooksRunner.HookBlockedError({ message: "UserPromptSubmit hook blocked this prompt: no" }),
+        ),
+      ).pipe(Layer.provide(errorLayer), HttpRouter.serve, Layer.build)
+
+      const response = yield* HttpClientRequest.post("/hook").pipe(HttpClient.execute)
+      expect(response.status).toBe(400)
+      expect(yield* response.json).toEqual({
+        name: "HookBlockedError",
+        data: { message: "UserPromptSubmit hook blocked this prompt: no" },
+      })
+    }),
+  )
+
   it.live("returns a safe body for unknown 500 defects", () =>
     Effect.gen(function* () {
       yield* HttpRouter.add("GET", "/boom", Effect.die(new Error("secret stack marker"))).pipe(

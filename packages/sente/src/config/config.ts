@@ -33,6 +33,7 @@ import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
 import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
+import { ConfigHooks } from "./hooks"
 import { ConfigVariable } from "./variable"
 import { ConfigV2Compat } from "./v2-compat"
 import { Npm } from "@sente-ai/core/npm"
@@ -149,6 +150,9 @@ type Info = ConfigV1.Info & {
   // plugin_origins is derived state, not a persisted config field. It keeps each winning plugin spec together
   // with the file and scope it came from so later runtime code can make location-sensitive decisions.
   plugin_origins?: ConfigPlugin.Origin[]
+  // hook_origins is derived like plugin_origins: every configured hook command with the file it came from and
+  // whether that is the user's own config, the opened project's or a remote organization config (see ConfigHooks.Kind).
+  hook_origins?: ConfigHooks.Origin[]
 }
 
 type State = {
@@ -209,7 +213,7 @@ function patchJsonc(input: string, patch: unknown, path: string[] = []): string 
 }
 
 function writable(info: Info) {
-  const { plugin_origins: _plugin_origins, ...next } = info
+  const { plugin_origins: _plugin_origins, hook_origins: _hook_origins, ...next } = info
   return next
 }
 
@@ -409,8 +413,17 @@ const layer = Layer.effect(
           result.plugin_origins = plugins
         })
 
-        const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
+        // `hooks` decides whether hooks from this source run without `sente hooks trust`: only "user" sources do.
+        // A cloned repository ("project") or an organization server ("remote") must not run commands on its own.
+        const merge = (
+          source: string,
+          next: Info,
+          kind?: ConfigPlugin.Scope,
+          hooks: ConfigHooks.Kind = kind === "global" ? "user" : "project",
+        ) => {
           result = mergeConfigConcatArrays(result, next)
+          if (next.hooks)
+            result.hook_origins = [...(result.hook_origins ?? []), ...ConfigHooks.flatten(next.hooks, source, hooks)]
           return mergePluginOrigins(source, next.plugin, kind)
         }
 
@@ -451,7 +464,7 @@ const layer = Layer.effect(
               },
               authEnv,
             )
-            yield* merge(source, next, "global")
+            yield* merge(source, next, "global", "remote")
             yield* Effect.logDebug("loaded remote config from well-known", { url })
           }
         }
@@ -460,7 +473,7 @@ const layer = Layer.effect(
         yield* merge(Global.Path.config, global, "global")
 
         if (Flag.SENTE_CONFIG) {
-          yield* merge(Flag.SENTE_CONFIG, yield* loadFile(Flag.SENTE_CONFIG, authEnv))
+          yield* merge(Flag.SENTE_CONFIG, yield* loadFile(Flag.SENTE_CONFIG, authEnv), undefined, "user")
           yield* Effect.logDebug("loaded custom config", { path: Flag.SENTE_CONFIG })
         }
 
@@ -487,7 +500,14 @@ const layer = Layer.effect(
             for (const file of ["sente.json", "sente.jsonc"]) {
               const source = path.join(dir, file)
               yield* Effect.logDebug(`loading config from ${source}`)
-              yield* merge(source, yield* loadFile(source, authEnv))
+              yield* merge(
+                source,
+                yield* loadFile(source, authEnv),
+                undefined,
+                [Global.Path.config, Flag.SENTE_CONFIG_DIR, path.join(Global.Path.home, ".sente")].includes(dir)
+                  ? "user"
+                  : "project",
+              )
               result.agent ??= {}
               result.mode ??= {}
               result.plugin ??= []
@@ -534,7 +554,7 @@ const layer = Layer.effect(
             dir: ctx.directory,
             source,
           })
-          yield* merge(source, next, "local")
+          yield* merge(source, next, "local", "user")
           yield* Effect.logDebug("loaded custom config from SENTE_CONFIG_CONTENT")
         }
 
@@ -564,7 +584,7 @@ const layer = Layer.effect(
               for (const providerID of Object.keys(next.provider ?? {})) {
                 consoleManagedProviders.add(providerID)
               }
-              yield* merge(source, next, "global")
+              yield* merge(source, next, "global", "remote")
             }
           }).pipe(
             Effect.withSpan("Config.loadActiveOrgConfig"),
@@ -587,13 +607,13 @@ const layer = Layer.effect(
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
-            yield* loadConfig(managed.text, {
-              dir: path.dirname(managed.source),
-              source: managed.source,
-            }),
-          )
+          const next = yield* loadConfig(managed.text, {
+            dir: path.dirname(managed.source),
+            source: managed.source,
+          })
+          result = mergeConfigConcatArrays(result, next)
+          if (next.hooks)
+            result.hook_origins = [...(result.hook_origins ?? []), ...ConfigHooks.flatten(next.hooks, managed.source, "user")]
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {

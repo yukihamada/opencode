@@ -1,0 +1,141 @@
+---
+title: Hooks
+description: Run your own shell commands when Sente uses a tool, gets a prompt or finishes a turn.
+---
+
+Hooks run shell commands on events, configured in `sente.json` / `sente.jsonc`. They use the same format as Claude Code hooks, so most existing hook scripts work unchanged. For hooks written in TypeScript, see [plugins](/docs/plugins).
+
+```jsonc title="~/.config/sente/sente.jsonc"
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "bash",
+        "hooks": [{ "type": "command", "command": "~/.config/sente/hooks/no-force-push.sh", "timeout": 10 }]
+      }
+    ],
+    "PostToolUse": [{ "matcher": "edit|write", "hooks": [{ "type": "command", "command": "bun run lint --quiet" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "say done" }] }]
+  }
+}
+```
+
+---
+
+## Events
+
+| Event | When | Can block |
+| --- | --- | --- |
+| `PreToolUse` | Before a tool runs (before its permission prompt) | Yes: the tool does not run and the reason goes back to the model |
+| `PostToolUse` | After a tool succeeds | No; a reason or `additionalContext` is appended to the tool output the model sees |
+| `UserPromptSubmit` | When you send a prompt, before it is saved | Yes: the prompt is dropped and the reason is shown ("A hook stopped this prompt") |
+| `SessionStart` | Before the first prompt of a session in this process | No; output is added as context |
+| `Stop` | When the main session goes idle (turn finished) | No (notification only, see below) |
+| `Notification` | When Sente waits for a permission (`permission_prompt`) or asks a question (`elicitation_dialog`) | No |
+
+`matcher` filters `PreToolUse`/`PostToolUse` by tool name, `SessionStart` by source (`startup` or `resume`) and `Notification` by type. A plain list such as `bash|edit` matches names exactly; anything else is a regular expression. An empty matcher, `*`, or no matcher matches everything.
+
+Claude Code names also match: `Bash`, `Read`, `Write`, `Edit` (also matches `apply_patch`), `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task`, `TodoWrite`, and `mcp__<server>__<tool>` for MCP tools.
+
+---
+
+## Input
+
+Each command runs through the shell (`/bin/sh` on macOS and Linux, `cmd.exe` on Windows) in the session directory and gets one JSON object on stdin:
+
+```json
+{
+  "session_id": "ses_…",
+  "transcript_path": "",
+  "cwd": "/path/to/project",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "bash",
+  "tool_input": { "command": "git push --force" },
+  "tool_use_id": "call_…"
+}
+```
+
+- `PostToolUse` adds `tool_response: { title, output }` (output already secret-masked).
+- `UserPromptSubmit` adds `prompt`. `SessionStart` adds `source`. `Stop` adds `stop_hook_active: false`. `Notification` adds `message` and `notification_type`.
+- `tool_input` holds Sente's arguments plus snake_case copies of camelCase keys (`filePath` is also `file_path`). For `apply_patch`, the files in the patch are listed as `file_path` (the first) and `file_paths` (all, absolute).
+- Environment: your environment, plus `SENTE_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` (project root) and `SENTE_SESSION_ID`. Sente's own credentials in the environment (`SENTE_CONSOLE_TOKEN`, `SENTE_SERVER_PASSWORD`, `SENTE_AUTH_CONTENT`, `SENTE_CONFIG_CONTENT` and other `SENTE_*`/`TEAI_*` tokens, keys and passwords) are removed. **This is one layer of defence, not a boundary**: a trusted hook runs as you and can still read credential files such as Sente's `auth.json`, so trusting a hook means it can reach your credentials. Everything else in the environment is passed, including provider API keys in your shell.
+
+Config hooks run after all [plugins](/docs/plugins), so a `PreToolUse` hook sees the arguments exactly as the tool will receive them.
+
+---
+
+## Output
+
+- **Exit 0**: success. stdout may be a JSON object (below). For `UserPromptSubmit` and `SessionStart`, plain stdout is added as context.
+- **Exit 2**: block. stderr is the reason.
+- **Any other exit code**: logged (secret-masked) and ignored. Sente continues.
+- **No exit code at all** (timed out, cancelled, killed by a signal, could not start): `PreToolUse` and `UserPromptSubmit` **fail closed** and block, because they guard an action; other events log it and continue.
+
+JSON fields read on exit 0:
+
+| Field | Effect |
+| --- | --- |
+| `decision: "block"`, `reason` | Block (`PreToolUse`, `UserPromptSubmit`) or feed `reason` to the model (`PostToolUse`) |
+| `continue: false`, `stopReason` | Treated like a block of that one action (see differences) |
+| `hookSpecificOutput.permissionDecision: "deny"`, `permissionDecisionReason` | Block a `PreToolUse` call |
+| `hookSpecificOutput.updatedInput` | Change `PreToolUse` tool arguments (merged; snake_case keys are mapped back) |
+| `hookSpecificOutput.additionalContext` | Add context (prompt, session start, after a tool) |
+
+All matching hooks of an event run in parallel. Each has a `timeout` in seconds (default 60); a timed out hook is killed with everything it started. Pressing Esc (cancelling the turn) stops running `PreToolUse`/`PostToolUse`/prompt hooks at once, and the tool does not run. On macOS and Linux a hook runs in its own process group tied to Sente by a pipe. What a hook that finished normally started in the background on purpose (`terminal-notifier … &`, `nohup … &`) keeps running, as in Claude Code; a hook that is still running when it times out, is cancelled, or when Sente ends in any way (exit, `SIGTERM`, `SIGHUP`, `SIGKILL`, a closed TUI) is stopped with everything it started. Sente adds no signal handlers for this, so `nohup sente serve` keeps ignoring `SIGHUP`. On Windows, hooks are killed on timeout, on cancel and when Sente exits normally.
+
+Reasons and context that reach the model go through the same secret masking as tool output.
+
+```bash title="~/.config/sente/hooks/no-force-push.sh"
+#!/bin/sh
+if jq -r '.tool_input.command' | grep -qE 'git push.*(--force|-f)'; then
+  echo "force-push is not allowed" >&2
+  exit 2
+fi
+```
+
+---
+
+## Where hooks come from, and trust
+
+| Source | Runs |
+| --- | --- |
+| Your config: `~/.config/sente/`, `~/.sente/`, `SENTE_CONFIG`, `SENTE_CONFIG_DIR`, `SENTE_CONFIG_CONTENT`, managed config and MDM profiles | Immediately |
+| The opened project: `sente.json(c)` in the project, `.sente/sente.json(c)` | Only after `sente hooks trust` |
+| An organization server: remote config from `.well-known/sente` or the account's `/api/config` | Only after `sente hooks trust`, or with `SENTE_ALLOW_REMOTE_HOOKS=1` |
+
+Opening a cloned repository, or signing in to an organization, must not by itself run commands on your machine. Hooks that are not trusted are not run; Sente says so on stderr (`sente run`, `sente serve`) or with a warning in the TUI.
+
+```bash
+sente hooks list               # what is configured, what runs, and what the trust covers
+sente hooks trust              # review each untrusted source and answer y/N
+sente hooks trust sente.json   # only this file (or a remote URL)
+sente hooks trust --yes        # trust without asking (prints what it trusts)
+sente hooks untrust            # stop allowing this project's (and remote) hooks
+```
+
+Trust is stored per source in `~/.local/state/sente/hooks-trust.json` with a fingerprint of the hooks **and of the script files their commands name directly** (`./hooks/check.sh`, `node scripts/lint.js`, `"$CLAUDE_PROJECT_DIR"/.sente/hooks/a.py`). If either changes (for example after `git pull`, or an edit while Sente is running), the hooks stop running until you trust them again: trust is checked again right before every run of a project or remote hook (script hashes are cached by inode, size, modification and change time, so restoring the old mtime does not hide an edit; on Windows they are re-hashed every time). This also applies when the change happened before Sente started: a source you trusted that has changed since keeps its guards in place, blocking, while a source you never trusted is simply not run. A `PreToolUse` or `UserPromptSubmit` hook that no longer matches **blocks** with "hooks changed since they were trusted, so they must be trusted again: run `sente hooks trust`", so a safety check changed by a `git pull` does not wave actions through; other events skip it. Either way the TUI shows a warning (stderr under `sente run`/`serve`). `$CLAUDE_PROJECT_DIR`, `$SENTE_PROJECT_DIR` and `$PWD` are resolved; other variables and command substitutions are not, and `sente hooks list` warns about them. Files those scripts load in turn (a sourced script, an `npm run` script, imports) are not covered; `sente hooks list` shows what is. `sente hooks trust` only offers files inside the current project (the git worktree, or the current directory without git), never a parent directory's config.
+
+Trusting hooks lets them run with your permissions and your environment (see Input).
+
+`SENTE_TRUST_PROJECT_HOOKS=1` trusts every project's hooks, for CI. **Do not set it in workflows that run on pull requests from forks**: the fork's author controls those hooks. With `--pure`, config hooks are not run at all.
+
+:::caution
+Hooks are not the only way a project can run code. Plugins in the project's `.sente/plugin(s)/` or its `plugin` list, and local (`type: "local"`) MCP servers in the project's config, start without this trust check today. Only open projects you trust, or use `SENTE_DISABLE_PROJECT_CONFIG=1`.
+:::
+
+---
+
+## Differences from Claude Code
+
+- Tool names are Sente's (`bash`, `edit`, `read`, …); Claude Code names work in matchers.
+- `Stop` cannot continue the turn: exit 2 / `decision: "block"` is logged and ignored. There is no `SubagentStop`; `UserPromptSubmit`, `SessionStart` and `Stop` skip subagent sessions, `PreToolUse`/`PostToolUse` run for them too.
+- A `PreToolUse` / `UserPromptSubmit` hook that times out blocks (fail closed); Claude Code lets the action through.
+- `continue: false` blocks only the current action (the tool call or the prompt) instead of stopping the whole session; `stopReason` is the reason.
+- `permissionDecision: "allow"` / `"ask"` do not change permission prompts; only `"deny"` has an effect.
+- `systemMessage` and `suppressOutput` are ignored. `async` hooks are not supported: every hook is awaited (Stop and Notification are awaited in the background).
+- `SessionStart` fires before the first prompt of a session in the current process; its source is only `startup` or `resume` (no `clear`/`compact`).
+- `transcript_path` is empty. `PreCompact`, `SessionEnd` and `type: "prompt"` hooks are ignored.
+- `PostToolUse` does not run when a tool fails.
+- On Windows, commands run through `cmd.exe`, not a POSIX shell.
+- Project and remote hooks need `sente hooks trust`.

@@ -34,7 +34,7 @@ import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
-import { deliverPrompt, sendFailureText, promptUnchanged } from "../../prompt/send"
+import { deliverPrompt, sendFailureText, promptUnchanged, hookBlockedText } from "../../prompt/send"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
@@ -1746,6 +1746,10 @@ export function Prompt(props: PromptProps) {
     ).then((result) => {
       if (result.sent) {
         if (result.editorSent && editorContext() === editorSelection) editor.markSelectionSent()
+        return
+      }
+      if (result.blocked !== undefined) {
+        toast.show({ ...hookBlockedText(result.blocked), variant: "warning", duration: 10000 })
         return
       }
       const text = sendFailureText()

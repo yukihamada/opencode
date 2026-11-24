@@ -27,6 +27,11 @@ import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
+import { ConfigHooksPlugin } from "./config-hooks"
+import { ConfigHooks } from "@/config/hooks"
+import { TuiEvent } from "@/server/tui-event"
+import { isMainThread } from "worker_threads"
+import { EOL } from "os"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
 import { registerAdapter } from "@/control-plane/adapters"
 import type { WorkspaceAdapter } from "@/control-plane/types"
@@ -239,6 +244,85 @@ const layer = Layer.effect(
               return Effect.void
             }),
           )
+        }
+
+        // Shell commands from the `hooks` config, registered after every other plugin so a PreToolUse hook sees the
+        // arguments exactly as the tool will get them (no later plugin can rewrite them after the check). Project and
+        // remote hooks only run once their exact content (and the scripts they name) is trusted.
+        if (!flags.pure && cfg.hook_origins?.length) {
+          const scope = ConfigHooks.scopeOf(ctx)
+          const statuses = ConfigHooks.status(
+            cfg.hook_origins,
+            yield* Effect.promise(() => ConfigHooks.readTrust()),
+            scope,
+          )
+          const sources = ConfigHooks.bySource(cfg.hook_origins)
+          // `sente hooks …` shows the same information itself; do not print it twice.
+          const quiet = process.env.SENTE_HOOKS_COMMAND === "1"
+          const skipped = statuses
+            .filter((item) => !item.trusted)
+            .map(
+              (item) =>
+                `Hooks from ${item.label === "project" ? item.source : item.label} were not run (${item.reason}). Check them with \`sente hooks list\`, then allow them with \`sente hooks trust\`${item.kind === "remote" ? " or SENTE_ALLOW_REMOTE_HOOKS=1" : ""}.`,
+            )
+          const notify = () =>
+            skipped.forEach((message) =>
+              bridge.fork(
+                events
+                  .publish(TuiEvent.ToastShow, { title: "Hooks not run", message, variant: "warning", duration: 15000 })
+                  .pipe(Effect.ignore),
+              ),
+            )
+          for (const message of quiet ? [] : skipped) {
+            yield* Effect.logWarning(message)
+            // `sente run` / `sente serve` run the server on the main thread: say it on stderr, where it cannot be
+            // missed. The TUI runs it in a worker, where stderr would draw over the screen; it gets toasts instead.
+            if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
+          }
+          if (skipped.length && !quiet) {
+            // The TUI may not be subscribed yet while the instance boots: show it now, again shortly after, and on the
+            // first prompt (see `notice`).
+            notify()
+            const timer = setTimeout(notify, 3000)
+            yield* Effect.addFinalizer(() => Effect.sync(() => clearTimeout(timer)))
+          }
+          // A source that was trusted and has changed since (a `git pull` before starting Sente) is kept: `verify`
+          // refuses its hooks, so its guards block instead of disappearing. Never-trusted sources are simply not run.
+          const allowed = new Set(statuses.filter((item) => item.trusted || item.lapsed).map((item) => item.source))
+          const plugin = ConfigHooksPlugin(
+            ConfigHooks.deduplicate(cfg.hook_origins.filter((hook) => allowed.has(hook.source))),
+            {
+              warn: (message) => {
+                bridge.fork(Effect.logWarning(message))
+                if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
+              },
+              mcpServers: Object.keys(cfg.mcp ?? {}),
+              alert: (message) => {
+                bridge.fork(Effect.logWarning(message))
+                if (isMainThread) process.stderr.write(`! ${message}${EOL}`)
+                bridge.fork(
+                  events
+                    .publish(TuiEvent.ToastShow, {
+                      title: "Hook not run",
+                      message,
+                      variant: "warning",
+                      duration: 15000,
+                    })
+                    .pipe(Effect.ignore),
+                )
+              },
+              // Trust given at startup is re-checked before every project/remote hook run, so editing a hook script
+              // (or `sente hooks untrust`) while Sente runs stops it at once.
+              verify: (hook) =>
+                hook.kind === "user" ? undefined : ConfigHooks.recheck(sources.get(hook.source) ?? [hook], scope),
+              notice: skipped.length ? notify : undefined,
+            },
+          )
+          const init = yield* Effect.tryPromise({ try: () => plugin(input), catch: errorMessage }).pipe(
+            Effect.tapError((error) => Effect.logError("failed to load config hooks", { error })),
+            Effect.option,
+          )
+          if (init._tag === "Some") hooks.push(init.value)
         }
 
         // Notify plugins of current config

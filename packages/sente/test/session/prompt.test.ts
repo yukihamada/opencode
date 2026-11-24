@@ -2627,3 +2627,43 @@ noLLMServer.instance(
     }),
   30_000,
 )
+
+// Config hooks run on the real tool path: the PreToolUse hook refuses the shell call before it runs, and the model
+// gets the hook's reason as the tool error.
+unix(
+  "a PreToolUse config hook blocks a bash tool call before it runs",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        hooks: {
+          PreToolUse: [
+            { matcher: "Bash", hooks: [{ type: "command", command: "echo 'no shell in this repo' >&2; exit 2" }] },
+          ],
+        },
+      }))
+      process.env.SENTE_TRUST_PROJECT_HOOKS = "1"
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "PreToolUse hook",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "run bash" }],
+      })
+      const marker = path.join(dir, "hook-ran-anyway.txt")
+      yield* llm.tool("bash", { command: `touch ${marker}`, description: "touch", workdir: path.resolve(dir) })
+      yield* llm.text("done")
+      yield* prompt.loop({ sessionID: chat.id })
+      const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
+      const tool = errorTool(msgs.flatMap((item) => item.parts))
+      expect(tool?.state.error).toContain("PreToolUse hook blocked this tool call: no shell in this repo")
+      expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
+    }).pipe(Effect.ensuring(Effect.sync(() => delete process.env.SENTE_TRUST_PROJECT_HOOKS))),
+  { git: true },
+  30_000,
+)
