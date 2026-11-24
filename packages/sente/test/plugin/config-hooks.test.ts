@@ -634,7 +634,7 @@ posix("hooks never outlive Sente, and Sente's signal handling is left alone", ()
       await using tmp = await tmpdir()
       const pidfile = path.join(tmp.path, "pgid")
       const proc = Bun.spawn([process.execPath, fixture, "hang", pidfile], { stdout: "ignore", stderr: "ignore" })
-      expect(await waitFor(() => Bun.file(pidfile).exists())).toBe(true)
+      expect(await waitFor(() => Bun.file(`${pidfile}.sleep`).exists())).toBe(true)
       expect(await groupAlive(pidfile)).toBe(true)
       proc.kill(signal)
       await proc.exited
@@ -649,7 +649,18 @@ posix("hooks never outlive Sente, and Sente's signal handling is left alone", ()
       const reader = proc.stdout.getReader()
       const first = await reader.read()
       expect(new TextDecoder().decode(first.value)).toContain("terminated")
-      expect(await waitFor(async () => !(await groupAlive(pidfile)))).toBe(true)
+      // Check the hook's own process: the killed shell stays a zombie of this still-running process (its worker, which
+      // would reap it, is gone), and Linux counts zombies as group members.
+      const sleeper = Number((await Bun.file(`${pidfile}.sleep`).text()).trim())
+      const alive = async () => {
+        try {
+          process.kill(sleeper, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      expect(await waitFor(async () => !(await alive()))).toBe(true)
     } finally {
       proc.kill("SIGKILL")
     }

@@ -14,7 +14,11 @@ if (mode === "hang") {
     ConfigHooksRunner.killAll()
     parentPort?.postMessage("done")
   })
-  void ConfigHooksRunner.exec(`echo $$ > ${pidfile}; sleep 30`, {}, { cwd: process.cwd(), timeout: 60 })
+  void ConfigHooksRunner.exec(
+    `echo $$ > ${pidfile}; sleep 30 & echo $! > ${pidfile}.sleep; wait`,
+    {},
+    { cwd: process.cwd(), timeout: 60 },
+  )
   setInterval(() => {}, 1000)
 }
 
@@ -28,7 +32,7 @@ if (mode === "sighup") {
 
 if (mode === "worker") {
   const worker = new Worker(new URL(import.meta.url), { workerData: pidfile })
-  while (!(await Bun.file(pidfile).exists())) await Bun.sleep(50)
+  while (!(await Bun.file(`${pidfile}.sleep`).exists())) await Bun.sleep(50)
   await Bun.sleep(100)
   const done = new Promise((resolve) => worker.once("message", resolve))
   worker.postMessage("shutdown")

@@ -83,7 +83,8 @@ function tokens(command: string, scope: Scope) {
 export function referencedFiles(command: string, scope: Scope) {
   const files = tokens(command, scope)
     .filter((token) => !token.includes("$"))
-    .map((token) => (path.isAbsolute(token) ? token : path.resolve(scope.cwd, token)))
+    // resolve() also normalizes absolute tokens (`C:\x/y` on Windows).
+    .map((token) => path.resolve(scope.cwd, token))
     .filter((file) => {
       const relative = path.relative(scope.projectDir, file)
       if (relative.startsWith("..") || path.isAbsolute(relative)) return false
