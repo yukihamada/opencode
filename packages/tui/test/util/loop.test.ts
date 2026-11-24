@@ -732,6 +732,29 @@ describe("util.loop TUI state", () => {
     expect(finished && finished.item.spent).toBeCloseTo(1.3)
   })
 
+  test("parts arriving before their message (compaction and replay) still mark the replay as the loop's", async () => {
+    const w = world()
+    w.ledger.watch("s")
+    w.manager.start({ target: target("s"), prompt: "/review", interval: 60_000, budget: 1 })
+    w.tick(Loop.SETTLE_MS + 1000)
+    w.step(w.lastLoop(), 0.1)
+    // 自動要約のパーツがメッセージ本体より先に届く
+    w.ledger.recordPart({ messageID: "msg_compact_early", sessionID: "s", type: "compaction", auto: true }, w.sessions)
+    w.serverAdds("msg_compact_early", "none")
+    w.step("msg_compact_early", 0.2)
+    // 複製再送のパーツも本体より先に届く
+    w.ledger.recordPart({ messageID: "msg_replay_early", sessionID: "s", type: "text", text: w.state.loopText }, w.sessions)
+    w.serverAdds("msg_replay_early", "none")
+    w.step("msg_replay_early", 0.35)
+    w.tick()
+    w.step("msg_replay_early", 0.35)
+    w.tick()
+    expect(w.aborted).toEqual(["s"])
+    const finished = w.events.find((event) => event.type === "finished")
+    expect(finished && finished.type === "finished" && [finished.aborted, finished.interjected, finished.third]).toEqual([true, false, false])
+    expect(finished && finished.item.spent).toBeCloseTo(1.0)
+  })
+
   test("a subtask command loop replayed after compaction is recognised by its subtask content", async () => {
     const w = world()
     w.ledger.watch("s")

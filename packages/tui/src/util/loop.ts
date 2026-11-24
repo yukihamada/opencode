@@ -587,6 +587,8 @@ export function createLedger(clock: { now: () => number } = { now: () => Date.no
   const watched = new Map<string, Map<string, Entry>>()
   // パーツが先に届いた場合の種類(メッセージが届いたら反映する)。
   const early = new Map<string, MessageKind>()
+  // 自動要約(compaction)のパーツがメッセージ本体より先に届いた場合の印(本体が届いたら反映する)。
+  const earlyCompaction = new Set<string>()
   // 会話ごとの、ループが送ったメッセージID(コマンドのループかどうか)と、コマンドのループのパーツの中身の印。
   const loops = new Map<string, Map<string, { command: boolean }>>()
   const loopSignatures = new Map<string, Set<string>>()
@@ -637,8 +639,10 @@ export function createLedger(clock: { now: () => number } = { now: () => Date.no
         cost: positive(message.cost),
         kind: stronger(previous?.kind, early.get(message.id)),
         seenAt: previous?.seenAt ?? clock.now(),
+        compaction: previous?.compaction === true || earlyCompaction.has(message.id),
       })
       early.delete(message.id)
+      earlyCompaction.delete(message.id)
     },
     /** パーツから、ユーザーメッセージの種類を決める(複数のパーツは 本人 > 第三者 > 自動 の強い方)。 */
     recordPart(part: LedgerPart, sessions: Tree) {
@@ -656,7 +660,10 @@ export function createLedger(clock: { now: () => number } = { now: () => Date.no
         }
         return
       }
-      if (part.type === "compaction" && entry) entry.compaction = true
+      if (part.type === "compaction") {
+        if (entry) entry.compaction = true
+        else earlyCompaction.add(part.messageID)
+      }
       // コマンドのループと同じ中身で、直前のユーザーメッセージが自動要約(compaction)のもの = サーバーの複製再送。
       // それ以外の同じ文(別の端末から本人が同じコマンドを打った等)は本人扱い。
       const replay = mark !== undefined && loopSignatures.get(root)?.has(mark) === true && afterCompaction(entries, part.messageID, root)
